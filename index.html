@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0E1512" />
+<title>Tickerboard</title>
+<link rel="manifest" href="manifest.json" />
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+  <!-- Signature element: live scrolling ticker strip -->
+  <div class="ticker-strip" id="tickerStrip">
+    <div class="ticker-track" id="tickerTrack">
+      <span class="ticker-item muted">add stocks to your watchlist to see them scroll here →</span>
+    </div>
+  </div>
+
+  <header class="app-header">
+    <h1>Tickerboard</h1>
+    <p class="eyebrow">nse &middot; bse &middot; personal terminal</p>
+  </header>
+
+  <main id="view-search" class="view active">
+    <div class="search-row">
+      <input id="searchInput" type="text" inputmode="search" placeholder="Search a stock — RELIANCE, TCS, INFY…" autocomplete="off" />
+    </div>
+    <div id="searchResults" class="result-list"></div>
+  </main>
+
+  <main id="view-analysis" class="view">
+    <button class="back-btn" id="backFromAnalysis">&larr; back to search</button>
+    <div id="analysisContent"><p class="muted">Pick a stock to analyse.</p></div>
+  </main>
+
+  <main id="view-watchlist" class="view">
+    <div class="section-heading">
+      <span class="eyebrow">tracking</span>
+      <h2>Watchlist</h2>
+    </div>
+    <div id="watchlistContent"><p class="muted">Nothing yet — add a stock from its analysis screen.</p></div>
+  </main>
+
+  <nav class="tab-bar">
+    <button class="tab-btn active" data-view="view-search">
+      <span class="tab-icon">◎</span><span>Search</span>
+    </button>
+    <button class="tab-btn" data-view="view-analysis">
+      <span class="tab-icon">◈</span><span>Analyse</span>
+    </button>
+    <button class="tab-btn" data-view="view-watchlist">
+      <span class="tab-icon">◐</span><span>Watchlist</span>
+    </button>
+  </nav>
+
+<script src="app.js"></script>
+</body>
+</html>
