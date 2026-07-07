@@ -83,12 +83,16 @@ async function loadAnalysis() {
     const res = await fetch(
       `${API}/api/stocks/${encodeURIComponent(currentStock.symbol)}/analyze?exchange=${currentStock.exchange}&horizon=${currentHorizon}`
     );
-    if (!res.ok) throw new Error("bad response");
     const data = await res.json();
+    if (!res.ok) {
+      content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Analysis failed.")}</p>`;
+      return;
+    }
     renderAnalysis(data);
   } catch (e) {
-    content.innerHTML = `<p class="muted">Could not analyse this stock right now. It may be delisted, or the data source is temporarily unavailable.</p>`;
+    content.innerHTML = `<p class="muted">Could not reach the backend. Check your connection and try again.</p>`;
   }
+    
 }
 
 function renderAnalysis(data) {
