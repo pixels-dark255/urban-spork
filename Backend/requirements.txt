@@ -1,7 +1,8 @@
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
-yfinance>=0.2.61
-pandas==2.3.1
+yfinance>=0.2.66
+curl_cffi>=0.7.3
+pandas==2.2.3
 numpy==1.26.4
 scikit-learn==1.5.1
 vaderSentiment==3.3.2
