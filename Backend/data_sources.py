@@ -156,7 +156,7 @@ def fetch_multi_timeframe(yf_symbol: str) -> dict[str, pd.DataFrame]:
         key = (cfg["period"], cfg["interval"])
         if key not in seen:
             try:
-                hist = ticker.history(period=cfg["period"], interval=cfg["interval"])
+                hist = yf.download(yf_symbol,period=cfg["period"],interval=cfg["interval"],progress=False,threads=False,auto_adjust=True,)
             except Exception as e:
                 print(f"[warn] history fetch failed for {yf_symbol} {key}: {e}")
                 hist = pd.DataFrame()
@@ -167,12 +167,7 @@ def fetch_multi_timeframe(yf_symbol: str) -> dict[str, pd.DataFrame]:
 
 def fetch_latest_price(yf_symbol: str) -> float | None:
     try:
-        ticker = yf.Ticker(yf_symbol)
-        fast = ticker.fast_info
-        price = fast.get("lastPrice") or fast.get("last_price")
-        if price:
-            return float(price)
-        hist = ticker.history(period="1d", interval="1m")
+        hist = yf.download(yf_symbol,period="5d",interval="1m",progress=False,threads=False,auto_adjust=True,)
         if not hist.empty:
             return float(hist["Close"].iloc[-1])
     except Exception as e:
