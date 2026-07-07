@@ -56,7 +56,16 @@ def api_analyze_stock(symbol: str, exchange: str = "NSE", horizon: str = "1d"):
     yf_symbol = to_yf_symbol(symbol, exchange)
     price = fetch_latest_price(yf_symbol)
     if price is None:
-        raise HTTPException(404, f"Could not fetch live price for {yf_symbol}. Check the symbol.")
+        # 502 = "the data source failed us", not "this route doesn't exist".
+        # Check the Render logs for a preceding "[warn] yf.download failed..."
+        # line - that's almost always Yahoo Finance throttling/blocking, not
+        # a bad symbol.
+        raise HTTPException(
+            502,
+            f"Could not fetch live price for {yf_symbol} from Yahoo Finance right now. "
+            f"This is usually a temporary data-source issue (rate limiting), not a bad symbol. "
+            f"Check server logs for details and try again in a minute.",
+        )
 
     tf_data = fetch_multi_timeframe(yf_symbol)
     news = fetch_company_news(symbol)
