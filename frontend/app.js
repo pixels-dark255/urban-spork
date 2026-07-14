@@ -11,6 +11,7 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
   btn.addEventListener("click", () => switchView(btn.dataset.view));
 });
 document.getElementById("backFromAnalysis").addEventListener("click", () => switchView("view-search"));
+document.getElementById("backFromWatchDetail").addEventListener("click", () => switchView("view-watchlist"));
 
 function switchView(viewId) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
@@ -92,7 +93,6 @@ async function loadAnalysis() {
   } catch (e) {
     content.innerHTML = `<p class="muted">Could not reach the backend. Check your connection and try again.</p>`;
   }
-    
 }
 
 function renderAnalysis(data) {
@@ -169,9 +169,9 @@ function renderAnalysis(data) {
 async function addCurrentToWatchlist() {
   const btn = document.getElementById("addWatchlistBtn");
   btn.disabled = true;
-  btn.textContent = "Adding…";
+  btn.textContent = "Running 90-day backtest & calibrating…";
   try {
-    await fetch(`${API}/api/watchlist`, {
+    const res = await fetch(`${API}/api/watchlist`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -181,12 +181,114 @@ async function addCurrentToWatchlist() {
         horizon: currentHorizon,
       }),
     });
-    btn.textContent = "Added ✓ — see Watchlist tab";
+    const data = await res.json();
+    if (!res.ok) {
+      btn.textContent = `Failed: ${data.detail || "unknown error"}`;
+      btn.disabled = false;
+      return;
+    }
+    btn.textContent = "Added & calibrated ✓ — see Watchlist tab";
     refreshTicker();
   } catch (e) {
-    btn.textContent = "Failed — try again";
+    btn.textContent = "Failed — network error, try again";
     btn.disabled = false;
   }
+}
+
+// ---------- Watch detail (90-day backtest + refinement history) ----------
+async function openWatchDetail(itemId) {
+  switchView("view-watch-detail");
+  const content = document.getElementById("watchDetailContent");
+  content.innerHTML = `<p class="loading">loading backtest &amp; history…</p>`;
+  try {
+    const res = await fetch(`${API}/api/watchlist/${itemId}/detail`);
+    const data = await res.json();
+    if (!res.ok) {
+      content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load detail.")}</p>`;
+      return;
+    }
+    renderWatchDetail(data);
+  } catch (e) {
+    content.innerHTML = `<p class="muted">Could not reach the backend.</p>`;
+  }
+}
+
+function renderWatchDetail(data) {
+  const bt = data.backtest_summary;
+  const weights = data.signal_weights || {};
+
+  const summaryHtml = bt ? `
+    <div class="prediction-card">
+      <div class="label">90-day walk-forward backtest</div>
+      <div class="band-row" style="margin-top:6px;">tested on ${bt.total_days_backtested} trading days</div>
+      <div class="band-row">overall avg error: <b>${bt.avg_abs_error_pct_overall}%</b></div>
+      <div class="band-row">earliest third of the window: <b>${bt.avg_abs_error_pct_early_period}%</b> avg error</div>
+      <div class="band-row">most recent third: <b>${bt.avg_abs_error_pct_recent_period}%</b> avg error</div>
+      <div class="band-row" style="margin-top:6px; color:${bt.improved ? "var(--brass)" : "var(--signal-red)"}">
+        ${bt.improved ? "Accuracy improved as weights refined ✓" : "No clear improvement yet on this stock"}
+      </div>
+    </div>
+  ` : `<p class="muted">Backtest still running or there wasn't enough history for this stock — check back shortly.</p>`;
+
+  const weightRows = Object.entries(weights).map(([name, val]) => {
+    const pct = Math.round((val / 1.0) * 100);
+    return `<div class="signal-row"><span>${name}</span><span class="val ${val >= 1 ? "pos" : "neg"}">${val.toFixed(2)}×</span></div>`;
+  }).join("");
+
+  const history = (data.backtest_history || []).slice(-15).reverse();
+  const historyHtml = history.length ? `
+    <table class="backtest-table">
+      <thead><tr><th>date</th><th>predicted</th><th>actual</th><th>error</th></tr></thead>
+      <tbody>
+        ${history.map((h) => `
+          <tr>
+            <td>${h.date}</td>
+            <td>₹${h.predicted_price}</td>
+            <td>₹${h.actual_price}</td>
+            <td class="${h.error_pct >= 0 ? "pos" : "neg"}">${h.error_pct}%</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<p class="muted">No backtest days recorded.</p>`;
+
+  const livePreds = (data.live_predictions || []).slice(-10).reverse();
+  const liveHtml = livePreds.length ? `
+    <table class="backtest-table">
+      <thead><tr><th>made at</th><th>predicted</th><th>actual</th><th>status</th></tr></thead>
+      <tbody>
+        ${livePreds.map((p) => `
+          <tr>
+            <td>${new Date(p.made_at).toLocaleDateString()}</td>
+            <td>₹${p.predicted_price}</td>
+            <td>${p.actual_price != null ? "₹" + p.actual_price : "—"}</td>
+            <td>${p.resolved ? (p.error_pct + "%") : "pending"}</td>
+          </tr>
+        `).join("")}
+      </tbody>
+    </table>
+  ` : `<p class="muted">No live predictions resolved yet.</p>`;
+
+  document.getElementById("watchDetailContent").innerHTML = `
+    <h2 class="stock-title">${escapeHtml(data.display_name || data.symbol)}</h2>
+    <div class="stock-sub">${data.symbol} &middot; horizon ${data.horizon_minutes}m</div>
+
+    ${summaryHtml}
+
+    <div class="section-heading"><span class="eyebrow">self-refinement</span><h2 style="font-size:17px;">Current signal weights</h2></div>
+    <div class="signal-list">${weightRows}</div>
+    <div class="disclaimer">
+      Weights above 1× mean that signal has been right more often for this specific stock and is
+      trusted more; below 1× means it's been trusted less. These update after every backtest day
+      and every live prediction that resolves - as long as this stock stays on your watchlist.
+    </div>
+
+    <div class="section-heading"><span class="eyebrow">walk-forward</span><h2 style="font-size:17px;">Backtest days (most recent 15)</h2></div>
+    ${historyHtml}
+
+    <div class="section-heading"><span class="eyebrow">since adding</span><h2 style="font-size:17px;">Live predictions (most recent 10)</h2></div>
+    ${liveHtml}
+  `;
 }
 
 // ---------- Watchlist ----------
@@ -202,11 +304,15 @@ async function loadWatchlist() {
     }
     content.innerHTML = data.watchlist.map(renderWatchCard).join("");
     content.querySelectorAll(".watch-remove").forEach((btn) => {
-      btn.addEventListener("click", async () => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
         await fetch(`${API}/api/watchlist/${btn.dataset.id}`, { method: "DELETE" });
         loadWatchlist();
         refreshTicker();
       });
+    });
+    content.querySelectorAll(".watch-symbol-link").forEach((el) => {
+      el.addEventListener("click", () => openWatchDetail(el.dataset.id));
     });
   } catch (e) {
     content.innerHTML = `<p class="muted">Could not load watchlist.</p>`;
@@ -216,22 +322,27 @@ async function loadWatchlist() {
 function renderWatchCard(item) {
   const lp = item.latest_prediction;
   const tr = item.track_record;
+  const bt = item.backtest_summary;
   const predRow = lp
     ? `<div class="watch-row"><span>predicted next</span><span>₹${lp.predicted_price} by ${new Date(lp.target_at).toLocaleString()}</span></div>`
-    : `<div class="watch-row"><span>no prediction yet — waits for next market-hours tick</span></div>`;
+    : `<div class="watch-row"><span>calibrating…</span></div>`;
   const trackRow = tr.resolved_count > 0
-    ? `<div class="watch-track-record">tracked accuracy: avg ${tr.avg_abs_error_pct}% error over ${tr.resolved_count} resolved predictions</div>`
-    : `<div class="watch-track-record muted">no resolved predictions yet</div>`;
+    ? `<div class="watch-track-record">live tracked accuracy: avg ${tr.avg_abs_error_pct}% error over ${tr.resolved_count} resolved predictions</div>`
+    : `<div class="watch-track-record muted">no resolved live predictions yet</div>`;
+  const btRow = bt
+    ? `<div class="watch-track-record">90-day backtest: ${bt.avg_abs_error_pct_overall}% avg error (early ${bt.avg_abs_error_pct_early_period}% → recent ${bt.avg_abs_error_pct_recent_period}%) ${bt.improved ? "— improving ✓" : ""}</div>`
+    : `<div class="watch-track-record muted">backtest running — tap to check back</div>`;
 
   return `
     <div class="watch-card">
       <div class="watch-card-top">
-        <span class="watch-symbol">${item.symbol}</span>
+        <span class="watch-symbol watch-symbol-link" data-id="${item.id}">${item.symbol} ›</span>
         <button class="watch-remove" data-id="${item.id}">remove</button>
       </div>
       <div class="watch-row"><span>${item.display_name || ""}</span><span>horizon: ${item.horizon_minutes}m</span></div>
       ${predRow}
       ${trackRow}
+      ${btRow}
     </div>
   `;
 }
