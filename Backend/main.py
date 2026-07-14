@@ -11,7 +11,8 @@ from data_sources import (
     fetch_latest_price, fetch_company_news, fetch_weather_signal,
 )
 from predictor import predict_price
-from scheduler import start_scheduler
+from backtest import run_backtest_and_refine
+from scheduler import start_scheduler, make_fresh_prediction
 
 app = FastAPI(title="NSE/BSE Stock Analyzer & Predictor")
 
@@ -128,6 +129,7 @@ def api_get_watchlist(request: Request):
                 "resolved_count": len(resolved),
                 "avg_abs_error_pct": avg_abs_error,
             },
+            "backtest_summary": item.get("backtest_summary"),
         })
     return {"watchlist": out, "your_ip": ip}
 
@@ -144,6 +146,27 @@ def api_add_watchlist(req: WatchlistAddRequest, request: Request):
         display_name=req.display_name or req.symbol,
         horizon_minutes=HORIZON_PRESETS[req.horizon],
     )
+
+    # One-time 90-trading-day backtest + weight refinement (see backtest.py).
+    # ~90 lightweight predictions off one data fetch - typically a few
+    # seconds, so we just do it inline rather than a background job.
+    try:
+        bt = run_backtest_and_refine(yf_symbol)
+        storage.set_backtest_result(
+            ip, item["id"], bt["backtest_history"], bt["refined_weights"], bt["summary"]
+        )
+        item["signal_weights"] = bt["refined_weights"]
+    except Exception as e:
+        print(f"[warn] backtest failed for {yf_symbol}: {e}")
+
+    # Make an immediate live prediction (using the just-refined weights) so
+    # the watchlist shows something right away instead of waiting for the
+    # next 5-minute scheduler tick.
+    try:
+        make_fresh_prediction(ip, item)
+    except Exception as e:
+        print(f"[warn] initial prediction failed for {yf_symbol}: {e}")
+
     return {"id": item["id"], "symbol": item["symbol"]}
 
 
@@ -163,6 +186,28 @@ def api_watchlist_history(item_id: int, request: Request):
     if not item:
         raise HTTPException(404, "not found")
     return {"history": item.get("predictions", [])}
+
+
+@app.get("/api/watchlist/{item_id}/detail")
+def api_watchlist_detail(item_id: int, request: Request):
+    """Full picture for the watchlist tap-through view: the 90-day backtest
+    (predicted vs actual for each day, and how accuracy trended from the
+    earliest backtested period to the most recent), the refined signal
+    weights currently in use, and every live prediction made since."""
+    ip = get_client_ip(request)
+    item = storage.get_item(ip, item_id)
+    if not item:
+        raise HTTPException(404, "not found")
+    return {
+        "id": item["id"],
+        "symbol": item["symbol"],
+        "display_name": item.get("display_name"),
+        "horizon_minutes": item["horizon_minutes"],
+        "signal_weights": item.get("signal_weights"),
+        "backtest_summary": item.get("backtest_summary"),
+        "backtest_history": item.get("backtest_history", []),
+        "live_predictions": item.get("predictions", []),
+    }
 
 
 @app.get("/api/health")

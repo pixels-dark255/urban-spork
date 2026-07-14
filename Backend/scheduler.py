@@ -11,7 +11,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 import storage
 from data_sources import fetch_multi_timeframe, fetch_latest_price, fetch_company_news, fetch_weather_signal
-from predictor import predict_price
+from predictor import predict_price, nudge_weights
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -25,7 +25,7 @@ def is_market_hours() -> bool:
     return open_t <= now <= close_t
 
 
-def _make_fresh_prediction(ip: str, item: dict):
+def make_fresh_prediction(ip: str, item: dict):
     price = fetch_latest_price(item["symbol"])
     if price is None:
         return
@@ -40,6 +40,7 @@ def _make_fresh_prediction(ip: str, item: dict):
         horizon_minutes=item["horizon_minutes"],
         news_articles=news,
         weather_json=weather,
+        weights=item.get("signal_weights"),
     )
 
     now = dt.datetime.utcnow()
@@ -54,6 +55,7 @@ def _make_fresh_prediction(ip: str, item: dict):
         "actual_price": None,
         "resolved": False,
         "error_pct": None,
+        "raw_signals": result["signals"],
     }
     storage.append_prediction(ip, item["id"], prediction)
 
@@ -63,10 +65,10 @@ def tick():
         return
 
     now_iso = dt.datetime.utcnow().isoformat()
-    storage.resolve_due_predictions(now_iso, fetch_latest_price)
+    storage.resolve_due_predictions(now_iso, fetch_latest_price, nudge_weights)
 
     for ip, item in storage.all_items():
-        _make_fresh_prediction(ip, item)
+        make_fresh_prediction(ip, item)
 
 
 scheduler = BackgroundScheduler(timezone=str(IST))

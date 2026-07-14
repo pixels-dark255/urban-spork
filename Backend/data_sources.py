@@ -206,6 +206,12 @@ def fetch_latest_price(yf_symbol: str) -> float | None:
     return None
 
 
+def fetch_daily_history(yf_symbol: str, period: str = "2y") -> pd.DataFrame:
+    """Single fetch of long daily history, used by the backtest engine
+    (which then slices it locally rather than hitting Yahoo 90+ times)."""
+    return _yf_download(yf_symbol, period, "1d")
+
+
 def fetch_company_news(company_name: str, max_articles: int = 15) -> list[dict]:
     """Uses NewsAPI.org (https://newsapi.org) - free key required, set NEWS_API_KEY.
     Falls back to Google News RSS (keyless) if no key is configured."""

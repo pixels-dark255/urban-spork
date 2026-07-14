@@ -33,6 +33,11 @@ from indicators import summarize_timeframe, rsi, macd
 
 _analyzer = SentimentIntensityAnalyzer()
 
+# Per-signal weight multipliers, refined over time by the backtest (see
+# backtest.py) and by live prediction outcomes (see storage.resolve_due_predictions
+# + predictor.nudge_weights below). 1.0 = neutral/unrefined.
+DEFAULT_WEIGHTS = {"trend": 1.0, "momentum": 1.0, "news": 1.0, "seasonality": 1.0, "weather": 1.0}
+
 # Weight given to each timeframe's drift estimate, before horizon-based reweighting.
 BASE_TIMEFRAME_WEIGHTS = {
     "5y": 0.03, "1y": 0.06, "6mo": 0.08, "3mo": 0.10, "2mo": 0.10, "1mo": 0.12,
@@ -120,14 +125,19 @@ def predict_price(
     horizon_minutes: int,
     news_articles: list[dict] | None = None,
     weather_json: dict | None = None,
+    weights: dict | None = None,
 ) -> dict:
     """
     timeframe_data: dict[label -> pd.DataFrame] as returned by fetch_multi_timeframe
+    weights: per-signal multipliers {trend, momentum, news, seasonality, weather} -
+        refined by the 90-day backtest and by live outcomes (see nudge_weights).
+        Defaults to all-neutral (1.0) if not provided.
     Returns a dict with predicted_price, low/high band, confidence, and a
     breakdown of each signal so the UI can show its work.
     """
     news_articles = news_articles or []
     weather_json = weather_json or {}
+    sig_w = {**DEFAULT_WEIGHTS, **(weights or {})}
 
     weights = horizon_to_periods_per_year_weighting(horizon_minutes)
 
@@ -159,7 +169,7 @@ def predict_price(
 
     # --- Momentum tilt from the most recent short timeframe available ---
     momentum_tilt = 0.0
-    for label in ["1d", "2d", "3d", "1wk"]:
+    for label in ["1d", "2d", "3d", "1wk", "1mo"]:
         s = per_timeframe.get(label)
         if s and s.get("rsi") is not None:
             r = s["rsi"]
@@ -187,11 +197,11 @@ def predict_price(
     weather_annual = weather_tilt * 252
 
     total_annual_drift = (
-        weighted_drift
-        + momentum_tilt
-        + sentiment_drift_annual
-        + seasonality_annual
-        + weather_annual
+        weighted_drift * sig_w["trend"]
+        + momentum_tilt * sig_w["momentum"]
+        + sentiment_drift_annual * sig_w["news"]
+        + seasonality_annual * sig_w["seasonality"]
+        + weather_annual * sig_w["weather"]
     )
 
     # Project forward using GBM over the requested horizon
@@ -220,6 +230,7 @@ def predict_price(
         "band_95": [round(float(low_95), 2), round(float(high_95), 2)],
         "confidence": round(confidence, 3),
         "horizon_minutes": horizon_minutes,
+        "weights_used": sig_w,
         "signals": {
             "trend_drift_annualized": round(float(weighted_drift), 4),
             "momentum_tilt_annualized": round(float(momentum_tilt), 4),
@@ -237,3 +248,36 @@ def predict_price(
             "how much to trust it."
         ),
     }
+
+
+def nudge_weights(weights: dict, raw_signals: dict, actual_direction: int) -> dict:
+    """Online-learning weight update (multiplicative-weights / 'Hedge' style):
+    each signal whose direction matched the actual price movement gets
+    nudged up; each that didn't gets nudged down. Called both by the 90-day
+    backtest (backtest.py) and every time a live watchlist prediction
+    resolves (scheduler.py + storage.resolve_due_predictions), so refinement
+    continues for as long as the stock stays on the watchlist.
+
+    actual_direction: +1 if price went up, -1 if down, 0 if unchanged
+    (unchanged days are skipped - no signal to learn from).
+    """
+    weights = dict(weights or DEFAULT_WEIGHTS)
+    if actual_direction == 0:
+        return weights
+    raw_map = {
+        "trend": raw_signals.get("trend_drift_annualized", 0.0),
+        "momentum": raw_signals.get("momentum_tilt_annualized", 0.0),
+        "news": raw_signals.get("news_drift_annualized", 0.0),
+        "seasonality": raw_signals.get("seasonality_drift_annualized", 0.0),
+        "weather": raw_signals.get("weather_drift_annualized", 0.0),
+    }
+    for name, raw_value in raw_map.items():
+        if abs(raw_value) < 1e-9:
+            continue  # signal made no directional claim - nothing to learn
+        signal_direction = 1 if raw_value > 0 else -1
+        current = weights.get(name, 1.0)
+        if signal_direction == actual_direction:
+            weights[name] = min(current * 1.05, 3.0)   # was right - trust it a bit more
+        else:
+            weights[name] = max(current * 0.95, 0.1)    # was wrong - trust it a bit less
+    return weights
