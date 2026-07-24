@@ -7,17 +7,75 @@ let currentHorizon = "1d";
 const HORIZONS = ["15m", "1h", "4h", "1d", "3d", "1wk", "1mo", "3mo"];
 
 // ---------- Navigation ----------
-document.querySelectorAll(".tab-btn").forEach((btn) => {
-  btn.addEventListener("click", () => switchView(btn.dataset.view));
-});
-document.getElementById("backFromAnalysis").addEventListener("click", () => switchView("view-search"));
-document.getElementById("backFromWatchDetail").addEventListener("click", () => switchView("view-watchlist"));
+// Uses real browser history so the phone's back gesture/button navigates
+// within the app (Search -> Analysis -> Watchlist -> Detail) instead of
+// immediately exiting - the single biggest "feels broken" PWA gotcha.
+let currentWatchItemId = null;
+let viewPollHandle = null;
 
-function switchView(viewId) {
+function startViewPolling(fn, intervalMs) {
+  stopViewPolling();
+  viewPollHandle = setInterval(fn, intervalMs);
+}
+function stopViewPolling() {
+  if (viewPollHandle) { clearInterval(viewPollHandle); viewPollHandle = null; }
+}
+
+document.querySelectorAll(".tab-btn").forEach((btn) => {
+  btn.addEventListener("click", () => navigateTo(btn.dataset.view));
+});
+document.getElementById("backFromAnalysis").addEventListener("click", () => history.back());
+document.getElementById("backFromWatchDetail").addEventListener("click", () => history.back());
+
+function navigateTo(viewId, extraState = {}) {
+  history.pushState({ view: viewId, ...extraState }, "", `#${viewId}`);
+  renderView(viewId, extraState);
+}
+
+window.addEventListener("popstate", (e) => {
+  const state = e.state || { view: "view-search" };
+  renderView(state.view, state);
+});
+
+// First load: establish the base history entry so back() from Search exits
+// cleanly instead of landing on an undefined state.
+history.replaceState({ view: "view-search" }, "", "#view-search");
+
+function renderView(viewId, state = {}) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.getElementById(viewId).classList.add("active");
   document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === viewId));
-  if (viewId === "view-watchlist") loadWatchlist();
+  stopViewPolling();
+
+  if (viewId === "view-watchlist") {
+    loadWatchlist();
+    startViewPolling(() => loadWatchlist(true), 30000);
+  } else if (viewId === "view-watch-detail") {
+    currentWatchItemId = state.itemId ?? currentWatchItemId;
+    if (currentWatchItemId != null) {
+      loadWatchDetail(currentWatchItemId);
+      startViewPolling(() => loadWatchDetail(currentWatchItemId, true), 30000);
+    }
+  }
+}
+
+// Kept for compatibility with existing calls below - pushes new history.
+function switchView(viewId) {
+  navigateTo(viewId);
+}
+
+// ---------- Toast ----------
+function showToast(message, tone = "info") {
+  const host = document.getElementById("toastHost");
+  const el = document.createElement("div");
+  el.className = `toast-item ${tone}`;
+  el.textContent = message;
+  host.appendChild(el);
+  requestAnimationFrame(() => el.classList.add("show"));
+  setTimeout(() => {
+    el.classList.remove("show");
+    setTimeout(() => el.remove(), 250);
+  }, 2600);
 }
 
 // ---------- Search ----------
@@ -70,6 +128,10 @@ function escapeHtml(s) {
   return d.innerHTML;
 }
 
+function fmtPrice(n) {
+  return (n == null) ? "—" : Number(n).toFixed(2);
+}
+
 // ---------- Analysis ----------
 async function openAnalysis(stock) {
   currentStock = stock;
@@ -79,7 +141,12 @@ async function openAnalysis(stock) {
 
 async function loadAnalysis() {
   const content = document.getElementById("analysisContent");
-  content.innerHTML = `<p class="loading">gathering data across timeframes…</p>`;
+  content.innerHTML = `
+    <div class="skeleton-line" style="width:55%; height:26px;"></div>
+    <div class="skeleton-line" style="width:30%; margin-top:8px;"></div>
+    <div class="skeleton-block" style="height:120px; margin-top:18px;"></div>
+    <div class="skeleton-block" style="height:160px; margin-top:14px;"></div>
+  `;
   try {
     const res = await fetch(
       `${API}/api/stocks/${encodeURIComponent(currentStock.symbol)}/analyze?exchange=${currentStock.exchange}&horizon=${currentHorizon}`
@@ -196,26 +263,59 @@ async function addCurrentToWatchlist() {
 }
 
 // ---------- Watch detail (90-day backtest + refinement history) ----------
-async function openWatchDetail(itemId) {
-  switchView("view-watch-detail");
+function openWatchDetail(itemId) {
+  navigateTo("view-watch-detail", { itemId });
+}
+
+async function loadWatchDetail(itemId, silent = false) {
   const content = document.getElementById("watchDetailContent");
-  content.innerHTML = `<p class="loading">loading backtest &amp; history…</p>`;
+  if (!silent) content.innerHTML = `
+    <div class="skeleton-line" style="width:50%; height:24px;"></div>
+    <div class="skeleton-block" style="height:100px; margin-top:16px;"></div>
+    <div class="skeleton-block" style="height:180px; margin-top:14px;"></div>
+  `;
   try {
     const res = await fetch(`${API}/api/watchlist/${itemId}/detail`);
     const data = await res.json();
     if (!res.ok) {
-      content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load detail.")}</p>`;
+      if (!silent) content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load detail.")}</p>`;
       return;
     }
     renderWatchDetail(data);
   } catch (e) {
-    content.innerHTML = `<p class="muted">Could not reach the backend.</p>`;
+    if (!silent) content.innerHTML = `<p class="muted">Could not reach the backend.</p>`;
   }
 }
 
 function renderWatchDetail(data) {
   const bt = data.backtest_summary;
   const weights = data.signal_weights || {};
+  const lp = data.latest_prediction;
+  const livePrice = data.live_price;
+
+  let liveHero;
+  if (livePrice != null && lp) {
+    const delta = lp.predicted_price - livePrice;
+    const deltaPct = (delta / livePrice) * 100;
+    const dirClass = delta >= 0 ? "up" : "down";
+    liveHero = `
+      <div class="price-hero">
+        <span class="price-current">₹${livePrice.toFixed(2)}</span>
+      </div>
+      <div class="prediction-card">
+        <div class="label">latest prediction · target ${new Date(lp.target_at).toLocaleString()}</div>
+        <div class="predicted-price">₹${lp.predicted_price.toFixed(2)}
+          <span class="price-delta ${dirClass}">${delta >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%</span>
+        </div>
+        ${lp.predicted_low != null ? `<div class="band-row">68% range: ₹${lp.predicted_low} – ₹${lp.predicted_high}</div>` : ""}
+        <div class="confidence-bar-track"><div class="confidence-bar-fill" style="width:${lp.confidence * 100}%"></div></div>
+        <div class="band-row" style="margin-top:6px;">confidence score: ${(lp.confidence * 100).toFixed(0)}/100</div>
+      </div>`;
+  } else if (livePrice != null) {
+    liveHero = `<div class="price-hero"><span class="price-current">₹${livePrice.toFixed(2)}</span></div><p class="muted">No live prediction yet.</p>`;
+  } else {
+    liveHero = `<p class="muted">Live price unavailable right now — Yahoo Finance may be temporarily rate-limiting. Try again shortly.</p>`;
+  }
 
   const summaryHtml = bt ? `
     <div class="prediction-card">
@@ -243,8 +343,8 @@ function renderWatchDetail(data) {
         ${history.map((h) => `
           <tr>
             <td>${h.date}</td>
-            <td>₹${h.predicted_price}</td>
-            <td>₹${h.actual_price}</td>
+            <td>₹${fmtPrice(h.predicted_price)}</td>
+            <td>₹${fmtPrice(h.actual_price)}</td>
             <td class="${h.error_pct >= 0 ? "pos" : "neg"}">${h.error_pct}%</td>
           </tr>
         `).join("")}
@@ -260,8 +360,8 @@ function renderWatchDetail(data) {
         ${livePreds.map((p) => `
           <tr>
             <td>${new Date(p.made_at).toLocaleDateString()}</td>
-            <td>₹${p.predicted_price}</td>
-            <td>${p.actual_price != null ? "₹" + p.actual_price : "—"}</td>
+            <td>₹${fmtPrice(p.predicted_price)}</td>
+            <td>${p.actual_price != null ? "₹" + fmtPrice(p.actual_price) : "—"}</td>
             <td>${p.resolved ? (p.error_pct + "%") : "pending"}</td>
           </tr>
         `).join("")}
@@ -273,6 +373,9 @@ function renderWatchDetail(data) {
     <h2 class="stock-title">${escapeHtml(data.display_name || data.symbol)}</h2>
     <div class="stock-sub">${data.symbol} &middot; horizon ${data.horizon_minutes}m</div>
 
+    ${liveHero}
+
+    <div class="section-heading"><span class="eyebrow">calibration</span><h2 style="font-size:17px;">90-day backtest</h2></div>
     ${summaryHtml}
 
     <div class="section-heading"><span class="eyebrow">self-refinement</span><h2 style="font-size:17px;">Current signal weights</h2></div>
@@ -291,10 +394,28 @@ function renderWatchDetail(data) {
   `;
 }
 
+document.getElementById("refreshWatchlistBtn").addEventListener("click", (e) => {
+  e.currentTarget.classList.add("spinning");
+  loadWatchlist().then(() => {
+    refreshTicker();
+    setTimeout(() => e.currentTarget.classList.remove("spinning"), 400);
+  });
+});
+
+function skeletonCards(n = 2) {
+  return Array(n).fill(`
+    <div class="watch-card skeleton-card">
+      <div class="skeleton-line" style="width:40%"></div>
+      <div class="skeleton-line" style="width:70%; margin-top:14px;"></div>
+      <div class="skeleton-block"></div>
+    </div>
+  `).join("");
+}
+
 // ---------- Watchlist ----------
-async function loadWatchlist() {
+async function loadWatchlist(silent = false) {
   const content = document.getElementById("watchlistContent");
-  content.innerHTML = `<p class="loading">loading…</p>`;
+  if (!silent) content.innerHTML = skeletonCards();
   try {
     const res = await fetch(`${API}/api/watchlist`);
     const data = await res.json();
@@ -306,7 +427,22 @@ async function loadWatchlist() {
     content.querySelectorAll(".watch-remove").forEach((btn) => {
       btn.addEventListener("click", async (e) => {
         e.stopPropagation();
+        if (btn.dataset.confirming !== "1") {
+          btn.dataset.confirming = "1";
+          btn.textContent = "tap again to confirm";
+          btn.classList.add("confirming");
+          setTimeout(() => {
+            if (btn.isConnected && btn.dataset.confirming === "1") {
+              btn.dataset.confirming = "0";
+              btn.textContent = "remove";
+              btn.classList.remove("confirming");
+            }
+          }, 3000);
+          return;
+        }
+        const symbol = btn.dataset.symbol;
         await fetch(`${API}/api/watchlist/${btn.dataset.id}`, { method: "DELETE" });
+        showToast(`Removed ${symbol} from watchlist`);
         loadWatchlist();
         refreshTicker();
       });
@@ -315,7 +451,7 @@ async function loadWatchlist() {
       el.addEventListener("click", () => openWatchDetail(el.dataset.id));
     });
   } catch (e) {
-    content.innerHTML = `<p class="muted">Could not load watchlist.</p>`;
+    if (!silent) content.innerHTML = `<p class="muted">Could not load watchlist.</p>`;
   }
 }
 
@@ -323,8 +459,34 @@ function renderWatchCard(item) {
   const lp = item.latest_prediction;
   const tr = item.track_record;
   const bt = item.backtest_summary;
-  const predRow = lp
-    ? `<div class="watch-row"><span>predicted next</span><span>₹${lp.predicted_price} by ${new Date(lp.target_at).toLocaleString()}</span></div>`
+  const livePrice = item.live_price;
+
+  let heroRow;
+  if (livePrice != null && lp) {
+    const delta = lp.predicted_price - livePrice;
+    const deltaPct = (delta / livePrice) * 100;
+    const dirClass = delta >= 0 ? "up" : "down";
+    heroRow = `
+      <div class="watch-hero">
+        <div class="watch-hero-block">
+          <div class="watch-hero-label">live now</div>
+          <div class="watch-hero-price">₹${livePrice.toFixed(2)}</div>
+        </div>
+        <div class="watch-hero-arrow">→</div>
+        <div class="watch-hero-block">
+          <div class="watch-hero-label">predicted</div>
+          <div class="watch-hero-price ${dirClass}">₹${lp.predicted_price.toFixed(2)}</div>
+          <div class="watch-hero-sub ${dirClass}">${delta >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%</div>
+        </div>
+      </div>`;
+  } else if (livePrice != null) {
+    heroRow = `<div class="watch-hero"><div class="watch-hero-block"><div class="watch-hero-label">live now</div><div class="watch-hero-price">₹${livePrice.toFixed(2)}</div></div></div>`;
+  } else {
+    heroRow = `<div class="watch-row"><span>live price unavailable right now</span></div>`;
+  }
+
+  const targetRow = lp
+    ? `<div class="watch-row"><span>target time</span><span>${new Date(lp.target_at).toLocaleString()}</span></div>`
     : `<div class="watch-row"><span>calibrating…</span></div>`;
   const trackRow = tr.resolved_count > 0
     ? `<div class="watch-track-record">live tracked accuracy: avg ${tr.avg_abs_error_pct}% error over ${tr.resolved_count} resolved predictions</div>`
@@ -337,10 +499,11 @@ function renderWatchCard(item) {
     <div class="watch-card">
       <div class="watch-card-top">
         <span class="watch-symbol watch-symbol-link" data-id="${item.id}">${item.symbol} ›</span>
-        <button class="watch-remove" data-id="${item.id}">remove</button>
+        <button class="watch-remove" data-id="${item.id}" data-symbol="${item.symbol}">remove</button>
       </div>
       <div class="watch-row"><span>${item.display_name || ""}</span><span>horizon: ${item.horizon_minutes}m</span></div>
-      ${predRow}
+      ${heroRow}
+      ${targetRow}
       ${trackRow}
       ${btRow}
     </div>
@@ -363,7 +526,7 @@ async function refreshTicker() {
         return `<span class="ticker-item muted">${item.symbol} · awaiting first prediction</span>`;
       }
       const up = lp.predicted_price >= lp.price_at_prediction;
-      return `<span class="ticker-item ${up ? "up" : "down"}">${item.symbol} ₹${lp.price_at_prediction} → ₹${lp.predicted_price}</span>`;
+      return `<span class="ticker-item ${up ? "up" : "down"}">${item.symbol} ₹${fmtPrice(lp.price_at_prediction)} → ₹${fmtPrice(lp.predicted_price)}</span>`;
     }).join("");
   } catch (e) { /* silent - non-critical */ }
 }

@@ -27,6 +27,7 @@
   <main id="view-search" class="view active">
     <div class="search-row">
       <input id="searchInput" type="text" inputmode="search" placeholder="Search a stock — RELIANCE, TCS, INFY…" autocomplete="off" />
+      <button class="search-clear" id="searchClear" aria-label="Clear search" hidden>✕</button>
     </div>
     <div id="searchResults" class="result-list"></div>
   </main>
@@ -37,9 +38,12 @@
   </main>
 
   <main id="view-watchlist" class="view">
-    <div class="section-heading">
-      <span class="eyebrow">tracking</span>
-      <h2>Watchlist</h2>
+    <div class="section-heading watch-heading-row">
+      <div>
+        <span class="eyebrow">tracking</span>
+        <h2>Watchlist</h2>
+      </div>
+      <button class="refresh-btn" id="refreshWatchlistBtn" aria-label="Refresh watchlist">↻</button>
     </div>
     <div id="watchlistContent"><p class="muted">Nothing yet — add a stock from its analysis screen.</p></div>
   </main>
@@ -60,6 +64,8 @@
       <span class="tab-icon">◐</span><span>Watchlist</span>
     </button>
   </nav>
+
+  <div class="toast-host" id="toastHost"></div>
 
 <script src="app.js"></script>
 </body>

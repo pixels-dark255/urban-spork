@@ -28,7 +28,22 @@ body {
   display: flex;
   flex-direction: column;
   min-height: 100vh;
-  padding-bottom: 76px; /* room for tab bar */
+  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+}
+
+/* Touch feedback - this is a mobile app, :hover never fires on touch,
+   so every tappable element needs its own :active state or it just
+   feels unresponsive/broken even though it technically works. */
+button, .result-item, .watch-symbol-link {
+  transition: transform 100ms ease, background-color 100ms ease, border-color 100ms ease;
+}
+button:active, .result-item:active {
+  transform: scale(0.97);
+}
+
+button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-symbol-link:focus-visible {
+  outline: 2px solid var(--brass);
+  outline-offset: 2px;
 }
 
 /* ---- Ticker strip (signature element) ---- */
@@ -84,7 +99,14 @@ body {
 
 /* ---- Views ---- */
 .view { display: none; padding: 8px 20px 24px; flex: 1; }
-.view.active { display: block; }
+.view.active { display: block; animation: view-in 220ms ease; }
+@keyframes view-in {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .view.active { animation: none; }
+}
 
 .muted { color: var(--mist); }
 
@@ -224,6 +246,41 @@ body {
 .add-watchlist-btn:active { background: var(--brass-dim); }
 .add-watchlist-btn[disabled] { opacity: 0.6; }
 
+.watch-hero {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--paper-raised);
+  border-radius: 10px;
+}
+.watch-hero-block { flex: 1; }
+.watch-hero-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--mist);
+  margin-bottom: 3px;
+}
+.watch-hero-price {
+  font-family: var(--font-mono);
+  font-size: 19px;
+  font-weight: 600;
+  color: var(--bone);
+}
+.watch-hero-price.up { color: var(--brass); }
+.watch-hero-price.down { color: var(--signal-red); }
+.watch-hero-sub {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  margin-top: 2px;
+}
+.watch-hero-sub.up { color: var(--brass); }
+.watch-hero-sub.down { color: var(--signal-red); }
+.watch-hero-arrow { color: var(--mist); font-size: 16px; }
+
 /* ---- Watchlist ---- */
 .section-heading { margin: 10px 0 14px; }
 .section-heading h2 { font-family: var(--font-display); margin: 2px 0 0; font-size: 22px; }
@@ -292,3 +349,36 @@ body {
 .tab-icon { font-size: 18px; }
 
 .loading { color: var(--mist); font-family: var(--font-mono); font-size: 13px; padding: 20px 0; }
+
+.watch-heading-row { display: flex; justify-content: space-between; align-items: flex-end; }
+.refresh-btn {
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  color: var(--brass);
+  font-size: 16px;
+  width: 34px; height: 34px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.refresh-btn.spinning { animation: spin 500ms ease; }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .refresh-btn.spinning { animation: none; } }
+
+/* ---- Skeleton loading shimmer ---- */
+.skeleton-card { pointer-events: none; }
+.skeleton-line, .skeleton-block {
+  background: linear-gradient(90deg, var(--paper-raised) 25%, var(--hairline) 50%, var(--paper-raised) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s ease-in-out infinite;
+  border-radius: 6px;
+}
+.skeleton-line { height: 14px; }
+.skeleton-block { height: 70px; margin-top: 12px; border-radius: 10px; }
+@keyframes shimmer {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-line, .skeleton-block { animation: none; opacity: 0.6; }
+}
