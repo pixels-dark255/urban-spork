@@ -281,6 +281,27 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 .watch-hero-sub.down { color: var(--signal-red); }
 .watch-hero-arrow { color: var(--mist); font-size: 16px; }
 
+.weight-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--brass);
+  background: var(--paper-raised);
+  padding: 1px 6px;
+  border-radius: 8px;
+  margin-left: 6px;
+}
+
+.live-analysis-link {
+  background: none;
+  border: none;
+  color: var(--brass);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: 8px 0 4px;
+  cursor: pointer;
+}
+.live-analysis-link:active { opacity: 0.7; }
+
 /* ---- Watchlist ---- */
 .section-heading { margin: 10px 0 14px; }
 .section-heading h2 { font-family: var(--font-display); margin: 2px 0 0; font-size: 22px; }

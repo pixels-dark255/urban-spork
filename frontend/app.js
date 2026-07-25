@@ -50,6 +50,17 @@ function renderView(viewId, state = {}) {
   if (viewId === "view-watchlist") {
     loadWatchlist();
     startViewPolling(() => loadWatchlist(true), 30000);
+  } else if (viewId === "view-analysis") {
+    const backBtn = document.getElementById("backFromAnalysis");
+    if (state.fromWatchlist && state.itemId != null) {
+      currentWatchItemId = state.itemId;
+      backBtn.textContent = "← back to watchlist";
+      loadWatchAnalysis(state.itemId);
+      startViewPolling(() => loadWatchAnalysis(state.itemId, true), 30000);
+    } else {
+      backBtn.textContent = "← back to search";
+      // normal search-driven flow: openAnalysis() calls loadAnalysis() itself
+    }
   } else if (viewId === "view-watch-detail") {
     currentWatchItemId = state.itemId ?? currentWatchItemId;
     if (currentWatchItemId != null) {
@@ -233,6 +244,89 @@ function renderAnalysis(data) {
   document.getElementById("addWatchlistBtn").addEventListener("click", addCurrentToWatchlist);
 }
 
+async function loadWatchAnalysis(itemId, silent = false) {
+  const content = document.getElementById("analysisContent");
+  if (!silent) content.innerHTML = `
+    <div class="skeleton-line" style="width:55%; height:26px;"></div>
+    <div class="skeleton-line" style="width:30%; margin-top:8px;"></div>
+    <div class="skeleton-block" style="height:120px; margin-top:18px;"></div>
+    <div class="skeleton-block" style="height:160px; margin-top:14px;"></div>
+  `;
+  try {
+    const res = await fetch(`${API}/api/watchlist/${itemId}/analysis`);
+    const data = await res.json();
+    if (!res.ok) {
+      content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load analysis.")}</p>`;
+      return;
+    }
+    renderWatchAnalysis(data, itemId);
+  } catch (e) {
+    content.innerHTML = `<p class="muted">Could not reach the backend.</p>`;
+  }
+}
+
+function renderWatchAnalysis(data, itemId) {
+  const delta = data.predicted_price - data.current_price;
+  const deltaPct = (delta / data.current_price) * 100;
+  const dirClass = delta >= 0 ? "up" : "down";
+  const signals = data.signals;
+  const weights = data.weights_used || {};
+
+  const signalMeta = [
+    ["trend", "Multi-timeframe trend", signals.trend_drift_annualized],
+    ["momentum", "Momentum (RSI/MACD)", signals.momentum_tilt_annualized],
+    ["news", "News sentiment", signals.news_drift_annualized],
+    ["seasonality", "Seasonality (5y history)", signals.seasonality_drift_annualized],
+    ["weather", "Weather (experimental)", signals.weather_drift_annualized],
+  ];
+  const signalRows = signalMeta.map(([key, label, val]) => {
+    const cls = val > 0.001 ? "pos" : val < -0.001 ? "neg" : "neu";
+    const sign = val > 0 ? "+" : "";
+    const w = weights[key];
+    const wTag = w != null ? `<span class="weight-tag">${w.toFixed(2)}×</span>` : "";
+    return `<div class="signal-row"><span>${label} ${wTag}</span><span class="val ${cls}">${sign}${(val * 100).toFixed(2)}%/yr</span></div>`;
+  }).join("");
+
+  const da = data.directional_accuracy;
+  const daHtml = da ? `
+    <div class="watch-track-record">
+      directional accuracy: ${da.overall_pct}% over ${da.resolved_count} resolved predictions
+      (early ${da.early_period_pct}% → recent ${da.recent_period_pct}%)
+      ${da.improved ? "— improving ✓" : ""}
+    </div>` : `<div class="watch-track-record muted">not enough resolved live predictions yet to show a trend</div>`;
+
+  document.getElementById("analysisContent").innerHTML = `
+    <h2 class="stock-title">${escapeHtml(data.display_name || data.symbol)}</h2>
+    <div class="stock-sub">${data.symbol} &middot; tracking on your watchlist &middot; horizon ${(data.horizon_minutes / 1440).toFixed(2)}d</div>
+
+    <div class="price-hero">
+      <span class="price-current">₹${data.current_price.toFixed(2)}</span>
+    </div>
+
+    <div class="prediction-card">
+      <div class="label">predicted price right now, using this stock's refined weights</div>
+      <div class="predicted-price">₹${data.predicted_price.toFixed(2)}
+        <span class="price-delta ${dirClass}">${delta >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%</span>
+      </div>
+      <div class="band-row">68% range: ₹${data.band_68[0]} – ₹${data.band_68[1]}</div>
+      <div class="band-row">95% range: ₹${data.band_95[0]} – ₹${data.band_95[1]}</div>
+      <div class="confidence-bar-track"><div class="confidence-bar-fill" style="width:${data.confidence * 100}%"></div></div>
+      <div class="band-row" style="margin-top:6px;">confidence score: ${(data.confidence * 100).toFixed(0)}/100</div>
+    </div>
+
+    ${daHtml}
+
+    <div class="section-heading"><span class="eyebrow">why · refined weights shown</span><h2 style="font-size:17px;">Signal breakdown</h2></div>
+    <div class="signal-list">${signalRows}</div>
+
+    <div class="disclaimer">${data.disclaimer} Raw daily error naturally stays noisy - directional accuracy above and the weight trend on the next screen are the honest signs of whether refinement is working.</div>
+
+    <button class="add-watchlist-btn" id="viewBacktestBtn">View 90-day backtest &amp; refinement log ›</button>
+  `;
+
+  document.getElementById("viewBacktestBtn").addEventListener("click", () => openWatchDetail(itemId));
+}
+
 async function addCurrentToWatchlist() {
   const btn = document.getElementById("addWatchlistBtn");
   btn.disabled = true;
@@ -260,6 +354,11 @@ async function addCurrentToWatchlist() {
     btn.textContent = "Failed — network error, try again";
     btn.disabled = false;
   }
+}
+
+// ---------- Watch analysis (live, right now, using this stock's refined weights) ----------
+function openWatchAnalysis(itemId) {
+  navigateTo("view-analysis", { itemId, fromWatchlist: true });
 }
 
 // ---------- Watch detail (90-day backtest + refinement history) ----------
@@ -290,55 +389,52 @@ async function loadWatchDetail(itemId, silent = false) {
 function renderWatchDetail(data) {
   const bt = data.backtest_summary;
   const weights = data.signal_weights || {};
-  const lp = data.latest_prediction;
-  const livePrice = data.live_price;
-
-  let liveHero;
-  if (livePrice != null && lp) {
-    const delta = lp.predicted_price - livePrice;
-    const deltaPct = (delta / livePrice) * 100;
-    const dirClass = delta >= 0 ? "up" : "down";
-    liveHero = `
-      <div class="price-hero">
-        <span class="price-current">₹${livePrice.toFixed(2)}</span>
-      </div>
-      <div class="prediction-card">
-        <div class="label">latest prediction · target ${new Date(lp.target_at).toLocaleString()}</div>
-        <div class="predicted-price">₹${lp.predicted_price.toFixed(2)}
-          <span class="price-delta ${dirClass}">${delta >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%</span>
-        </div>
-        ${lp.predicted_low != null ? `<div class="band-row">68% range: ₹${lp.predicted_low} – ₹${lp.predicted_high}</div>` : ""}
-        <div class="confidence-bar-track"><div class="confidence-bar-fill" style="width:${lp.confidence * 100}%"></div></div>
-        <div class="band-row" style="margin-top:6px;">confidence score: ${(lp.confidence * 100).toFixed(0)}/100</div>
-      </div>`;
-  } else if (livePrice != null) {
-    liveHero = `<div class="price-hero"><span class="price-current">₹${livePrice.toFixed(2)}</span></div><p class="muted">No live prediction yet.</p>`;
-  } else {
-    liveHero = `<p class="muted">Live price unavailable right now — Yahoo Finance may be temporarily rate-limiting. Try again shortly.</p>`;
-  }
+  const da = data.directional_accuracy;
 
   const summaryHtml = bt ? `
     <div class="prediction-card">
       <div class="label">90-day walk-forward backtest</div>
       <div class="band-row" style="margin-top:6px;">tested on ${bt.total_days_backtested} trading days</div>
-      <div class="band-row">overall avg error: <b>${bt.avg_abs_error_pct_overall}%</b></div>
-      <div class="band-row">earliest third of the window: <b>${bt.avg_abs_error_pct_early_period}%</b> avg error</div>
-      <div class="band-row">most recent third: <b>${bt.avg_abs_error_pct_recent_period}%</b> avg error</div>
-      <div class="band-row" style="margin-top:6px; color:${bt.improved ? "var(--brass)" : "var(--signal-red)"}">
-        ${bt.improved ? "Accuracy improved as weights refined ✓" : "No clear improvement yet on this stock"}
+      <div class="band-row">overall avg error: <b>${bt.avg_abs_error_pct_overall}%</b> (early ${bt.avg_abs_error_pct_early_period}% → recent ${bt.avg_abs_error_pct_recent_period}%)</div>
+      ${bt.directional_hit_rate_overall != null ? `
+        <div class="band-row" style="margin-top:6px;">directional accuracy: <b>${bt.directional_hit_rate_overall}%</b> (early ${bt.directional_hit_rate_early_period}% → recent ${bt.directional_hit_rate_recent_period}%)</div>
+      ` : ""}
+      <div class="band-row" style="margin-top:6px; color:${bt.directional_improved ? "var(--brass)" : "var(--signal-red)"}">
+        ${bt.directional_improved ? "Directional accuracy improved as weights refined ✓" : "No clear directional improvement yet on this stock"}
       </div>
     </div>
   ` : `<p class="muted">Backtest still running or there wasn't enough history for this stock — check back shortly.</p>`;
 
+  const liveDaHtml = da ? `
+    <div class="watch-track-record">
+      live directional accuracy since adding: ${da.overall_pct}% over ${da.resolved_count} resolved
+      (early ${da.early_period_pct}% → recent ${da.recent_period_pct}%) ${da.improved ? "— improving ✓" : ""}
+    </div>` : `<div class="watch-track-record muted">not enough resolved live predictions yet</div>`;
+
   const weightRows = Object.entries(weights).map(([name, val]) => {
-    const pct = Math.round((val / 1.0) * 100);
     return `<div class="signal-row"><span>${name}</span><span class="val ${val >= 1 ? "pos" : "neg"}">${val.toFixed(2)}×</span></div>`;
   }).join("");
+
+  // Weight movement: compare the earliest recorded snapshot to the current
+  // weights, so it's visible that refinement is actually happening even
+  // when raw error % bounces around day to day.
+  const wh = data.weights_history || [];
+  const movementHtml = wh.length >= 2 ? (() => {
+    const first = wh[0].weights;
+    const rows = Object.entries(weights).map(([name, now]) => {
+      const start = first[name] ?? 1.0;
+      const changed = Math.abs(now - start) > 0.001;
+      return `<div class="signal-row"><span>${name}</span><span class="val ${changed ? (now > start ? "pos" : "neg") : "neu"}">${start.toFixed(2)}× → ${now.toFixed(2)}×</span></div>`;
+    }).join("");
+    return `
+      <div class="section-heading"><span class="eyebrow">${wh.length} snapshots recorded</span><h2 style="font-size:17px;">Weight movement (start → now)</h2></div>
+      <div class="signal-list">${rows}</div>`;
+  })() : "";
 
   const history = (data.backtest_history || []).slice(-15).reverse();
   const historyHtml = history.length ? `
     <table class="backtest-table">
-      <thead><tr><th>date</th><th>predicted</th><th>actual</th><th>error</th></tr></thead>
+      <thead><tr><th>date</th><th>predicted</th><th>actual</th><th>error</th><th>dir</th></tr></thead>
       <tbody>
         ${history.map((h) => `
           <tr>
@@ -346,6 +442,7 @@ function renderWatchDetail(data) {
             <td>₹${fmtPrice(h.predicted_price)}</td>
             <td>₹${fmtPrice(h.actual_price)}</td>
             <td class="${h.error_pct >= 0 ? "pos" : "neg"}">${h.error_pct}%</td>
+            <td>${h.correct_direction == null ? "—" : (h.correct_direction ? "✓" : "✗")}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -362,7 +459,7 @@ function renderWatchDetail(data) {
             <td>${new Date(p.made_at).toLocaleDateString()}</td>
             <td>₹${fmtPrice(p.predicted_price)}</td>
             <td>${p.actual_price != null ? "₹" + fmtPrice(p.actual_price) : "—"}</td>
-            <td>${p.resolved ? (p.error_pct + "%") : "pending"}</td>
+            <td>${p.resolved ? (p.error_pct + "%" + (p.correct_direction == null ? "" : (p.correct_direction ? " ✓" : " ✗"))) : "pending"}</td>
           </tr>
         `).join("")}
       </tbody>
@@ -372,19 +469,23 @@ function renderWatchDetail(data) {
   document.getElementById("watchDetailContent").innerHTML = `
     <h2 class="stock-title">${escapeHtml(data.display_name || data.symbol)}</h2>
     <div class="stock-sub">${data.symbol} &middot; horizon ${data.horizon_minutes}m</div>
-
-    ${liveHero}
+    <button class="live-analysis-link" id="jumpToLiveAnalysis">‹ live analysis</button>
 
     <div class="section-heading"><span class="eyebrow">calibration</span><h2 style="font-size:17px;">90-day backtest</h2></div>
     ${summaryHtml}
+
+    <div class="section-heading"><span class="eyebrow">since adding</span><h2 style="font-size:17px;">Live track record</h2></div>
+    ${liveDaHtml}
 
     <div class="section-heading"><span class="eyebrow">self-refinement</span><h2 style="font-size:17px;">Current signal weights</h2></div>
     <div class="signal-list">${weightRows}</div>
     <div class="disclaimer">
       Weights above 1× mean that signal has been right more often for this specific stock and is
-      trusted more; below 1× means it's been trusted less. These update after every backtest day
-      and every live prediction that resolves - as long as this stock stays on your watchlist.
+      trusted more; below 1× means it's been trusted less. Raw % error on any single day stays
+      noisy - that's real market randomness, not broken refinement. Directional accuracy and the
+      weight movement below are the honest signs that learning is happening.
     </div>
+    ${movementHtml}
 
     <div class="section-heading"><span class="eyebrow">walk-forward</span><h2 style="font-size:17px;">Backtest days (most recent 15)</h2></div>
     ${historyHtml}
@@ -392,6 +493,8 @@ function renderWatchDetail(data) {
     <div class="section-heading"><span class="eyebrow">since adding</span><h2 style="font-size:17px;">Live predictions (most recent 10)</h2></div>
     ${liveHtml}
   `;
+
+  document.getElementById("jumpToLiveAnalysis").addEventListener("click", () => openWatchAnalysis(data.id));
 }
 
 document.getElementById("refreshWatchlistBtn").addEventListener("click", (e) => {
@@ -448,7 +551,7 @@ async function loadWatchlist(silent = false) {
       });
     });
     content.querySelectorAll(".watch-symbol-link").forEach((el) => {
-      el.addEventListener("click", () => openWatchDetail(el.dataset.id));
+      el.addEventListener("click", () => openWatchAnalysis(el.dataset.id));
     });
   } catch (e) {
     if (!silent) content.innerHTML = `<p class="muted">Could not load watchlist.</p>`;
