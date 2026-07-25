@@ -431,7 +431,7 @@ function renderWatchDetail(data) {
       <div class="signal-list">${rows}</div>`;
   })() : "";
 
-  const history = (data.backtest_history || []).slice(-15).reverse();
+  const history = (data.backtest_history || []).slice().reverse();
   const historyHtml = history.length ? `
     <table class="backtest-table">
       <thead><tr><th>date</th><th>predicted</th><th>actual</th><th>error</th><th>dir</th></tr></thead>
@@ -487,7 +487,7 @@ function renderWatchDetail(data) {
     </div>
     ${movementHtml}
 
-    <div class="section-heading"><span class="eyebrow">walk-forward</span><h2 style="font-size:17px;">Backtest days (most recent 15)</h2></div>
+    <div class="section-heading"><span class="eyebrow">walk-forward</span><h2 style="font-size:17px;">Backtest days (all ${history.length})</h2></div>
     ${historyHtml}
 
     <div class="section-heading"><span class="eyebrow">since adding</span><h2 style="font-size:17px;">Live predictions (most recent 10)</h2></div>
