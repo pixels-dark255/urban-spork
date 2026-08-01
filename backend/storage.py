@@ -250,3 +250,150 @@ def resolve_due_predictions(now_iso: str, resolver_fn, weight_updater_fn=None):
                                 })
                                 item["weights_history"] = item["weights_history"][-100:]
     _with_store(mutate)
+
+
+# ---------------------------------------------------------------------------
+# Intraday paper-trading store - deliberately separate from the watchlist
+# store above (different table/file), since it's a different kind of state
+# (per-stock, per-timeframe virtual portfolios) with its own lifecycle.
+# ---------------------------------------------------------------------------
+
+INTRADAY_STORE_PATH = os.path.join(DATA_DIR, "intraday.json")
+
+if _pg_pool:
+    _conn = _pg_pool.getconn()
+    try:
+        with _conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS intraday_store (
+                    ip TEXT PRIMARY KEY,
+                    data JSONB NOT NULL DEFAULT '{}'::jsonb
+                )
+            """)
+        _conn.commit()
+    finally:
+        _pg_pool.putconn(_conn)
+
+
+def _intraday_pg_load() -> dict:
+    conn = _pg_pool.getconn()
+    try:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT ip, data FROM intraday_store")
+            rows = cur.fetchall()
+        return {row["ip"]: row["data"] for row in rows}
+    finally:
+        _pg_pool.putconn(conn)
+
+
+def _intraday_pg_save(data: dict):
+    conn = _pg_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            for ip, ip_data in data.items():
+                cur.execute(
+                    """
+                    INSERT INTO intraday_store (ip, data) VALUES (%s, %s)
+                    ON CONFLICT (ip) DO UPDATE SET data = EXCLUDED.data
+                    """,
+                    (ip, json.dumps(ip_data)),
+                )
+        conn.commit()
+    finally:
+        _pg_pool.putconn(conn)
+
+
+def _intraday_file_load() -> dict:
+    if not os.path.exists(INTRADAY_STORE_PATH):
+        return {}
+    try:
+        with open(INTRADAY_STORE_PATH, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def _intraday_file_save(data: dict):
+    tmp_path = INTRADAY_STORE_PATH + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, INTRADAY_STORE_PATH)
+
+
+def _intraday_load() -> dict:
+    return _intraday_pg_load() if _pg_pool else _intraday_file_load()
+
+
+def _intraday_save(data: dict):
+    if _pg_pool:
+        _intraday_pg_save(data)
+    else:
+        _intraday_file_save(data)
+
+
+def _with_intraday_store(mutator):
+    with _lock:
+        data = _intraday_load()
+        result = mutator(data)
+        _intraday_save(data)
+        return result
+
+
+def _blank_ip_intraday() -> dict:
+    return {"stocks": [], "portfolios": {}}  # portfolios keyed "SYMBOL::timeframe"
+
+
+def get_intraday_stocks(ip: str) -> list[dict]:
+    data = _intraday_load()
+    return data.get(ip, _blank_ip_intraday())["stocks"]
+
+
+def add_intraday_stock(ip: str, symbol: str, display_name: str) -> dict:
+    import intraday as intraday_module
+
+    def mutate(data):
+        bucket = data.setdefault(ip, _blank_ip_intraday())
+        if any(s["symbol"] == symbol for s in bucket["stocks"]):
+            return
+        bucket["stocks"].append({
+            "symbol": symbol,
+            "display_name": display_name,
+            "added_at": dt.datetime.utcnow().isoformat(),
+        })
+        for tf in intraday_module.TIMEFRAMES:
+            bucket["portfolios"][f"{symbol}::{tf}"] = intraday_module.default_portfolio()
+
+    return _with_intraday_store(mutate)
+
+
+def remove_intraday_stock(ip: str, symbol: str) -> bool:
+    def mutate(data):
+        bucket = data.get(ip)
+        if not bucket:
+            return False
+        before = len(bucket["stocks"])
+        bucket["stocks"] = [s for s in bucket["stocks"] if s["symbol"] != symbol]
+        for key in list(bucket["portfolios"].keys()):
+            if key.startswith(f"{symbol}::"):
+                del bucket["portfolios"][key]
+        return len(bucket["stocks"]) != before
+    return _with_intraday_store(mutate)
+
+
+def get_intraday_portfolio(ip: str, symbol: str, timeframe: str) -> dict | None:
+    data = _intraday_load()
+    return data.get(ip, _blank_ip_intraday())["portfolios"].get(f"{symbol}::{timeframe}")
+
+
+def all_intraday_targets() -> list[tuple]:
+    """Flat list of (ip, stock_dict) across every IP - used by the intraday
+    scheduler tick."""
+    data = _intraday_load()
+    return [(ip, s) for ip, bucket in data.items() for s in bucket.get("stocks", [])]
+
+
+def save_intraday_portfolio(ip: str, symbol: str, timeframe: str, portfolio: dict):
+    def mutate(data):
+        bucket = data.setdefault(ip, _blank_ip_intraday())
+        bucket["portfolios"][f"{symbol}::{timeframe}"] = portfolio
+    _with_intraday_store(mutate)

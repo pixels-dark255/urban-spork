@@ -206,6 +206,14 @@ def fetch_latest_price(yf_symbol: str) -> float | None:
     return None
 
 
+def fetch_intraday_bars(yf_symbol: str, interval: str) -> pd.DataFrame:
+    """Bars for the intraday paper-trading engine. Yahoo limits how far back
+    fine-grained intervals go, so period is tuned per interval - these are
+    the widest ranges Yahoo actually serves for each."""
+    period = {"5m": "5d", "15m": "1mo", "30m": "1mo"}.get(interval, "5d")
+    return _yf_download(yf_symbol, period, interval)
+
+
 def fetch_daily_history(yf_symbol: str, period: str = "2y") -> pd.DataFrame:
     """Single fetch of long daily history, used by the backtest engine
     (which then slices it locally rather than hitting Yahoo 90+ times)."""

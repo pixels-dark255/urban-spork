@@ -10,8 +10,9 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import storage
-from data_sources import fetch_multi_timeframe, fetch_latest_price, fetch_company_news, fetch_weather_signal
+from data_sources import fetch_multi_timeframe, fetch_latest_price, fetch_company_news, fetch_weather_signal, fetch_intraday_bars
 from predictor import predict_price, nudge_weights
+import intraday
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -76,9 +77,33 @@ def tick():
             make_fresh_prediction(ip, item)
 
 
+def intraday_tick():
+    """Runs every tick, market hours only - a paper trade decided off a
+    closed-market quote wouldn't mean anything. Re-evaluates all 3
+    timeframes for every tracked stock so they can be compared head to head
+    under identical rules; the only difference between them is which
+    interval's bars they're reacting to."""
+    if not is_market_hours():
+        return
+    for ip, stock in storage.all_intraday_targets():
+        symbol = stock["symbol"]
+        for tf in intraday.TIMEFRAMES:
+            try:
+                bars = fetch_intraday_bars(symbol, tf)
+                signal = intraday.compute_signal(bars)
+                if signal is None:
+                    continue
+                portfolio = storage.get_intraday_portfolio(ip, symbol, tf) or intraday.default_portfolio()
+                portfolio = intraday.step(portfolio, signal, tf)
+                storage.save_intraday_portfolio(ip, symbol, tf, portfolio)
+            except Exception as e:
+                print(f"[warn] intraday tick failed for {symbol} {tf}: {e}")
+
+
 scheduler = BackgroundScheduler(timezone=str(IST))
 
 
 def start_scheduler(interval_minutes: int = 5):
     scheduler.add_job(tick, "interval", minutes=interval_minutes, id="watchlist_tick", replace_existing=True)
+    scheduler.add_job(intraday_tick, "interval", minutes=interval_minutes, id="intraday_tick", replace_existing=True)
     scheduler.start()

@@ -9,10 +9,12 @@ import storage
 from data_sources import (
     search_stocks, to_yf_symbol, fetch_multi_timeframe,
     fetch_latest_price, fetch_company_news, fetch_weather_signal,
+    fetch_intraday_bars,
 )
 from predictor import predict_price
 from backtest import run_backtest_and_refine
 from scheduler import start_scheduler, make_fresh_prediction
+import intraday
 
 app = FastAPI(title="NSE/BSE Stock Analyzer & Predictor")
 
@@ -284,6 +286,74 @@ def api_watchlist_detail(item_id: int, request: Request):
 @app.get("/api/health")
 def health():
     return {"status": "ok", "time": dt.datetime.utcnow().isoformat()}
+
+
+# ---------- Intraday paper trading (simulated money only, no broker) ----------
+
+class IntradayAddRequest(BaseModel):
+    symbol: str
+    exchange: str = "NSE"
+    display_name: str | None = None
+
+
+@app.get("/api/intraday/stocks")
+def api_get_intraday_stocks(request: Request):
+    ip = get_client_ip(request)
+    stocks = storage.get_intraday_stocks(ip)
+    out = []
+    for s in stocks:
+        live_price = fetch_latest_price(s["symbol"])
+        timeframes = {}
+        for tf in intraday.TIMEFRAMES:
+            portfolio = storage.get_intraday_portfolio(ip, s["symbol"], tf)
+            if portfolio:
+                timeframes[tf] = intraday.portfolio_summary(portfolio, live_price)
+        out.append({
+            "symbol": s["symbol"],
+            "display_name": s.get("display_name"),
+            "added_at": s["added_at"],
+            "live_price": live_price,
+            "timeframes": timeframes,
+        })
+    return {"stocks": out, "starting_capital_per_timeframe": intraday.STARTING_CAPITAL}
+
+
+@app.post("/api/intraday/stocks")
+def api_add_intraday_stock(req: IntradayAddRequest, request: Request):
+    ip = get_client_ip(request)
+    yf_symbol = to_yf_symbol(req.symbol, req.exchange)
+    storage.add_intraday_stock(ip, yf_symbol, req.display_name or req.symbol)
+    return {"symbol": yf_symbol, "starting_capital_per_timeframe": intraday.STARTING_CAPITAL}
+
+
+@app.delete("/api/intraday/stocks/{symbol}")
+def api_remove_intraday_stock(symbol: str, request: Request):
+    ip = get_client_ip(request)
+    ok = storage.remove_intraday_stock(ip, symbol)
+    if not ok:
+        raise HTTPException(404, "not found")
+    return {"removed": True}
+
+
+@app.get("/api/intraday/stocks/{symbol}/detail")
+def api_intraday_detail(symbol: str, request: Request):
+    ip = get_client_ip(request)
+    live_price = fetch_latest_price(symbol)
+    timeframes = {}
+    for tf in intraday.TIMEFRAMES:
+        portfolio = storage.get_intraday_portfolio(ip, symbol, tf)
+        if not portfolio:
+            continue
+        bars = fetch_intraday_bars(symbol, tf)
+        signal = intraday.compute_signal(bars)
+        timeframes[tf] = {
+            "summary": intraday.portfolio_summary(portfolio, live_price),
+            "current_signal": signal,
+            "trade_log": list(reversed(portfolio.get("trade_log", [])))[:50],
+        }
+    if not timeframes:
+        raise HTTPException(404, "not found")
+    return {"symbol": symbol, "live_price": live_price, "timeframes": timeframes}
 
 
 # ---------- Serve the PWA frontend ----------
