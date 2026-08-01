@@ -302,6 +302,55 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 }
 .live-analysis-link:active { opacity: 0.7; }
 
+.intraday-add-row { margin: 12px 0 18px; position: relative; }
+.intraday-add-row input {
+  width: 100%;
+  background: var(--paper-raised);
+  border: 1px solid var(--hairline);
+  border-radius: 10px;
+  padding: 11px 14px;
+  color: var(--bone);
+  font-family: var(--font-mono);
+  font-size: 14px;
+}
+.intraday-add-row input:focus-visible { outline: 2px solid var(--brass); outline-offset: 1px; }
+#intradaySearchResults { margin-top: 6px; }
+
+.tf-compare-row {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-top: 12px;
+}
+.tf-col {
+  background: var(--paper-raised);
+  border-radius: 8px;
+  padding: 8px;
+  text-align: center;
+}
+.tf-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  color: var(--mist);
+  letter-spacing: 0.06em;
+}
+.tf-value {
+  font-family: var(--font-mono);
+  font-size: 15px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+.tf-value.pos { color: var(--brass); }
+.tf-value.neg { color: var(--signal-red); }
+.tf-value.neu { color: var(--bone); }
+.tf-sub {
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  color: var(--mist);
+  margin-top: 2px;
+}
+
 /* ---- Watchlist ---- */
 .section-heading { margin: 10px 0 14px; }
 .section-heading h2 { font-family: var(--font-display); margin: 2px 0 0; font-size: 22px; }

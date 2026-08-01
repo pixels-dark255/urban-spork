@@ -1,4 +1,4 @@
-const CACHE_NAME = "tickerboard-shell-v1";
+const CACHE_NAME = "tickerboard-shell-v2";
 const SHELL_FILES = ["/", "/style.css", "/app.js", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
@@ -17,14 +17,17 @@ self.addEventListener("activate", (event) => {
   self.clients.claim();
 });
 
-// Network-first for API calls (data must be fresh), cache-first for the shell.
+// Network-first for EVERYTHING now, not just /api/ - the old cache-first
+// shell strategy meant real code updates could sit invisible forever since
+// the cache name rarely changed. Cache is now only an offline fallback.
 self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-  if (url.pathname.startsWith("/api/")) {
-    event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
-    return;
-  }
   event.respondWith(
-    caches.match(event.request).then((cached) => cached || fetch(event.request))
+    fetch(event.request)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+        return res;
+      })
+      .catch(() => caches.match(event.request))
   );
 });

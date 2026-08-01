@@ -11,6 +11,7 @@ const HORIZONS = ["15m", "1h", "4h", "1d", "3d", "1wk", "1mo", "3mo"];
 // within the app (Search -> Analysis -> Watchlist -> Detail) instead of
 // immediately exiting - the single biggest "feels broken" PWA gotcha.
 let currentWatchItemId = null;
+let currentIntradaySymbol = null;
 let viewPollHandle = null;
 
 function startViewPolling(fn, intervalMs) {
@@ -26,6 +27,7 @@ document.querySelectorAll(".tab-btn").forEach((btn) => {
 });
 document.getElementById("backFromAnalysis").addEventListener("click", () => history.back());
 document.getElementById("backFromWatchDetail").addEventListener("click", () => history.back());
+document.getElementById("backFromIntradayDetail").addEventListener("click", () => history.back());
 
 function navigateTo(viewId, extraState = {}) {
   history.pushState({ view: viewId, ...extraState }, "", `#${viewId}`);
@@ -67,6 +69,15 @@ function renderView(viewId, state = {}) {
       loadWatchDetail(currentWatchItemId);
       startViewPolling(() => loadWatchDetail(currentWatchItemId, true), 30000);
     }
+  } else if (viewId === "view-intraday") {
+    loadIntradayList();
+    startViewPolling(() => loadIntradayList(true), 20000);
+  } else if (viewId === "view-intraday-detail") {
+    currentIntradaySymbol = state.symbol ?? currentIntradaySymbol;
+    if (currentIntradaySymbol) {
+      loadIntradayDetail(currentIntradaySymbol);
+      startViewPolling(() => loadIntradayDetail(currentIntradaySymbol, true), 20000);
+    }
   }
 }
 
@@ -87,6 +98,209 @@ function showToast(message, tone = "info") {
     el.classList.remove("show");
     setTimeout(() => el.remove(), 250);
   }, 2600);
+}
+
+// ---------- Intraday (simulated paper trading) ----------
+const intradaySearchInput = document.getElementById("intradaySearchInput");
+const intradaySearchResults = document.getElementById("intradaySearchResults");
+let intradaySearchDebounce = null;
+
+intradaySearchInput.addEventListener("input", () => {
+  clearTimeout(intradaySearchDebounce);
+  const q = intradaySearchInput.value.trim();
+  if (q.length < 1) { intradaySearchResults.innerHTML = ""; return; }
+  intradaySearchDebounce = setTimeout(() => runIntradaySearch(q), 300);
+});
+
+async function runIntradaySearch(q) {
+  intradaySearchResults.innerHTML = `<p class="loading">searching…</p>`;
+  try {
+    const res = await fetch(`${API}/api/stocks/search?q=${encodeURIComponent(q)}`);
+    const data = await res.json();
+    if (!data.results.length) {
+      intradaySearchResults.innerHTML = `<p class="muted">No matches.</p>`;
+      return;
+    }
+    intradaySearchResults.innerHTML = data.results.map((r) => `
+      <div class="result-item" data-symbol="${r.symbol}" data-exchange="${r.exchange}" data-name="${escapeHtml(r.name)}">
+        <div>
+          <div class="result-symbol">${r.symbol}</div>
+          <div class="result-name">${escapeHtml(r.name)}</div>
+        </div>
+        <div class="result-exchange">${r.exchange}</div>
+      </div>
+    `).join("");
+    intradaySearchResults.querySelectorAll(".result-item").forEach((el) => {
+      el.addEventListener("click", async () => {
+        el.style.opacity = "0.5";
+        try {
+          const res = await fetch(`${API}/api/intraday/stocks`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              symbol: el.dataset.symbol,
+              exchange: el.dataset.exchange,
+              display_name: el.dataset.name,
+            }),
+          });
+          if (!res.ok) {
+            const data = await res.json();
+            showToast(data.detail || "Could not add stock", "error");
+            return;
+          }
+          intradaySearchInput.value = "";
+          intradaySearchResults.innerHTML = "";
+          showToast(`${el.dataset.symbol} added — paper trading across 5m/15m/30m starts next market tick`, "success");
+          loadIntradayList();
+        } catch (e) {
+          showToast("Network error adding stock", "error");
+        }
+      });
+    });
+  } catch (e) {
+    intradaySearchResults.innerHTML = `<p class="muted">Search failed.</p>`;
+  }
+}
+
+document.getElementById("refreshIntradayBtn").addEventListener("click", (e) => {
+  e.currentTarget.classList.add("spinning");
+  loadIntradayList().then(() => setTimeout(() => e.currentTarget.classList.remove("spinning"), 400));
+});
+
+function intradaySkeleton() {
+  return Array(2).fill(`
+    <div class="watch-card skeleton-card">
+      <div class="skeleton-line" style="width:35%"></div>
+      <div class="skeleton-block" style="height:90px; margin-top:12px;"></div>
+    </div>
+  `).join("");
+}
+
+async function loadIntradayList(silent = false) {
+  const content = document.getElementById("intradayContent");
+  if (!silent) content.innerHTML = intradaySkeleton();
+  try {
+    const res = await fetch(`${API}/api/intraday/stocks`);
+    const data = await res.json();
+    if (!data.stocks.length) {
+      content.innerHTML = `<p class="muted">No stocks tracked yet — search above to add one.</p>`;
+      return;
+    }
+    content.innerHTML = data.stocks.map(renderIntradayCard).join("");
+    content.querySelectorAll(".intraday-card-link").forEach((el) => {
+      el.addEventListener("click", () => {
+        navigateTo("view-intraday-detail", { symbol: el.dataset.symbol });
+      });
+    });
+    content.querySelectorAll(".intraday-remove").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (btn.dataset.confirming !== "1") {
+          btn.dataset.confirming = "1";
+          btn.textContent = "tap again to confirm";
+          setTimeout(() => { btn.dataset.confirming = "0"; btn.textContent = "remove"; }, 3000);
+          return;
+        }
+        await fetch(`${API}/api/intraday/stocks/${encodeURIComponent(btn.dataset.symbol)}`, { method: "DELETE" });
+        loadIntradayList();
+      });
+    });
+  } catch (e) {
+    if (!silent) content.innerHTML = `<p class="muted">Could not load intraday list.</p>`;
+  }
+}
+
+function renderIntradayCard(stock) {
+  const tfRows = ["5m", "15m", "30m"].map((tf) => {
+    const t = stock.timeframes[tf];
+    if (!t) return `<div class="tf-col"><div class="tf-label">${tf}</div><div class="tf-value muted">warming up</div></div>`;
+    const cls = t.total_pnl > 0 ? "pos" : t.total_pnl < 0 ? "neg" : "neu";
+    return `
+      <div class="tf-col">
+        <div class="tf-label">${tf}</div>
+        <div class="tf-value ${cls}">${t.total_pnl >= 0 ? "+" : ""}₹${t.total_pnl.toFixed(0)}</div>
+        <div class="tf-sub">${t.total_pnl_pct >= 0 ? "+" : ""}${t.total_pnl_pct}% · ${t.closed_trades} trades${t.win_rate_pct != null ? ` · ${t.win_rate_pct}% win` : ""}</div>
+        <div class="tf-sub">${t.open_position ? "position open" : "flat"}</div>
+      </div>`;
+  }).join("");
+
+  return `
+    <div class="watch-card">
+      <div class="watch-card-top">
+        <span class="watch-symbol watch-symbol-link intraday-card-link" data-symbol="${stock.symbol}">${stock.symbol} ›</span>
+        <button class="watch-remove intraday-remove" data-symbol="${stock.symbol}">remove</button>
+      </div>
+      <div class="watch-row"><span>${stock.display_name || ""}</span><span>live: ${stock.live_price != null ? "₹" + stock.live_price.toFixed(2) : "—"}</span></div>
+      <div class="tf-compare-row">${tfRows}</div>
+    </div>
+  `;
+}
+
+async function loadIntradayDetail(symbol, silent = false) {
+  const content = document.getElementById("intradayDetailContent");
+  if (!silent) content.innerHTML = `
+    <div class="skeleton-line" style="width:50%; height:24px;"></div>
+    <div class="skeleton-block" style="height:200px; margin-top:16px;"></div>
+  `;
+  try {
+    const res = await fetch(`${API}/api/intraday/stocks/${encodeURIComponent(symbol)}/detail`);
+    const data = await res.json();
+    if (!res.ok) {
+      content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load detail.")}</p>`;
+      return;
+    }
+    renderIntradayDetail(data);
+  } catch (e) {
+    content.innerHTML = `<p class="muted">Could not reach the backend.</p>`;
+  }
+}
+
+function renderIntradayDetail(data) {
+  const sections = ["5m", "15m", "30m"].map((tf) => {
+    const t = data.timeframes[tf];
+    if (!t) return "";
+    const s = t.summary;
+    const sig = t.current_signal;
+    const cls = s.total_pnl > 0 ? "pos" : s.total_pnl < 0 ? "neg" : "neu";
+    const sigHtml = sig ? `
+      <div class="band-row">score right now: <b>${sig.score >= 0 ? "+" : ""}${sig.score}</b> (fast MA ${sig.fast_ma} / slow MA ${sig.slow_ma}, RSI ${sig.rsi}, VWAP ${sig.vwap})</div>
+    ` : `<div class="band-row muted">not enough bars yet today</div>`;
+    const trades = t.trade_log.slice(0, 20);
+    const tradeHtml = trades.length ? `
+      <table class="backtest-table">
+        <thead><tr><th>entry</th><th>exit</th><th>pnl</th><th>reason</th></tr></thead>
+        <tbody>
+          ${trades.map((tr) => `
+            <tr>
+              <td>₹${tr.entry_price}</td>
+              <td>₹${tr.exit_price}</td>
+              <td class="${tr.pnl >= 0 ? "pos" : "neg"}">${tr.pnl >= 0 ? "+" : ""}₹${tr.pnl} (${tr.pnl_pct}%)</td>
+              <td>${tr.exit_reason.replace("_", " ")}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    ` : `<p class="muted">No closed trades yet.</p>`;
+
+    return `
+      <div class="section-heading"><span class="eyebrow">${tf} strategy</span><h2 style="font-size:17px;">Timeframe: ${tf}</h2></div>
+      <div class="prediction-card">
+        <div class="label">equity: ₹${s.equity.toFixed(0)} (started at ₹1,00,000)</div>
+        <div class="predicted-price ${cls}" style="font-size:22px;">${s.total_pnl >= 0 ? "+" : ""}₹${s.total_pnl.toFixed(0)} <span class="price-delta ${cls}">${s.total_pnl_pct >= 0 ? "+" : ""}${s.total_pnl_pct}%</span></div>
+        <div class="band-row">${s.closed_trades} closed trades${s.win_rate_pct != null ? `, ${s.win_rate_pct}% win rate` : ""}</div>
+        <div class="band-row">${s.open_position ? `holding ${s.open_position.qty} shares @ ₹${s.open_position.entry_price}` : "no open position"}</div>
+        ${sigHtml}
+      </div>
+      ${tradeHtml}
+    `;
+  }).join("");
+
+  document.getElementById("intradayDetailContent").innerHTML = `
+    <h2 class="stock-title">${escapeHtml(data.symbol)}</h2>
+    <div class="stock-sub">live: ${data.live_price != null ? "₹" + data.live_price.toFixed(2) : "—"} &middot; simulated money only</div>
+    <div class="disclaimer">Rule-based (MA crossover + RSI + VWAP + opening-range breakout), all simulated. Nothing here is a guarantee of real-world performance.</div>
+    ${sections}
+  `;
 }
 
 // ---------- Search ----------
