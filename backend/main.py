@@ -27,8 +27,17 @@ app.add_middleware(
 
 
 def get_client_ip(request: Request) -> str:
-    """Render (and most cloud hosts) sit behind a proxy, so the real client
-    IP is in X-Forwarded-For, not request.client.host."""
+    """Identifies 'you' for storage purposes. Prefers a stable client ID the
+    frontend generates once and sends on every request (X-Client-Id) -
+    public IP address is NOT reliable on Indian mobile networks, which
+    reassign it constantly (sleep/wake, wifi<->mobile data switches, carrier
+    NAT rotation), causing the watchlist to appear to 'vanish' on every such
+    change even though the old data is untouched, just filed under an IP
+    you're no longer using. IP is kept only as a fallback for any caller
+    that doesn't send the header."""
+    client_id = request.headers.get("x-client-id")
+    if client_id:
+        return client_id
     xff = request.headers.get("x-forwarded-for")
     if xff:
         return xff.split(",")[0].strip()
@@ -115,10 +124,12 @@ def api_get_watchlist(request: Request):
             if errs:
                 avg_abs_error = round(sum(errs) / len(errs), 3)
 
-        # Fetch a fresh live price every time the watchlist is viewed - the
-        # stored prediction's price_at_prediction is a snapshot from whenever
-        # the last tick ran, not "right now".
-        live_price = fetch_latest_price(item["symbol"])
+        # Use the price from the last scheduler tick (stored, instant) rather
+        # than a fresh Yahoo fetch per item here - fetching live for N items
+        # on every list load/poll was slow enough to time out the request
+        # entirely (this is what "could not load watchlist" was). The
+        # single-stock analysis screen still fetches genuinely live.
+        live_price = latest["price_at_prediction"] if latest else None
 
         out.append({
             "id": item["id"],
@@ -302,15 +313,21 @@ def api_get_intraday_stocks(request: Request):
     stocks = storage.get_intraday_stocks(ip)
     out = []
     for s in stocks:
-        live_price = fetch_latest_price(s["symbol"])
         timeframes = {}
+        live_price = None
         for tf in intraday.TIMEFRAMES:
             portfolio = storage.get_intraday_portfolio(ip, s["symbol"], tf)
             if portfolio:
-                summary = intraday.portfolio_summary(portfolio, live_price)
-                bars = fetch_intraday_bars(s["symbol"], tf)
-                signal = intraday.compute_signal(bars)
-                summary["score"] = signal["score"] if signal else None
+                # Cached from the last scheduler tick - avoids up to 4 live
+                # Yahoo calls per stock on every list load, which was slow
+                # enough to time the request out (same root cause as the
+                # watchlist "could not load" bug). Detail screen still
+                # fetches genuinely live for the one stock being viewed.
+                cached_price = portfolio.get("last_price")
+                if cached_price:
+                    live_price = cached_price
+                summary = intraday.portfolio_summary(portfolio, cached_price)
+                summary["score"] = portfolio.get("last_score")
                 timeframes[tf] = summary
         out.append({
             "symbol": s["symbol"],
