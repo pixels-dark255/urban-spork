@@ -192,6 +192,11 @@ async function loadIntradayList(silent = false) {
         navigateTo("view-intraday-detail", { symbol: el.dataset.symbol });
       });
     });
+    content.querySelectorAll(".tf-col-clickable").forEach((el) => {
+      el.addEventListener("click", () => {
+        el.querySelector(".verdict-pill").classList.toggle("hidden");
+      });
+    });
     content.querySelectorAll(".intraday-remove").forEach((btn) => {
       btn.addEventListener("click", async (e) => {
         e.stopPropagation();
@@ -210,17 +215,28 @@ async function loadIntradayList(silent = false) {
   }
 }
 
+function verdictFor(score) {
+  if (score == null) return { text: "warming up", cls: "verdict-neutral" };
+  if (score >= 2) return { text: "Good time to buy", cls: "verdict-strong-buy" };
+  if (score === 1) return { text: "Leaning buy", cls: "verdict-buy" };
+  if (score === 0) return { text: "Neutral — wait", cls: "verdict-neutral" };
+  if (score === -1) return { text: "Leaning sell", cls: "verdict-sell" };
+  return { text: "Bad time to buy", cls: "verdict-strong-sell" };
+}
+
 function renderIntradayCard(stock) {
   const tfRows = ["5m", "15m", "30m"].map((tf) => {
     const t = stock.timeframes[tf];
     if (!t) return `<div class="tf-col"><div class="tf-label">${tf}</div><div class="tf-value muted">warming up</div></div>`;
     const cls = t.total_pnl > 0 ? "pos" : t.total_pnl < 0 ? "neg" : "neu";
+    const v = verdictFor(t.score);
     return `
-      <div class="tf-col">
+      <div class="tf-col tf-col-clickable" data-symbol="${stock.symbol}" data-tf="${tf}">
         <div class="tf-label">${tf}</div>
         <div class="tf-value ${cls}">${t.total_pnl >= 0 ? "+" : ""}₹${t.total_pnl.toFixed(0)}</div>
         <div class="tf-sub">${t.total_pnl_pct >= 0 ? "+" : ""}${t.total_pnl_pct}% · ${t.closed_trades} trades${t.win_rate_pct != null ? ` · ${t.win_rate_pct}% win` : ""}</div>
         <div class="tf-sub">${t.open_position ? "position open" : "flat"}</div>
+        <div class="verdict-pill ${v.cls} hidden">${v.text}</div>
       </div>`;
   }).join("");
 

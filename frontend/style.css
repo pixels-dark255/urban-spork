@@ -351,6 +351,26 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
   margin-top: 2px;
 }
 
+.tf-col-clickable { cursor: pointer; }
+.tf-col-clickable:active { transform: scale(0.97); }
+
+.verdict-pill {
+  margin-top: 6px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.verdict-pill.hidden { display: none; }
+.verdict-strong-buy { background: #1f7a3f; color: #eafff1; }
+.verdict-buy        { background: #3c9a5c; color: #eafff1; }
+.verdict-neutral     { background: #6b6350; color: #f5f1e6; }
+.verdict-sell         { background: #b4562f; color: #fff3ec; }
+.verdict-strong-sell { background: #a3272c; color: #ffecec; }
+
 /* ---- Watchlist ---- */
 .section-heading { margin: 10px 0 14px; }
 .section-heading h2 { font-family: var(--font-display); margin: 2px 0 0; font-size: 22px; }
