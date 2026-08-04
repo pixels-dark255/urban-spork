@@ -1,6 +1,26 @@
 // Same-origin API (backend serves this frontend directly)
 const API = "";
 
+// Stable per-device identity, replacing fragile IP-based lookup (public IP
+// changes constantly on Indian mobile networks - sleep/wake, wifi<->mobile
+// data, carrier NAT rotation - which made the watchlist appear to "vanish"
+// every time it happened). Generated once, persisted in localStorage,
+// unaffected by any network change.
+function getClientId() {
+  let id = localStorage.getItem("tickerboard_client_id");
+  if (!id) {
+    id = (crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    localStorage.setItem("tickerboard_client_id", id);
+  }
+  return id;
+}
+const CLIENT_ID = getClientId();
+
+function apiFetch(url, options = {}) {
+  const headers = { ...(options.headers || {}), "X-Client-Id": CLIENT_ID };
+  return fetch(url, { ...options, headers });
+}
+
 let currentStock = null;   // { symbol, exchange, name, yf_symbol }
 let currentHorizon = "1d";
 
@@ -115,7 +135,7 @@ intradaySearchInput.addEventListener("input", () => {
 async function runIntradaySearch(q) {
   intradaySearchResults.innerHTML = `<p class="loading">searching…</p>`;
   try {
-    const res = await fetch(`${API}/api/stocks/search?q=${encodeURIComponent(q)}`);
+    const res = await apiFetch(`${API}/api/stocks/search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!data.results.length) {
       intradaySearchResults.innerHTML = `<p class="muted">No matches.</p>`;
@@ -134,7 +154,7 @@ async function runIntradaySearch(q) {
       el.addEventListener("click", async () => {
         el.style.opacity = "0.5";
         try {
-          const res = await fetch(`${API}/api/intraday/stocks`, {
+          const res = await apiFetch(`${API}/api/intraday/stocks`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -180,7 +200,7 @@ async function loadIntradayList(silent = false) {
   const content = document.getElementById("intradayContent");
   if (!silent) content.innerHTML = intradaySkeleton();
   try {
-    const res = await fetch(`${API}/api/intraday/stocks`);
+    const res = await apiFetch(`${API}/api/intraday/stocks`);
     const data = await res.json();
     if (!data.stocks.length) {
       content.innerHTML = `<p class="muted">No stocks tracked yet — search above to add one.</p>`;
@@ -206,7 +226,7 @@ async function loadIntradayList(silent = false) {
           setTimeout(() => { btn.dataset.confirming = "0"; btn.textContent = "remove"; }, 3000);
           return;
         }
-        await fetch(`${API}/api/intraday/stocks/${encodeURIComponent(btn.dataset.symbol)}`, { method: "DELETE" });
+        await apiFetch(`${API}/api/intraday/stocks/${encodeURIComponent(btn.dataset.symbol)}`, { method: "DELETE" });
         loadIntradayList();
       });
     });
@@ -259,7 +279,7 @@ async function loadIntradayDetail(symbol, silent = false) {
     <div class="skeleton-block" style="height:200px; margin-top:16px;"></div>
   `;
   try {
-    const res = await fetch(`${API}/api/intraday/stocks/${encodeURIComponent(symbol)}/detail`);
+    const res = await apiFetch(`${API}/api/intraday/stocks/${encodeURIComponent(symbol)}/detail`);
     const data = await res.json();
     if (!res.ok) {
       content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load detail.")}</p>`;
@@ -334,7 +354,7 @@ searchInput.addEventListener("input", () => {
 async function runSearch(q) {
   searchResults.innerHTML = `<p class="loading">searching…</p>`;
   try {
-    const res = await fetch(`${API}/api/stocks/search?q=${encodeURIComponent(q)}`);
+    const res = await apiFetch(`${API}/api/stocks/search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!data.results.length) {
       searchResults.innerHTML = `<p class="muted">No matches. Try the exact symbol, e.g. RELIANCE.</p>`;
@@ -483,7 +503,7 @@ async function loadWatchAnalysis(itemId, silent = false) {
     <div class="skeleton-block" style="height:160px; margin-top:14px;"></div>
   `;
   try {
-    const res = await fetch(`${API}/api/watchlist/${itemId}/analysis`);
+    const res = await apiFetch(`${API}/api/watchlist/${itemId}/analysis`);
     const data = await res.json();
     if (!res.ok) {
       content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load analysis.")}</p>`;
@@ -562,7 +582,7 @@ async function addCurrentToWatchlist() {
   btn.disabled = true;
   btn.textContent = "Running 90-day backtest & calibrating…";
   try {
-    const res = await fetch(`${API}/api/watchlist`, {
+    const res = await apiFetch(`${API}/api/watchlist`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -604,7 +624,7 @@ async function loadWatchDetail(itemId, silent = false) {
     <div class="skeleton-block" style="height:180px; margin-top:14px;"></div>
   `;
   try {
-    const res = await fetch(`${API}/api/watchlist/${itemId}/detail`);
+    const res = await apiFetch(`${API}/api/watchlist/${itemId}/detail`);
     const data = await res.json();
     if (!res.ok) {
       if (!silent) content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load detail.")}</p>`;
@@ -750,7 +770,7 @@ async function loadWatchlist(silent = false) {
   const content = document.getElementById("watchlistContent");
   if (!silent) content.innerHTML = skeletonCards();
   try {
-    const res = await fetch(`${API}/api/watchlist`);
+    const res = await apiFetch(`${API}/api/watchlist`);
     const data = await res.json();
     if (!data.watchlist.length) {
       content.innerHTML = `<p class="muted">Nothing yet — add a stock from its analysis screen.</p>`;
@@ -774,7 +794,7 @@ async function loadWatchlist(silent = false) {
           return;
         }
         const symbol = btn.dataset.symbol;
-        await fetch(`${API}/api/watchlist/${btn.dataset.id}`, { method: "DELETE" });
+        await apiFetch(`${API}/api/watchlist/${btn.dataset.id}`, { method: "DELETE" });
         showToast(`Removed ${symbol} from watchlist`);
         loadWatchlist();
         refreshTicker();
@@ -846,7 +866,7 @@ function renderWatchCard(item) {
 // ---------- Ticker strip ----------
 async function refreshTicker() {
   try {
-    const res = await fetch(`${API}/api/watchlist`);
+    const res = await apiFetch(`${API}/api/watchlist`);
     const data = await res.json();
     const track = document.getElementById("tickerTrack");
     if (!data.watchlist.length) {
