@@ -307,7 +307,11 @@ def api_get_intraday_stocks(request: Request):
         for tf in intraday.TIMEFRAMES:
             portfolio = storage.get_intraday_portfolio(ip, s["symbol"], tf)
             if portfolio:
-                timeframes[tf] = intraday.portfolio_summary(portfolio, live_price)
+                summary = intraday.portfolio_summary(portfolio, live_price)
+                bars = fetch_intraday_bars(s["symbol"], tf)
+                signal = intraday.compute_signal(bars)
+                summary["score"] = signal["score"] if signal else None
+                timeframes[tf] = summary
         out.append({
             "symbol": s["symbol"],
             "display_name": s.get("display_name"),
