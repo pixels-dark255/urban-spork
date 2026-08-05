@@ -1,4 +1,5 @@
 import os
+import json
 import datetime as dt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -9,9 +10,9 @@ import storage
 from data_sources import (
     search_stocks, to_yf_symbol, fetch_multi_timeframe,
     fetch_latest_price, fetch_company_news, fetch_weather_signal,
-    fetch_intraday_bars,
+    fetch_intraday_bars, fetch_daily_history,
 )
-from predictor import predict_price
+from predictor import predict_price, gbm_path
 from backtest import run_backtest_and_refine
 from scheduler import start_scheduler, make_fresh_prediction
 import intraday
@@ -98,6 +99,72 @@ def api_analyze_stock(symbol: str, exchange: str = "NSE", horizon: str = "1d"):
     result["horizon_label"] = horizon
     result["news"] = news[:8]
     return result
+
+
+@app.get("/api/stocks/{symbol}/chart")
+def api_stock_chart(symbol: str, exchange: str = "NSE", horizon: str = "1d", weights: str | None = None, yf_symbol_override: str | None = None):
+    """Historical daily OHLC for the candlestick, plus a forecast path from
+    now to the horizon target - sampled at several points using the exact
+    same GBM formula as the point prediction (not a separate model), so the
+    shaded band on the chart is a faithful picture of what /analyze already
+    computed, just spread across time instead of collapsed to one number.
+    `weights` (optional) is a JSON string of per-signal weights, used when
+    charting from the watchlist so the chart reflects that stock's refined
+    weights instead of the generic defaults. `yf_symbol_override` lets a
+    caller that already has the exact Yahoo symbol (e.g. the watchlist,
+    which stores it directly) skip the symbol+exchange reconstruction."""
+    if horizon not in HORIZON_PRESETS:
+        raise HTTPException(400, f"horizon must be one of {list(HORIZON_PRESETS)}")
+    horizon_minutes = HORIZON_PRESETS[horizon]
+
+    yf_symbol = yf_symbol_override or to_yf_symbol(symbol, exchange)
+    price = fetch_latest_price(yf_symbol)
+    if price is None:
+        raise HTTPException(502, f"Could not fetch live price for {yf_symbol} right now.")
+
+    daily = fetch_daily_history(yf_symbol, period="1y")
+    if daily is None or daily.empty:
+        raise HTTPException(502, f"Could not fetch price history for {yf_symbol} right now.")
+    daily = daily.tail(180)
+    historical = [
+        {
+            "time": int(idx.timestamp()),
+            "open": round(float(row["Open"]), 2),
+            "high": round(float(row["High"]), 2),
+            "low": round(float(row["Low"]), 2),
+            "close": round(float(row["Close"]), 2),
+        }
+        for idx, row in daily.iterrows()
+    ]
+
+    tf_data = fetch_multi_timeframe(yf_symbol)
+    news = fetch_company_news(symbol)
+    weather = fetch_weather_signal()
+    parsed_weights = None
+    if weights:
+        try:
+            parsed_weights = json.loads(weights)
+        except (json.JSONDecodeError, TypeError):
+            parsed_weights = None
+
+    result = predict_price(
+        timeframe_data=tf_data,
+        current_price=price,
+        horizon_minutes=horizon_minutes,
+        news_articles=news,
+        weather_json=weather,
+        weights=parsed_weights,
+    )
+    forecast = gbm_path(price, result["mu_annualized"], result["sigma_annualized"], horizon_minutes)
+
+    return {
+        "symbol": yf_symbol,
+        "current_price": price,
+        "historical": historical,
+        "forecast": forecast,
+        "predicted_price": result["predicted_price"],
+        "confidence": result["confidence"],
+    }
 
 
 # ---------- Watchlist (JSON file, keyed by client IP - see storage.py) ----------
@@ -367,10 +434,22 @@ def api_intraday_detail(symbol: str, request: Request):
             continue
         bars = fetch_intraday_bars(symbol, tf)
         signal = intraday.compute_signal(bars)
+        today_bars = intraday._today_bars(bars) if bars is not None and not bars.empty else bars
+        bar_points = [
+            {
+                "time": int(idx.timestamp()),
+                "open": round(float(row["Open"]), 2),
+                "high": round(float(row["High"]), 2),
+                "low": round(float(row["Low"]), 2),
+                "close": round(float(row["Close"]), 2),
+            }
+            for idx, row in today_bars.iterrows()
+        ] if today_bars is not None and not today_bars.empty else []
         timeframes[tf] = {
             "summary": intraday.portfolio_summary(portfolio, live_price),
             "current_signal": signal,
             "trade_log": list(reversed(portfolio.get("trade_log", [])))[:50],
+            "bars": bar_points,
         }
     if not timeframes:
         raise HTTPException(404, "not found")

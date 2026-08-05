@@ -95,6 +95,9 @@ def intraday_tick():
                     continue
                 portfolio = storage.get_intraday_portfolio(ip, symbol, tf) or intraday.default_portfolio()
                 portfolio = intraday.step(portfolio, signal, tf)
+                portfolio["last_price"] = signal["last_close"]
+                portfolio["last_score"] = signal["score"]
+                portfolio["last_updated"] = dt.datetime.utcnow().isoformat()
                 storage.save_intraday_portfolio(ip, symbol, tf, portfolio)
             except Exception as e:
                 print(f"[warn] intraday tick failed for {symbol} {tf}: {e}")

@@ -230,6 +230,8 @@ def predict_price(
         "band_95": [round(float(low_95), 2), round(float(high_95), 2)],
         "confidence": round(confidence, 3),
         "horizon_minutes": horizon_minutes,
+        "mu_annualized": round(float(mu), 5),
+        "sigma_annualized": round(float(sigma), 5),
         "weights_used": sig_w,
         "signals": {
             "trend_drift_annualized": round(float(weighted_drift), 4),
@@ -248,6 +250,40 @@ def predict_price(
             "how much to trust it."
         ),
     }
+
+
+def gbm_path(current_price: float, mu_annualized: float, sigma_annualized: float, horizon_minutes: int, steps: int = 12) -> list[dict]:
+    """Samples the identical GBM formula predict_price() uses (same mu,
+    same sigma) at several points between now and the horizon, so a chart
+    can draw the drift and widening confidence band over time instead of
+    only showing the single endpoint number. This is NOT a different or
+    fancier model - it's the same closed-form solution evaluated at
+    intermediate t, which is mathematically how GBM confidence bands
+    actually behave (they widen with sqrt(t), not linearly)."""
+    now = dt.datetime.utcnow()
+    sigma = max(sigma_annualized, 0.05)
+    path = []
+    for i in range(steps + 1):
+        frac = i / steps
+        minutes_elapsed = horizon_minutes * frac
+        t_years = minutes_elapsed / (60 * 24 * 365)
+        expected_log_return = (mu_annualized - 0.5 * sigma ** 2) * t_years
+        mid = current_price * np.exp(expected_log_return)
+        band_1sigma = sigma * np.sqrt(t_years)
+        low_68 = current_price * np.exp(expected_log_return - band_1sigma)
+        high_68 = current_price * np.exp(expected_log_return + band_1sigma)
+        low_95 = current_price * np.exp(expected_log_return - 2 * band_1sigma)
+        high_95 = current_price * np.exp(expected_log_return + 2 * band_1sigma)
+        point_time = now + dt.timedelta(minutes=minutes_elapsed)
+        path.append({
+            "time": int(point_time.timestamp()),
+            "mid": round(float(mid), 2),
+            "low_68": round(float(low_68), 2),
+            "high_68": round(float(high_68), 2),
+            "low_95": round(float(low_95), 2),
+            "high_95": round(float(high_95), 2),
+        })
+    return path
 
 
 def nudge_weights(weights: dict, raw_signals: dict, actual_direction: int) -> dict:
