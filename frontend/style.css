@@ -513,3 +513,76 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 @media (prefers-reduced-motion: reduce) {
   .skeleton-line, .skeleton-block { animation: none; opacity: 0.6; }
 }
+
+/* ---- Desktop 3-column dashboard (>=1024px) ---- */
+@media (min-width: 1024px) {
+  .ticker-strip, .app-header { padding-left: 24px; padding-right: 24px; }
+
+  .app-body {
+    display: grid;
+    grid-template-columns: 340px 1fr 400px;
+    grid-template-rows: auto 1fr;
+    gap: 18px;
+    align-items: start;
+    padding: 8px 24px 32px;
+    max-width: 1600px;
+    margin: 0 auto;
+  }
+
+  /* Left column: quick search on top, watchlist below - both always on */
+  #view-search { grid-column: 1; grid-row: 1; }
+  #view-watchlist { grid-column: 1; grid-row: 2; }
+
+  /* Center column: analysis + chart, spans full height */
+  #view-analysis { grid-column: 2; grid-row: 1 / span 2; }
+
+  /* Right column: intraday on top, that stock's 90-day backtest below */
+  #view-intraday { grid-column: 3; grid-row: 1; }
+  #view-watch-detail { grid-column: 3; grid-row: 2; }
+
+  /* These five are always visible on desktop, not toggled by .active -
+     the single-view mobile SPA model doesn't apply once there's room for
+     a real dashboard. */
+  #view-search, #view-watchlist, #view-analysis, #view-intraday, #view-watch-detail {
+    display: block !important;
+    animation: none;
+    max-height: calc(100vh - 140px);
+    overflow-y: auto;
+  }
+
+  /* Detail drill-downs that don't have a natural static column (intraday's
+     per-stock trade log/chart) become a centered overlay instead of trying
+     to force a 6th destination into a 3-column grid. */
+  #view-intraday-detail {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 50;
+    padding: 40px;
+    align-items: flex-start;
+    justify-content: center;
+    overflow-y: auto;
+  }
+  #view-intraday-detail.active { display: flex; animation: view-in 180ms ease; }
+  #view-intraday-detail .modal-card {
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 20px 24px 32px;
+    max-width: 720px;
+    width: 100%;
+  }
+
+  /* No "back" needed when the destination is already visible in another
+     column - back-buttons only still make sense for the overlay. */
+  #backFromAnalysis, #backFromWatchDetail { display: none; }
+
+  .tab-bar { display: none; }
+  body { padding-bottom: 0; }
+
+  #view-search .search-row input { font-size: 15px; }
+}
+
+@media (max-width: 1023px) {
+  .modal-card { all: unset; display: block; }
+}

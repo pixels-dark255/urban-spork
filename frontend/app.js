@@ -98,6 +98,27 @@ window.addEventListener("popstate", (e) => {
 // cleanly instead of landing on an undefined state.
 history.replaceState({ view: "view-search" }, "", "#view-search");
 
+// ---------- Desktop always-on side panels ----------
+// On mobile this whole app is a single-view SPA (one .view visible at a
+// time, driven by the tab bar + browser history). On desktop, watchlist
+// and intraday become permanent side columns (see the >=1024px grid in
+// style.css) instead of tabs you navigate to - so they need to load and
+// keep polling independently of whatever's currently in the center
+// analysis panel, not wait for a navigateTo() that will never come once
+// the tab bar is hidden.
+const isDesktop = () => window.matchMedia("(min-width: 1024px)").matches;
+let desktopPanelsInitialized = false;
+function initDesktopPanelsIfNeeded() {
+  if (!isDesktop() || desktopPanelsInitialized) return;
+  desktopPanelsInitialized = true;
+  loadWatchlist();
+  loadIntradayList();
+  setInterval(() => loadWatchlist(true), 30000);
+  setInterval(() => loadIntradayList(true), 20000);
+}
+initDesktopPanelsIfNeeded();
+window.addEventListener("resize", initDesktopPanelsIfNeeded);
+
 function renderView(viewId, state = {}) {
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.getElementById(viewId).classList.add("active");
