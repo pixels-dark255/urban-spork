@@ -9,6 +9,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css" />
+<script src="https://cdn.jsdelivr.net/npm/lightweight-charts@5/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 
@@ -20,7 +21,10 @@
   </div>
 
   <header class="app-header">
-    <h1>Tickerboard</h1>
+    <div class="app-header-top">
+      <h1>Tickerboard</h1>
+      <span class="market-status-pill" id="marketStatusPill">…</span>
+    </div>
     <p class="eyebrow">nse &middot; bse &middot; personal terminal</p>
   </header>
 

@@ -1,4 +1,39 @@
 // Same-origin API (backend serves this frontend directly)
+// ---------- IST formatting + market status ----------
+function fmtIST(dateInput, opts = {}) {
+  return new Date(dateInput).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", ...opts });
+}
+function fmtISTDate(dateInput) {
+  return fmtIST(dateInput, { day: "2-digit", month: "short", year: "numeric" });
+}
+function fmtISTDateTime(dateInput) {
+  return fmtIST(dateInput, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
+}
+
+function isMarketOpenNow() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Kolkata", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
+  }).formatToParts(new Date());
+  const get = (t) => parts.find((p) => p.type === t)?.value;
+  const weekday = get("weekday");
+  const hour = parseInt(get("hour"), 10);
+  const minute = parseInt(get("minute"), 10);
+  if (["Sat", "Sun"].includes(weekday)) return false;
+  const mins = hour * 60 + minute;
+  return mins >= (9 * 60 + 15) && mins <= (15 * 60 + 30);
+}
+
+function updateMarketStatusPill() {
+  const pill = document.getElementById("marketStatusPill");
+  if (!pill) return;
+  const open = isMarketOpenNow();
+  pill.textContent = open ? "🟢 Market Open" : "🔴 Market Closed";
+  pill.title = "9:15 AM – 3:30 PM IST, Mon–Fri";
+  pill.className = `market-status-pill ${open ? "open" : "closed"}`;
+}
+updateMarketStatusPill();
+setInterval(updateMarketStatusPill, 30000);
+
 const API = "";
 
 // Stable per-device identity, replacing fragile IP-based lookup (public IP
@@ -320,6 +355,7 @@ function renderIntradayDetail(data) {
 
     return `
       <div class="section-heading"><span class="eyebrow">${tf} strategy</span><h2 style="font-size:17px;">Timeframe: ${tf}</h2></div>
+      <div id="intradayChart-${tf}" class="price-chart-container intraday-chart"></div>
       <div class="prediction-card">
         <div class="label">equity: ₹${s.equity.toFixed(0)} (started at ₹1,00,000)</div>
         <div class="predicted-price ${cls}" style="font-size:22px;">${s.total_pnl >= 0 ? "+" : ""}₹${s.total_pnl.toFixed(0)} <span class="price-delta ${cls}">${s.total_pnl_pct >= 0 ? "+" : ""}${s.total_pnl_pct}%</span></div>
@@ -337,6 +373,58 @@ function renderIntradayDetail(data) {
     <div class="disclaimer">Rule-based (MA crossover + RSI + VWAP + opening-range breakout), all simulated. Nothing here is a guarantee of real-world performance.</div>
     ${sections}
   `;
+
+  ["5m", "15m", "30m"].forEach((tf) => renderIntradayChart(tf, data.timeframes[tf]));
+}
+
+const intradayChartInstances = {};
+function renderIntradayChart(tf, t) {
+  const container = document.getElementById(`intradayChart-${tf}`);
+  if (!container || typeof LightweightCharts === "undefined" || !t) return;
+  if (!t.bars || !t.bars.length) {
+    container.innerHTML = `<p class="muted">No bars yet today for this timeframe.</p>`;
+    return;
+  }
+  if (intradayChartInstances[tf]) {
+    try { intradayChartInstances[tf].remove(); } catch (e) { /* already gone */ }
+  }
+  const chart = LightweightCharts.createChart(container, {
+    height: 220,
+    layout: { background: { color: "transparent" }, textColor: "#8FA39A" },
+    grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
+    rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
+    timeScale: { borderColor: "rgba(255,255,255,0.1)", timeVisible: true, secondsVisible: false },
+  });
+  intradayChartInstances[tf] = chart;
+
+  const candles = chart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: "#3c9a5c", downColor: "#C1443C", borderVisible: false,
+    wickUpColor: "#3c9a5c", wickDownColor: "#C1443C",
+  });
+  candles.setData(t.bars);
+
+  const toUnix = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+  const reasonMeta = {
+    stop_loss: { color: "#C1443C", text: "SL" },
+    target: { color: "#3c9a5c", text: "TGT" },
+    signal_reversal: { color: "#C9A227", text: "EXIT" },
+  };
+  const markers = [];
+  (t.trade_log || []).forEach((tr) => {
+    markers.push({
+      time: toUnix(tr.entry_at), position: "belowBar", color: "#3c9a5c", shape: "arrowUp", text: "BUY",
+    });
+    const meta = reasonMeta[tr.exit_reason] || { color: "#C9A227", text: "EXIT" };
+    markers.push({
+      time: toUnix(tr.exit_at), position: "aboveBar", color: meta.color, shape: "arrowDown", text: meta.text,
+    });
+  });
+  markers.sort((a, b) => a.time - b.time);
+  if (markers.length && LightweightCharts.createSeriesMarkers) {
+    LightweightCharts.createSeriesMarkers(candles, markers);
+  }
+
+  chart.timeScale().fitContent();
 }
 
 // ---------- Search ----------
@@ -362,11 +450,12 @@ async function runSearch(q) {
     }
     searchResults.innerHTML = data.results.map((r) => `
       <div class="result-item" data-symbol="${r.symbol}" data-exchange="${r.exchange}" data-name="${escapeHtml(r.name)}">
-        <div>
+        <div class="result-main">
           <div class="result-symbol">${r.symbol}</div>
           <div class="result-name">${escapeHtml(r.name)}</div>
         </div>
         <div class="result-exchange">${r.exchange}</div>
+        <button class="result-quick-add" data-symbol="${r.symbol}" data-exchange="${r.exchange}" data-name="${escapeHtml(r.name)}" title="Add to watchlist" aria-label="Add ${r.symbol} to watchlist">+</button>
       </div>
     `).join("");
     searchResults.querySelectorAll(".result-item").forEach((el) => {
@@ -376,6 +465,40 @@ async function runSearch(q) {
           exchange: el.dataset.exchange,
           name: el.dataset.name,
         });
+      });
+    });
+    searchResults.querySelectorAll(".result-quick-add").forEach((btn) => {
+      btn.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        btn.disabled = true;
+        btn.textContent = "…";
+        try {
+          const res = await apiFetch(`${API}/api/watchlist`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              symbol: btn.dataset.symbol,
+              exchange: btn.dataset.exchange,
+              display_name: btn.dataset.name,
+              horizon: currentHorizon,
+            }),
+          });
+          const resData = await res.json();
+          if (!res.ok) {
+            showToast(resData.detail || "Could not add stock", "error");
+            btn.disabled = false;
+            btn.textContent = "+";
+            return;
+          }
+          btn.textContent = "✓";
+          btn.classList.add("added");
+          showToast(`${btn.dataset.symbol} added — 90-day backtest calibrating`, "success");
+          refreshTicker();
+        } catch (e2) {
+          showToast("Network error adding stock", "error");
+          btn.disabled = false;
+          btn.textContent = "+";
+        }
       });
     });
   } catch (e) {
@@ -460,6 +583,8 @@ function renderAnalysis(data) {
       <span class="price-current">₹${data.current_price.toFixed(2)}</span>
     </div>
 
+    <div id="priceChart" class="price-chart-container"></div>
+
     <div class="horizon-row" id="horizonRow">${horizonPills}</div>
 
     <div class="prediction-card">
@@ -483,6 +608,8 @@ function renderAnalysis(data) {
     <div class="section-heading"><span class="eyebrow">context</span><h2 style="font-size:17px;">Recent news</h2></div>
     ${newsHtml}
   `;
+
+  loadPriceChart(currentStock.symbol, currentStock.exchange, currentHorizon, null);
 
   document.querySelectorAll("#horizonRow .horizon-pill").forEach((btn) => {
     btn.addEventListener("click", async () => {
@@ -553,6 +680,8 @@ function renderWatchAnalysis(data, itemId) {
       <span class="price-current">₹${data.current_price.toFixed(2)}</span>
     </div>
 
+    <div id="priceChart" class="price-chart-container"></div>
+
     <div class="prediction-card">
       <div class="label">predicted price right now, using this stock's refined weights</div>
       <div class="predicted-price">₹${data.predicted_price.toFixed(2)}
@@ -575,6 +704,82 @@ function renderWatchAnalysis(data, itemId) {
   `;
 
   document.getElementById("viewBacktestBtn").addEventListener("click", () => openWatchDetail(itemId));
+  loadPriceChart(data.symbol, null, minutesToHorizonLabel(data.horizon_minutes), weights, data.symbol);
+}
+
+const HORIZON_MINUTES = { "15m": 15, "1h": 60, "4h": 240, "1d": 1440, "3d": 4320, "1wk": 10080, "1mo": 43200, "3mo": 129600 };
+function minutesToHorizonLabel(minutes) {
+  let best = "1d", bestDiff = Infinity;
+  for (const [label, m] of Object.entries(HORIZON_MINUTES)) {
+    const diff = Math.abs(m - minutes);
+    if (diff < bestDiff) { bestDiff = diff; best = label; }
+  }
+  return best;
+}
+
+// ---------- Price chart (Lightweight Charts) ----------
+let priceChartInstance = null;
+async function loadPriceChart(symbol, exchange, horizon, weights, yfSymbolOverride = null) {
+  const container = document.getElementById("priceChart");
+  if (!container || typeof LightweightCharts === "undefined") return;
+  container.innerHTML = `<p class="loading">loading chart…</p>`;
+  try {
+    const params = new URLSearchParams({ horizon: horizon || "1d" });
+    if (exchange) params.set("exchange", exchange);
+    if (weights) params.set("weights", JSON.stringify(weights));
+    if (yfSymbolOverride) params.set("yf_symbol_override", yfSymbolOverride);
+    const res = await apiFetch(`${API}/api/stocks/${encodeURIComponent(symbol)}/chart?${params.toString()}`);
+    const data = await res.json();
+    if (!res.ok) {
+      container.innerHTML = `<p class="muted">Chart unavailable: ${escapeHtml(data.detail || "unknown error")}</p>`;
+      return;
+    }
+    container.innerHTML = "";
+    renderPriceChart(container, data.historical, data.forecast);
+  } catch (e) {
+    container.innerHTML = `<p class="muted">Chart failed to load.</p>`;
+  }
+}
+
+function renderPriceChart(container, historical, forecast) {
+  if (priceChartInstance) {
+    try { priceChartInstance.remove(); } catch (e) { /* already gone */ }
+    priceChartInstance = null;
+  }
+  const chart = LightweightCharts.createChart(container, {
+    height: 260,
+    layout: { background: { color: "transparent" }, textColor: "#8FA39A" },
+    grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
+    rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
+    timeScale: { borderColor: "rgba(255,255,255,0.1)", timeVisible: true, secondsVisible: false },
+  });
+  priceChartInstance = chart;
+
+  const candles = chart.addSeries(LightweightCharts.CandlestickSeries, {
+    upColor: "#3c9a5c", downColor: "#C1443C", borderVisible: false,
+    wickUpColor: "#3c9a5c", wickDownColor: "#C1443C",
+  });
+  candles.setData(historical);
+
+  // Confidence "band" via bounding lines (dashed, widening outward) rather
+  // than a filled polygon - Lightweight Charts has no built-in fill-between-
+  // two-lines series, and a custom-series hack isn't worth the fragility.
+  const mkLine = (color, width, dashed) => chart.addSeries(LightweightCharts.LineSeries, {
+    color, lineWidth: width, lineStyle: dashed ? 2 : 0, priceLineVisible: false, lastValueVisible: false,
+  });
+  const mid = mkLine("#C9A227", 2, false);
+  const b68Hi = mkLine("#C9A227", 1, true);
+  const b68Lo = mkLine("#C9A227", 1, true);
+  const b95Hi = mkLine("#8FA39A", 1, true);
+  const b95Lo = mkLine("#8FA39A", 1, true);
+
+  mid.setData(forecast.map((p) => ({ time: p.time, value: p.mid })));
+  b68Hi.setData(forecast.map((p) => ({ time: p.time, value: p.high_68 })));
+  b68Lo.setData(forecast.map((p) => ({ time: p.time, value: p.low_68 })));
+  b95Hi.setData(forecast.map((p) => ({ time: p.time, value: p.high_95 })));
+  b95Lo.setData(forecast.map((p) => ({ time: p.time, value: p.low_95 })));
+
+  chart.timeScale().fitContent();
 }
 
 async function addCurrentToWatchlist() {
@@ -706,7 +911,7 @@ function renderWatchDetail(data) {
       <tbody>
         ${livePreds.map((p) => `
           <tr>
-            <td>${new Date(p.made_at).toLocaleDateString()}</td>
+            <td>${fmtISTDate(p.made_at)}</td>
             <td>₹${fmtPrice(p.predicted_price)}</td>
             <td>${p.actual_price != null ? "₹" + fmtPrice(p.actual_price) : "—"}</td>
             <td>${p.resolved ? (p.error_pct + "%" + (p.correct_direction == null ? "" : (p.correct_direction ? " ✓" : " ✗"))) : "pending"}</td>
@@ -839,7 +1044,7 @@ function renderWatchCard(item) {
   }
 
   const targetRow = lp
-    ? `<div class="watch-row"><span>target time</span><span>${new Date(lp.target_at).toLocaleString()}</span></div>`
+    ? `<div class="watch-row"><span>target time</span><span>${fmtISTDateTime(lp.target_at)}</span></div>`
     : `<div class="watch-row"><span>calibrating…</span></div>`;
   const trackRow = tr.resolved_count > 0
     ? `<div class="watch-track-record">live tracked accuracy: avg ${tr.avg_abs_error_pct}% error over ${tr.resolved_count} resolved predictions</div>`

@@ -151,6 +151,21 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
   padding: 3px 7px;
   border-radius: 5px;
 }
+.result-main { flex: 1; min-width: 0; }
+.result-quick-add {
+  background: var(--paper-raised);
+  border: 1px solid var(--brass-dim);
+  color: var(--brass);
+  font-size: 18px;
+  line-height: 1;
+  width: 30px; height: 30px;
+  border-radius: 50%;
+  margin-left: 10px;
+  flex-shrink: 0;
+  display: flex; align-items: center; justify-content: center;
+}
+.result-quick-add.added { color: #3c9a5c; border-color: #3c9a5c; }
+.result-quick-add:disabled { opacity: 0.6; }
 
 /* ---- Back button ---- */
 .back-btn {
@@ -371,6 +386,14 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 .verdict-sell         { background: #b4562f; color: #fff3ec; }
 .verdict-strong-sell { background: #a3272c; color: #ffecec; }
 
+.price-chart-container {
+  margin: 12px 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--paper-raised);
+}
+.intraday-chart { height: 220px; }
+
 /* ---- Watchlist ---- */
 .section-heading { margin: 10px 0 14px; }
 .section-heading h2 { font-family: var(--font-display); margin: 2px 0 0; font-size: 22px; }
@@ -415,6 +438,24 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 }
 .backtest-table td.pos { color: var(--brass); }
 .backtest-table td.neg { color: var(--signal-red); }
+
+.app-header-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.market-status-pill {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 4px 10px;
+  border-radius: 20px;
+  background: var(--paper-raised);
+  border: 1px solid var(--hairline);
+  white-space: nowrap;
+}
+.market-status-pill.open { color: #3c9a5c; border-color: #3c9a5c; }
+.market-status-pill.closed { color: var(--signal-red); border-color: var(--signal-red); }
 
 /* ---- Tab bar ---- */
 .tab-bar {
