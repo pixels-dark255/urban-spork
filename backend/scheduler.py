@@ -14,6 +14,14 @@ from data_sources import fetch_multi_timeframe, fetch_latest_price, fetch_compan
 from predictor import predict_price, nudge_weights
 import intraday
 
+import config
+import market_data
+import market_store
+import paper_trading
+import predictions as prediction_analytics
+import universe
+from ml import registry as ml_registry
+
 IST = pytz.timezone("Asia/Kolkata")
 
 
@@ -103,10 +111,108 @@ def intraday_tick():
                 print(f"[warn] intraday tick failed for {symbol} {tf}: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Urban Spork platform jobs
+# ---------------------------------------------------------------------------
+
+def _tracked_symbols(limit: int = 40) -> list[tuple[str, str]]:
+    """Everything worth collecting data for: open paper positions, recently
+    predicted stocks, and the legacy watchlist. Collecting the entire 2,000+
+    stock universe every five minutes would be pointless and would get the
+    data source to rate-limit us within the hour."""
+    seen, out = set(), []
+
+    def add(symbol, exchange):
+        key = (symbol.upper(), (exchange or "NSE").upper())
+        if key not in seen:
+            seen.add(key)
+            out.append(key)
+
+    try:
+        for trade in market_store.open_trades_all():
+            add(trade["symbol"], trade["exchange"])
+    except Exception as e:
+        print(f"[warn] collector could not read open trades: {e}")
+    try:
+        for pred in market_store.list_predictions(limit=80):
+            add(pred["symbol"], pred["exchange"])
+    except Exception as e:
+        print(f"[warn] collector could not read predictions: {e}")
+    try:
+        for _ip, item in storage.all_items():
+            symbol = item["symbol"]
+            exchange = "BSE" if symbol.upper().endswith(".BO") else "NSE"
+            add(symbol.replace(".NS", "").replace(".BO", ""), exchange)
+    except Exception as e:
+        print(f"[warn] collector could not read watchlist: {e}")
+
+    return out[:limit]
+
+
+def collector_tick():
+    """Continuously grow the local historical database. Runs during market
+    hours (that's when new bars exist) and NEVER deletes anything - the whole
+    point is that the dataset survives the close, the weekend and restarts,
+    so there is eventually enough history to train on."""
+    if not is_market_hours():
+        return
+    for symbol, exchange in _tracked_symbols():
+        try:
+            market_data.collect_history(symbol, exchange, ["1m", "5m", "15m"])
+        except Exception as e:
+            print(f"[warn] collector failed for {symbol}: {e}")
+
+
+def outcome_tick():
+    """Grade due predictions and mark paper trades to market. Runs every
+    tick, every day - a horizon that expired on Friday evening should not
+    wait until Monday to be graded, or nothing learns over a weekend."""
+    try:
+        result = prediction_analytics.resolve_due()
+        if result.get("resolved"):
+            print(f"[info] resolved {result['resolved']} prediction(s)")
+    except Exception as e:
+        print(f"[warn] prediction resolution failed: {e}")
+    try:
+        paper_trading.mark_to_market()
+    except Exception as e:
+        print(f"[warn] paper mark-to-market failed: {e}")
+
+
+def universe_tick():
+    try:
+        universe.refresh_universe()
+    except Exception as e:
+        print(f"[warn] universe refresh failed: {e}")
+
+
+def training_tick():
+    """Retrain models on a slow cadence - daily, after the close.
+
+    Not after every trade, and not every tick: a model retrained on each new
+    outcome chases the last hour of noise, which is the classic way to build
+    something that backtests beautifully and loses money live."""
+    try:
+        reports = ml_registry.train_all_tracked(timeframes=["5m", "15m"], limit=10)
+        usable = sum(1 for r in reports if r.get("usable"))
+        print(f"[info] nightly training: {len(reports)} attempted, {usable} accepted as usable")
+    except Exception as e:
+        print(f"[warn] nightly training failed: {e}")
+
+
 scheduler = BackgroundScheduler(timezone=str(IST))
 
 
 def start_scheduler(interval_minutes: int = 5):
     scheduler.add_job(tick, "interval", minutes=interval_minutes, id="watchlist_tick", replace_existing=True)
     scheduler.add_job(intraday_tick, "interval", minutes=interval_minutes, id="intraday_tick", replace_existing=True)
+    scheduler.add_job(collector_tick, "interval", minutes=config.COLLECTOR_MINUTES,
+                      id="collector_tick", replace_existing=True)
+    scheduler.add_job(outcome_tick, "interval", minutes=interval_minutes,
+                      id="outcome_tick", replace_existing=True)
+    scheduler.add_job(universe_tick, "interval", hours=max(1, int(config.UNIVERSE_REFRESH_HOURS)),
+                      id="universe_tick", replace_existing=True)
+    # 16:15 IST - after the 15:30 close, so the day's bars are complete.
+    scheduler.add_job(training_tick, "cron", hour=16, minute=15,
+                      id="training_tick", replace_existing=True)
     scheduler.start()

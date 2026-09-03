@@ -1,5 +1,6 @@
 import os
 import json
+import threading
 import datetime as dt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
@@ -8,7 +9,7 @@ from pydantic import BaseModel
 
 import storage
 from data_sources import (
-    search_stocks, to_yf_symbol, fetch_multi_timeframe,
+    to_yf_symbol, fetch_multi_timeframe,
     fetch_latest_price, fetch_company_news, fetch_weather_signal,
     fetch_intraday_bars, fetch_daily_history,
 )
@@ -17,7 +18,20 @@ from backtest import run_backtest_and_refine
 from scheduler import start_scheduler, make_fresh_prediction
 import intraday
 
-app = FastAPI(title="NSE/BSE Stock Analyzer & Predictor")
+# --- Urban Spork platform modules ---
+import config
+import market_store
+import market_data
+import market_overview
+import intraday_engine
+import paper_trading
+import predictions as prediction_analytics
+import providers
+import risk
+import universe
+from ml import registry as ml_registry
+
+app = FastAPI(title="Urban Spork - NSE/BSE analysis, intraday & prediction platform")
 
 app.add_middleware(
     CORSMiddleware,
@@ -47,17 +61,45 @@ def get_client_ip(request: Request) -> str:
 
 @app.on_event("startup")
 def on_startup():
-    start_scheduler(interval_minutes=int(os.getenv("TICK_MINUTES", "5")))
+    # Order matters: the database and the stock universe must exist before
+    # any scheduled job or request can touch them.
+    market_store.init_db()
+    universe.ensure_seeded()
+    start_scheduler(interval_minutes=config.TICK_MINUTES)
+
+    def _refresh_universe():
+        """Pull the live NSE/BSE lists in the background. Startup must never
+        block on a third-party site being slow or down - the bundled seed
+        already makes search work."""
+        try:
+            result = universe.refresh_universe()
+            print(f"[info] universe refresh: {result}")
+        except Exception as e:
+            print(f"[warn] universe refresh failed at startup: {e}")
+
+    threading.Thread(target=_refresh_universe, name="universe-refresh", daemon=True).start()
 
 
 # ---------- Stock search ----------
 
 @app.get("/api/stocks/search")
-def api_search_stocks(q: str, limit: int = 20):
-    results = search_stocks(q, limit=limit)
+def api_search_stocks(q: str, limit: int = 20, exchange: str | None = None):
+    """Fuzzy search across the full NSE + BSE universe held locally, so it
+    works with the market shut and with NSE/BSE unreachable."""
+    results = universe.search(q, limit=limit, exchange=exchange)
     for r in results:
         r["yf_symbol"] = to_yf_symbol(r["symbol"], r["exchange"])
-    return {"query": q, "results": results}
+    return {"query": q, "results": results, "universe_size": market_store.stock_master_count()}
+
+
+@app.get("/api/universe/status")
+def api_universe_status():
+    return universe.universe_status()
+
+
+@app.post("/api/universe/refresh")
+def api_universe_refresh(force: bool = False):
+    return universe.refresh_universe(force=force)
 
 
 # ---------- Full analysis ----------
@@ -456,6 +498,227 @@ def api_intraday_detail(symbol: str, request: Request):
     return {"symbol": symbol, "live_price": live_price, "timeframes": timeframes}
 
 
+
+
+# ===========================================================================
+# Urban Spork platform API
+#
+# Everything below is the newer engine set: full-universe search (above),
+# the intraday recommendation engine, risk settings, paper trading,
+# prediction history, market overview, the ML registry and the data
+# collector. The endpoints above this line are the original analysis and
+# watchlist screens, kept working unchanged.
+# ===========================================================================
+
+# ---------- Timeframes & platform status ----------
+
+@app.get("/api/timeframes")
+def api_timeframes():
+    return {
+        "timeframes": market_data.timeframe_catalog(),
+        "note": ("30s runs on 1-minute bars: no free provider serves sub-minute Indian "
+                 "equity data, and the platform flags approximations rather than "
+                 "pretending to a resolution it does not have."),
+    }
+
+
+@app.get("/api/platform/status")
+def api_platform_status():
+    return {
+        "providers": providers.provider_status(),
+        "active_provider": providers.get_provider().name,
+        "universe": universe.universe_status(),
+        "historical_data": market_store.bar_stats(),
+        "ml_backends": ml_registry.available_backends(),
+        "models_trained": len(ml_registry.model_status()),
+        "min_trade_confidence": config.MIN_TRADE_CONFIDENCE,
+    }
+
+
+# ---------- Intraday recommendation engine ----------
+
+@app.get("/api/intraday/analyze")
+def api_intraday_analyze(symbol: str, exchange: str = "NSE", timeframe: str = "5m",
+                         record: bool = True, request: Request = None):
+    client_id = get_client_ip(request) if request else "default"
+    result = intraday_engine.analyze(symbol, exchange, timeframe,
+                                     client_id=client_id, record=record)
+    if not result.get("ok", True):
+        raise HTTPException(400, result.get("error", "analysis failed"))
+    return result
+
+
+class IntradayScanRequest(BaseModel):
+    symbols: list[str]
+    exchange: str = "NSE"
+    timeframe: str = "5m"
+
+
+@app.post("/api/intraday/scan")
+def api_intraday_scan(req: IntradayScanRequest, request: Request):
+    client_id = get_client_ip(request)
+    if len(req.symbols) > 25:
+        raise HTTPException(400, "scan is limited to 25 symbols per request")
+    pairs = [(s, req.exchange) for s in req.symbols]
+    return {"timeframe": req.timeframe,
+            "results": intraday_engine.scan(pairs, req.timeframe, client_id=client_id)}
+
+
+# ---------- Risk settings ----------
+
+class RiskSettingsRequest(BaseModel):
+    capital: float | None = None
+    risk_per_trade_pct: float | None = None
+    max_daily_loss_pct: float | None = None
+    min_risk_reward: float | None = None
+    min_confidence: float | None = None
+    max_open_positions: int | None = None
+
+
+@app.get("/api/settings")
+def api_get_settings(request: Request):
+    client_id = get_client_ip(request)
+    return {"settings": risk.get_settings(client_id),
+            "defaults": risk.DEFAULT_SETTINGS,
+            "daily_loss_status": risk.daily_loss_status(client_id)}
+
+
+@app.post("/api/settings")
+def api_save_settings(req: RiskSettingsRequest, request: Request):
+    client_id = get_client_ip(request)
+    return {"settings": risk.save_settings(client_id, req.model_dump(exclude_none=True))}
+
+
+# ---------- Paper trading ----------
+
+class PaperOpenRequest(BaseModel):
+    symbol: str
+    exchange: str = "NSE"
+    timeframe: str = "5m"
+
+
+class PaperCloseRequest(BaseModel):
+    price: float | None = None
+
+
+@app.get("/api/paper/positions")
+def api_paper_positions(request: Request):
+    client_id = get_client_ip(request)
+    return {
+        "open": paper_trading.open_positions(client_id),
+        "closed": market_store.list_trades(client_id, status="CLOSED", limit=100),
+        "summary": paper_trading.summary(client_id),
+    }
+
+
+@app.post("/api/paper/open")
+def api_paper_open(req: PaperOpenRequest, request: Request):
+    """Take the engine's current recommendation for this stock/timeframe and
+    open it as a paper trade. Deliberately re-runs the analysis rather than
+    trusting numbers posted by the client - the trade is opened at the price
+    and plan the engine stands behind right now."""
+    client_id = get_client_ip(request)
+    analysis = intraday_engine.analyze(req.symbol, req.exchange, req.timeframe,
+                                       client_id=client_id, record=True)
+    result = paper_trading.open_from_plan(client_id, analysis)
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("reason", "could not open paper trade"))
+    return {**result, "recommendation": analysis.get("recommendation"),
+            "confidence": analysis.get("confidence")}
+
+
+@app.post("/api/paper/close/{trade_id}")
+def api_paper_close(trade_id: int, req: PaperCloseRequest, request: Request):
+    client_id = get_client_ip(request)
+    trade = market_store.get_trade(trade_id)
+    if not trade or trade["client_id"] != client_id:
+        raise HTTPException(404, "trade not found")
+    price = req.price or market_data.get_quote(trade["symbol"], trade["exchange"])
+    if not price:
+        raise HTTPException(502, "no price available to close this trade at")
+    result = paper_trading.close_trade(trade_id, float(price), "manual")
+    if not result.get("ok"):
+        raise HTTPException(400, result.get("reason"))
+    return result
+
+
+@app.post("/api/paper/mark")
+def api_paper_mark(request: Request):
+    client_id = get_client_ip(request)
+    return paper_trading.mark_to_market(client_id)
+
+
+# ---------- Prediction history & accuracy ----------
+
+@app.get("/api/predictions")
+def api_predictions(request: Request, symbol: str | None = None,
+                    timeframe: str | None = None, limit: int = 200):
+    client_id = get_client_ip(request)
+    return {"predictions": prediction_analytics.history(client_id, symbol, timeframe, limit)}
+
+
+@app.get("/api/predictions/accuracy")
+def api_prediction_accuracy(request: Request, scope: str = "mine"):
+    client_id = None if scope == "all" else get_client_ip(request)
+    return prediction_analytics.accuracy(client_id)
+
+
+@app.post("/api/predictions/resolve")
+def api_resolve_predictions():
+    """Grade every prediction whose horizon has passed. The scheduler does
+    this automatically; this endpoint is for forcing it on demand."""
+    return prediction_analytics.resolve_due()
+
+
+# ---------- Market overview ----------
+
+@app.get("/api/market/overview")
+def api_market_overview(force: bool = False):
+    return market_overview.build_overview(force=force)
+
+
+# ---------- ML models ----------
+
+@app.get("/api/models")
+def api_models(symbol: str | None = None):
+    return {"backends": ml_registry.available_backends(),
+            "models": ml_registry.model_status(symbol)}
+
+
+class TrainRequest(BaseModel):
+    symbol: str
+    exchange: str = "NSE"
+    timeframe: str = "5m"
+
+
+@app.post("/api/models/train")
+def api_train_model(req: TrainRequest):
+    """Train and validate a model for one stock/timeframe. Returns the
+    validation report whether or not the model was accepted - a model that
+    fails to beat its baseline is stored as unusable and ignored by the
+    ensemble, which is reported here rather than hidden."""
+    return ml_registry.train_symbol(req.symbol, req.exchange, req.timeframe)
+
+
+# ---------- Historical data collection ----------
+
+@app.get("/api/data/status")
+def api_data_status():
+    return market_store.bar_stats()
+
+
+class CollectRequest(BaseModel):
+    symbol: str
+    exchange: str = "NSE"
+    timeframes: list[str] | None = None
+
+
+@app.post("/api/data/collect")
+def api_collect_data(req: CollectRequest):
+    """Back-fill and store bars for a symbol. The scheduler also does this
+    continuously for everything you track, so the local history grows on its
+    own - this is for pulling a new stock's history in immediately."""
+    return market_data.collect_history(req.symbol, req.exchange, req.timeframes)
 # ---------- Serve the PWA frontend ----------
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 if os.path.isdir(frontend_dir):

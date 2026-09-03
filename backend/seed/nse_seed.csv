@@ -1,0 +1,205 @@
+symbol,name,sector,industry
+RELIANCE,Reliance Industries Ltd,Energy,Refineries & Marketing
+TCS,Tata Consultancy Services Ltd,Information Technology,IT Services
+HDFCBANK,HDFC Bank Ltd,Financial Services,Private Bank
+ICICIBANK,ICICI Bank Ltd,Financial Services,Private Bank
+INFY,Infosys Ltd,Information Technology,IT Services
+HINDUNILVR,Hindustan Unilever Ltd,Consumer Staples,Household & Personal Products
+ITC,ITC Ltd,Consumer Staples,Diversified FMCG
+SBIN,State Bank of India,Financial Services,Public Bank
+BHARTIARTL,Bharti Airtel Ltd,Telecommunication,Telecom Services
+KOTAKBANK,Kotak Mahindra Bank Ltd,Financial Services,Private Bank
+LT,Larsen & Toubro Ltd,Capital Goods,Construction & Engineering
+AXISBANK,Axis Bank Ltd,Financial Services,Private Bank
+BAJFINANCE,Bajaj Finance Ltd,Financial Services,NBFC
+ASIANPAINT,Asian Paints Ltd,Consumer Discretionary,Paints
+MARUTI,Maruti Suzuki India Ltd,Automobile,Passenger Cars
+HCLTECH,HCL Technologies Ltd,Information Technology,IT Services
+SUNPHARMA,Sun Pharmaceutical Industries Ltd,Healthcare,Pharmaceuticals
+TITAN,Titan Company Ltd,Consumer Discretionary,Gems & Jewellery
+ULTRACEMCO,UltraTech Cement Ltd,Construction Materials,Cement
+WIPRO,Wipro Ltd,Information Technology,IT Services
+NESTLEIND,Nestle India Ltd,Consumer Staples,Packaged Foods
+ONGC,Oil & Natural Gas Corporation Ltd,Energy,Oil Exploration
+NTPC,NTPC Ltd,Power,Power Generation
+POWERGRID,Power Grid Corporation of India Ltd,Power,Power Transmission
+TATAMOTORS,Tata Motors Ltd,Automobile,Commercial Vehicles
+M&M,Mahindra & Mahindra Ltd,Automobile,Passenger Cars
+ADANIENT,Adani Enterprises Ltd,Diversified,Trading & Distribution
+ADANIPORTS,Adani Ports and Special Economic Zone Ltd,Services,Port & Port Services
+COALINDIA,Coal India Ltd,Metals & Mining,Coal
+BAJAJFINSV,Bajaj Finserv Ltd,Financial Services,Holding Company
+JSWSTEEL,JSW Steel Ltd,Metals & Mining,Iron & Steel
+TATASTEEL,Tata Steel Ltd,Metals & Mining,Iron & Steel
+HINDALCO,Hindalco Industries Ltd,Metals & Mining,Aluminium
+INDUSINDBK,IndusInd Bank Ltd,Financial Services,Private Bank
+GRASIM,Grasim Industries Ltd,Construction Materials,Cement
+DRREDDY,Dr Reddys Laboratories Ltd,Healthcare,Pharmaceuticals
+CIPLA,Cipla Ltd,Healthcare,Pharmaceuticals
+TECHM,Tech Mahindra Ltd,Information Technology,IT Services
+BRITANNIA,Britannia Industries Ltd,Consumer Staples,Packaged Foods
+DIVISLAB,Divis Laboratories Ltd,Healthcare,Pharmaceuticals
+EICHERMOT,Eicher Motors Ltd,Automobile,Two Wheelers
+HEROMOTOCO,Hero MotoCorp Ltd,Automobile,Two Wheelers
+BAJAJ-AUTO,Bajaj Auto Ltd,Automobile,Two Wheelers
+APOLLOHOSP,Apollo Hospitals Enterprise Ltd,Healthcare,Hospitals
+TATACONSUM,Tata Consumer Products Ltd,Consumer Staples,Tea & Coffee
+BPCL,Bharat Petroleum Corporation Ltd,Energy,Refineries & Marketing
+IOC,Indian Oil Corporation Ltd,Energy,Refineries & Marketing
+SHRIRAMFIN,Shriram Finance Ltd,Financial Services,NBFC
+SBILIFE,SBI Life Insurance Company Ltd,Financial Services,Life Insurance
+HDFCLIFE,HDFC Life Insurance Company Ltd,Financial Services,Life Insurance
+LTIM,LTIMindtree Ltd,Information Technology,IT Services
+DMART,Avenue Supermarts Ltd,Consumer Staples,Retail
+PIDILITIND,Pidilite Industries Ltd,Chemicals,Specialty Chemicals
+GODREJCP,Godrej Consumer Products Ltd,Consumer Staples,Household & Personal Products
+DABUR,Dabur India Ltd,Consumer Staples,Household & Personal Products
+MARICO,Marico Ltd,Consumer Staples,Edible Oil
+SIEMENS,Siemens Ltd,Capital Goods,Heavy Electrical Equipment
+HAVELLS,Havells India Ltd,Consumer Discretionary,Consumer Electronics
+AMBUJACEM,Ambuja Cements Ltd,Construction Materials,Cement
+SHREECEM,Shree Cement Ltd,Construction Materials,Cement
+VEDL,Vedanta Ltd,Metals & Mining,Diversified Metals
+BANKBARODA,Bank of Baroda,Financial Services,Public Bank
+PNB,Punjab National Bank,Financial Services,Public Bank
+CANBK,Canara Bank,Financial Services,Public Bank
+UNIONBANK,Union Bank of India,Financial Services,Public Bank
+IDFCFIRSTB,IDFC First Bank Ltd,Financial Services,Private Bank
+FEDERALBNK,Federal Bank Ltd,Financial Services,Private Bank
+BANDHANBNK,Bandhan Bank Ltd,Financial Services,Private Bank
+AUBANK,AU Small Finance Bank Ltd,Financial Services,Private Bank
+CHOLAFIN,Cholamandalam Investment and Finance Company Ltd,Financial Services,NBFC
+MUTHOOTFIN,Muthoot Finance Ltd,Financial Services,NBFC
+LICHSGFIN,LIC Housing Finance Ltd,Financial Services,Housing Finance
+PFC,Power Finance Corporation Ltd,Financial Services,Financial Institution
+RECLTD,REC Ltd,Financial Services,Financial Institution
+IRFC,Indian Railway Finance Corporation Ltd,Financial Services,Financial Institution
+HDFCAMC,HDFC Asset Management Company Ltd,Financial Services,Asset Management
+ICICIPRULI,ICICI Prudential Life Insurance Company Ltd,Financial Services,Life Insurance
+ICICIGI,ICICI Lombard General Insurance Company Ltd,Financial Services,General Insurance
+LICI,Life Insurance Corporation of India,Financial Services,Life Insurance
+SBICARD,SBI Cards and Payment Services Ltd,Financial Services,NBFC
+BAJAJHLDNG,Bajaj Holdings & Investment Ltd,Financial Services,Holding Company
+JIOFIN,Jio Financial Services Ltd,Financial Services,NBFC
+ADANIGREEN,Adani Green Energy Ltd,Power,Renewable Energy
+ADANIPOWER,Adani Power Ltd,Power,Power Generation
+ADANIENSOL,Adani Energy Solutions Ltd,Power,Power Transmission
+TATAPOWER,Tata Power Company Ltd,Power,Integrated Power Utilities
+JSWENERGY,JSW Energy Ltd,Power,Power Generation
+NHPC,NHPC Ltd,Power,Power Generation
+SJVN,SJVN Ltd,Power,Power Generation
+TORNTPOWER,Torrent Power Ltd,Power,Integrated Power Utilities
+GAIL,GAIL India Ltd,Energy,Gas Transmission
+IGL,Indraprastha Gas Ltd,Energy,Gas Distribution
+MGL,Mahanagar Gas Ltd,Energy,Gas Distribution
+PETRONET,Petronet LNG Ltd,Energy,LNG
+HINDPETRO,Hindustan Petroleum Corporation Ltd,Energy,Refineries & Marketing
+OIL,Oil India Ltd,Energy,Oil Exploration
+NMDC,NMDC Ltd,Metals & Mining,Iron Ore
+SAIL,Steel Authority of India Ltd,Metals & Mining,Iron & Steel
+JINDALSTEL,Jindal Steel & Power Ltd,Metals & Mining,Iron & Steel
+NATIONALUM,National Aluminium Company Ltd,Metals & Mining,Aluminium
+APLAPOLLO,APL Apollo Tubes Ltd,Metals & Mining,Steel Tubes
+JSWINFRA,JSW Infrastructure Ltd,Services,Port & Port Services
+CONCOR,Container Corporation of India Ltd,Services,Logistics
+DELHIVERY,Delhivery Ltd,Services,Logistics
+INDIGO,InterGlobe Aviation Ltd,Services,Airlines
+IRCTC,Indian Railway Catering and Tourism Corporation Ltd,Services,Travel & Tourism
+ZOMATO,Eternal Ltd,Consumer Discretionary,Online Food Delivery
+NYKAA,FSN E-Commerce Ventures Ltd,Consumer Discretionary,E-Retail
+PAYTM,One 97 Communications Ltd,Financial Services,Fintech
+POLICYBZR,PB Fintech Ltd,Financial Services,Fintech
+TRENT,Trent Ltd,Consumer Discretionary,Retail
+PAGEIND,Page Industries Ltd,Consumer Discretionary,Apparel
+ABFRL,Aditya Birla Fashion and Retail Ltd,Consumer Discretionary,Apparel
+JUBLFOOD,Jubilant FoodWorks Ltd,Consumer Discretionary,Restaurants
+VBL,Varun Beverages Ltd,Consumer Staples,Beverages
+UNITDSPR,United Spirits Ltd,Consumer Staples,Breweries & Distilleries
+RADICO,Radico Khaitan Ltd,Consumer Staples,Breweries & Distilleries
+COLPAL,Colgate Palmolive India Ltd,Consumer Staples,Household & Personal Products
+EMAMILTD,Emami Ltd,Consumer Staples,Household & Personal Products
+BERGEPAINT,Berger Paints India Ltd,Consumer Discretionary,Paints
+KANSAINER,Kansai Nerolac Paints Ltd,Consumer Discretionary,Paints
+VOLTAS,Voltas Ltd,Consumer Discretionary,Consumer Electronics
+WHIRLPOOL,Whirlpool of India Ltd,Consumer Discretionary,Consumer Electronics
+DIXON,Dixon Technologies India Ltd,Consumer Discretionary,Electronics Manufacturing
+AMBER,Amber Enterprises India Ltd,Consumer Discretionary,Electronics Manufacturing
+BOSCHLTD,Bosch Ltd,Automobile,Auto Components
+MOTHERSON,Samvardhana Motherson International Ltd,Automobile,Auto Components
+BHARATFORG,Bharat Forge Ltd,Automobile,Auto Components
+BALKRISIND,Balkrishna Industries Ltd,Automobile,Tyres
+MRF,MRF Ltd,Automobile,Tyres
+APOLLOTYRE,Apollo Tyres Ltd,Automobile,Tyres
+ASHOKLEY,Ashok Leyland Ltd,Automobile,Commercial Vehicles
+TVSMOTOR,TVS Motor Company Ltd,Automobile,Two Wheelers
+ESCORTS,Escorts Kubota Ltd,Automobile,Tractors
+TIINDIA,Tube Investments of India Ltd,Automobile,Auto Components
+BHEL,Bharat Heavy Electricals Ltd,Capital Goods,Heavy Electrical Equipment
+BEL,Bharat Electronics Ltd,Capital Goods,Defence
+HAL,Hindustan Aeronautics Ltd,Capital Goods,Defence
+MAZDOCK,Mazagon Dock Shipbuilders Ltd,Capital Goods,Defence
+BDL,Bharat Dynamics Ltd,Capital Goods,Defence
+COCHINSHIP,Cochin Shipyard Ltd,Capital Goods,Defence
+CUMMINSIND,Cummins India Ltd,Capital Goods,Industrial Machinery
+ABB,ABB India Ltd,Capital Goods,Heavy Electrical Equipment
+THERMAX,Thermax Ltd,Capital Goods,Industrial Machinery
+POLYCAB,Polycab India Ltd,Capital Goods,Cables
+KEI,KEI Industries Ltd,Capital Goods,Cables
+RVNL,Rail Vikas Nigam Ltd,Capital Goods,Construction & Engineering
+IRB,IRB Infrastructure Developers Ltd,Capital Goods,Roads & Highways
+GMRAIRPORT,GMR Airports Ltd,Services,Airport Services
+DLF,DLF Ltd,Realty,Real Estate
+GODREJPROP,Godrej Properties Ltd,Realty,Real Estate
+OBEROIRLTY,Oberoi Realty Ltd,Realty,Real Estate
+PRESTIGE,Prestige Estates Projects Ltd,Realty,Real Estate
+LODHA,Macrotech Developers Ltd,Realty,Real Estate
+PHOENIXLTD,Phoenix Mills Ltd,Realty,Real Estate
+LUPIN,Lupin Ltd,Healthcare,Pharmaceuticals
+AUROPHARMA,Aurobindo Pharma Ltd,Healthcare,Pharmaceuticals
+TORNTPHARM,Torrent Pharmaceuticals Ltd,Healthcare,Pharmaceuticals
+ALKEM,Alkem Laboratories Ltd,Healthcare,Pharmaceuticals
+ZYDUSLIFE,Zydus Lifesciences Ltd,Healthcare,Pharmaceuticals
+GLENMARK,Glenmark Pharmaceuticals Ltd,Healthcare,Pharmaceuticals
+BIOCON,Biocon Ltd,Healthcare,Biotechnology
+LAURUSLABS,Laurus Labs Ltd,Healthcare,Pharmaceuticals
+MANKIND,Mankind Pharma Ltd,Healthcare,Pharmaceuticals
+FORTIS,Fortis Healthcare Ltd,Healthcare,Hospitals
+MAXHEALTH,Max Healthcare Institute Ltd,Healthcare,Hospitals
+SYNGENE,Syngene International Ltd,Healthcare,Contract Research
+UPL,UPL Ltd,Chemicals,Agrochemicals
+PIIND,PI Industries Ltd,Chemicals,Agrochemicals
+SRF,SRF Ltd,Chemicals,Specialty Chemicals
+DEEPAKNTR,Deepak Nitrite Ltd,Chemicals,Specialty Chemicals
+AARTIIND,Aarti Industries Ltd,Chemicals,Specialty Chemicals
+TATACHEM,Tata Chemicals Ltd,Chemicals,Commodity Chemicals
+COROMANDEL,Coromandel International Ltd,Chemicals,Fertilisers
+CHAMBLFERT,Chambal Fertilisers and Chemicals Ltd,Chemicals,Fertilisers
+PERSISTENT,Persistent Systems Ltd,Information Technology,IT Services
+COFORGE,Coforge Ltd,Information Technology,IT Services
+MPHASIS,Mphasis Ltd,Information Technology,IT Services
+OFSS,Oracle Financial Services Software Ltd,Information Technology,IT Software
+KPITTECH,KPIT Technologies Ltd,Information Technology,IT Services
+TATAELXSI,Tata Elxsi Ltd,Information Technology,IT Services
+CYIENT,Cyient Ltd,Information Technology,IT Services
+ZENSARTECH,Zensar Technologies Ltd,Information Technology,IT Services
+NAUKRI,Info Edge India Ltd,Information Technology,Internet
+IDEA,Vodafone Idea Ltd,Telecommunication,Telecom Services
+INDUSTOWER,Indus Towers Ltd,Telecommunication,Telecom Infrastructure
+TATACOMM,Tata Communications Ltd,Telecommunication,Telecom Services
+HFCL,HFCL Ltd,Telecommunication,Telecom Equipment
+ITCHOTELS,ITC Hotels Ltd,Consumer Discretionary,Hotels
+INDHOTEL,Indian Hotels Company Ltd,Consumer Discretionary,Hotels
+CHALET,Chalet Hotels Ltd,Consumer Discretionary,Hotels
+BSE,BSE Ltd,Financial Services,Exchange
+MCX,Multi Commodity Exchange of India Ltd,Financial Services,Exchange
+CDSL,Central Depository Services India Ltd,Financial Services,Depository
+CAMS,Computer Age Management Services Ltd,Financial Services,Registrar
+ANGELONE,Angel One Ltd,Financial Services,Broking
+360ONE,360 ONE WAM Ltd,Financial Services,Wealth Management
+SUZLON,Suzlon Energy Ltd,Power,Renewable Energy
+INOXWIND,Inox Wind Ltd,Power,Renewable Energy
+WAAREEENER,Waaree Energies Ltd,Power,Renewable Energy
+WABAG,VA Tech Wabag Ltd,Capital Goods,Water Treatment
+KAYNES,Kaynes Technology India Ltd,Capital Goods,Electronics Manufacturing
+SYRMA,Syrma SGS Technology Ltd,Capital Goods,Electronics Manufacturing
+CGPOWER,CG Power and Industrial Solutions Ltd,Capital Goods,Heavy Electrical Equipment
