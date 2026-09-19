@@ -133,6 +133,57 @@ CREATE TABLE IF NOT EXISTS settings (
     data        TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS broker_orders (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    client_id         TEXT NOT NULL DEFAULT 'default',
+    prediction_id     INTEGER,
+    reference_id      TEXT UNIQUE,              -- our idempotency key
+    broker            TEXT NOT NULL,
+    broker_order_id   TEXT,
+    symbol            TEXT NOT NULL,
+    exchange          TEXT NOT NULL,
+    segment           TEXT NOT NULL DEFAULT 'CASH',
+    product           TEXT NOT NULL DEFAULT 'MIS',
+    side              TEXT NOT NULL,             -- BUY | SELL
+    order_type        TEXT NOT NULL,             -- LIMIT | MARKET | SL | SL_M
+    quantity          INTEGER NOT NULL,
+    price             REAL,
+    trigger_price     REAL,
+    intent            TEXT NOT NULL DEFAULT 'ENTRY',   -- ENTRY | EXIT | SQUARE_OFF
+    status            TEXT NOT NULL DEFAULT 'NEW',
+    filled_quantity   INTEGER DEFAULT 0,
+    average_price     REAL,
+    stop_loss         REAL,
+    target_price      REAL,
+    confidence        REAL,
+    market_regime     TEXT,
+    timeframe         TEXT,
+    dry_run           INTEGER NOT NULL DEFAULT 1,
+    placed_at         TEXT NOT NULL,
+    updated_at        TEXT,
+    closed_at         TEXT,
+    realised_pnl      REAL,
+    request_json      TEXT,
+    response_json     TEXT,
+    error             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_orders_client ON broker_orders (client_id, placed_at);
+CREATE INDEX IF NOT EXISTS idx_orders_status ON broker_orders (status);
+
+-- Append-only record of every order decision, including the ones that were
+-- refused. A blocked order is the most important thing to be able to audit:
+-- it is the evidence that the safety gates are doing their job.
+CREATE TABLE IF NOT EXISTS trade_audit (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    at          TEXT NOT NULL,
+    client_id   TEXT,
+    event       TEXT NOT NULL,        -- ARM | DISARM | KILL | ORDER_ALLOWED | ORDER_BLOCKED | ORDER_SENT | ORDER_FAILED | ...
+    symbol      TEXT,
+    detail      TEXT,
+    payload     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_audit_at ON trade_audit (at);
+
 CREATE TABLE IF NOT EXISTS kv (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL,
@@ -528,3 +579,134 @@ def save_settings(client_id: str, data: dict):
             "ON CONFLICT(client_id) DO UPDATE SET data=excluded.data",
             (client_id, json.dumps(data)),
         )
+
+
+# ---------------------------------------------------------------------------
+# Broker orders + trade audit (live trading)
+# ---------------------------------------------------------------------------
+
+ORDER_FIELDS = [
+    "client_id", "prediction_id", "reference_id", "broker", "broker_order_id",
+    "symbol", "exchange", "segment", "product", "side", "order_type", "quantity",
+    "price", "trigger_price", "intent", "status", "stop_loss", "target_price",
+    "confidence", "market_regime", "timeframe", "dry_run", "placed_at",
+    "request_json", "response_json", "error",
+]
+
+
+def save_order(record: dict) -> int:
+    row = {k: record.get(k) for k in ORDER_FIELDS}
+    row["client_id"] = row.get("client_id") or "default"
+    row["placed_at"] = row.get("placed_at") or _now()
+    row["status"] = row.get("status") or "NEW"
+    row["intent"] = row.get("intent") or "ENTRY"
+    row["segment"] = row.get("segment") or "CASH"
+    row["product"] = row.get("product") or "MIS"
+    row["dry_run"] = 1 if row.get("dry_run", True) else 0
+    placeholders = ",".join("?" for _ in ORDER_FIELDS)
+    with cursor(commit=True) as conn:
+        cur = conn.execute(
+            f"INSERT INTO broker_orders ({','.join(ORDER_FIELDS)}) VALUES ({placeholders})",
+            [row[k] for k in ORDER_FIELDS],
+        )
+        return cur.lastrowid
+
+
+def update_order(order_id: int, **fields):
+    if not fields:
+        return
+    fields["updated_at"] = _now()
+    assignments = ",".join(f"{k}=?" for k in fields)
+    with cursor(commit=True) as conn:
+        conn.execute(f"UPDATE broker_orders SET {assignments} WHERE id=?",
+                     [*fields.values(), order_id])
+
+
+def get_order(order_id: int) -> dict | None:
+    with cursor() as conn:
+        row = conn.execute("SELECT * FROM broker_orders WHERE id=?", (order_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def get_order_by_reference(reference_id: str) -> dict | None:
+    with cursor() as conn:
+        row = conn.execute("SELECT * FROM broker_orders WHERE reference_id=?",
+                           (reference_id,)).fetchone()
+    return dict(row) if row else None
+
+
+def list_orders(client_id: str | None = None, status: str | None = None,
+                since_iso: str | None = None, limit: int = 200) -> list[dict]:
+    sql = "SELECT * FROM broker_orders WHERE 1=1"
+    params: list = []
+    if client_id:
+        sql += " AND client_id=?"
+        params.append(client_id)
+    if status:
+        sql += " AND status=?"
+        params.append(status)
+    if since_iso:
+        sql += " AND placed_at >= ?"
+        params.append(since_iso)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    with cursor() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [dict(r) for r in rows]
+
+
+def live_orders_open() -> list[dict]:
+    """Orders that are still working or filled-and-unexited, real money only."""
+    with cursor() as conn:
+        rows = conn.execute(
+            "SELECT * FROM broker_orders WHERE dry_run=0 AND status IN "
+            "('NEW','OPEN','PENDING','TRIGGER_PENDING','ACKED','PARTIALLY_FILLED','FILLED') "
+            "AND closed_at IS NULL ORDER BY id ASC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def audit(event: str, detail: str = "", symbol: str | None = None,
+          client_id: str | None = None, payload=None):
+    """Append-only. Never updated, never deleted - it is the record of what
+    the system did with real money and why."""
+    with cursor(commit=True) as conn:
+        conn.execute(
+            "INSERT INTO trade_audit (at, client_id, event, symbol, detail, payload) "
+            "VALUES (?,?,?,?,?,?)",
+            (_now(), client_id, event, symbol, detail,
+             json.dumps(payload, default=str) if payload is not None else None),
+        )
+
+
+def list_audit(limit: int = 200, since_iso: str | None = None) -> list[dict]:
+    sql = "SELECT * FROM trade_audit WHERE 1=1"
+    params: list = []
+    if since_iso:
+        sql += " AND at >= ?"
+        params.append(since_iso)
+    sql += " ORDER BY id DESC LIMIT ?"
+    params.append(int(limit))
+    with cursor() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        if d.get("payload"):
+            try:
+                d["payload"] = json.loads(d["payload"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+        out.append(d)
+    return out
+
+
+def count_orders_today(client_id: str | None = None, dry_run: bool = False) -> int:
+    today = dt.datetime.now(dt.timezone.utc).replace(tzinfo=None).date().isoformat()
+    sql = "SELECT COUNT(*) c FROM broker_orders WHERE placed_at >= ? AND dry_run=? AND intent='ENTRY'"
+    params: list = [today, 1 if dry_run else 0]
+    if client_id:
+        sql += " AND client_id=?"
+        params.append(client_id)
+    with cursor() as conn:
+        return conn.execute(sql, params).fetchone()["c"]
