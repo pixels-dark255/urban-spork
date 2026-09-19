@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
 <meta name="theme-color" content="#0E1512" />
-<title>Tickerboard</title>
+<title>Urban Spork</title>
 <link rel="manifest" href="manifest.json" />
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
@@ -22,10 +22,10 @@
 
   <header class="app-header">
     <div class="app-header-top">
-      <h1>Tickerboard</h1>
+      <h1>Urban Spork</h1>
       <span class="market-status-pill" id="marketStatusPill">…</span>
     </div>
-    <p class="eyebrow">nse &middot; bse &middot; personal terminal</p>
+    <p class="eyebrow">nse &middot; bse &middot; intraday &amp; prediction platform</p>
   </header>
 
   <div class="app-body" id="appBody">
@@ -81,25 +81,123 @@
     </div>
   </main>
 
+  <!-- ===================== Intraday engine ===================== -->
+  <main id="view-signals" class="view">
+    <div class="section-heading">
+      <span class="eyebrow">recommendation engine</span>
+      <h2>Intraday</h2>
+    </div>
+
+    <div class="search-row">
+      <input id="signalSearchInput" type="text" inputmode="search" autocomplete="off"
+             placeholder="Pick a stock — RELIANCE, TCS, any NSE/BSE name…" />
+      <button class="search-clear" id="signalSearchClear" aria-label="Clear" hidden>✕</button>
+    </div>
+    <div id="signalSearchResults" class="result-list"></div>
+
+    <div id="signalPicked" class="picked-stock" hidden></div>
+    <div class="tf-scroller" id="signalTimeframes"></div>
+    <div id="signalContent"><p class="muted">Choose a stock above, then a timeframe.</p></div>
+  </main>
+
+  <!-- ===================== Market overview ===================== -->
+  <main id="view-market" class="view">
+    <div class="section-heading watch-heading-row">
+      <div>
+        <span class="eyebrow">context</span>
+        <h2>Market</h2>
+      </div>
+      <button class="refresh-btn" id="refreshMarketBtn" aria-label="Refresh market">↻</button>
+    </div>
+    <div id="marketContent"><p class="muted">Loading…</p></div>
+  </main>
+
+  <!-- ===================== Paper trading ===================== -->
+  <main id="view-paper" class="view">
+    <div class="section-heading watch-heading-row">
+      <div>
+        <span class="eyebrow">simulated money only</span>
+        <h2>Paper</h2>
+      </div>
+      <button class="refresh-btn" id="refreshPaperBtn" aria-label="Refresh paper trades">↻</button>
+    </div>
+    <div id="paperContent"><p class="muted">Loading…</p></div>
+  </main>
+
+  <!-- ===================== Prediction history ===================== -->
+  <main id="view-predictions" class="view">
+    <button class="back-btn" id="backFromPredictions">&larr; back</button>
+    <div class="section-heading">
+      <span class="eyebrow">track record</span>
+      <h2>Predictions</h2>
+    </div>
+    <div id="predictionsContent"><p class="muted">Loading…</p></div>
+  </main>
+
+  <!-- ===================== Settings ===================== -->
+  <main id="view-settings" class="view">
+    <button class="back-btn" id="backFromSettings">&larr; back</button>
+    <div class="section-heading">
+      <span class="eyebrow">risk management</span>
+      <h2>Settings</h2>
+    </div>
+    <div id="settingsContent"><p class="muted">Loading…</p></div>
+  </main>
+
+  <!-- ===================== More ===================== -->
+  <main id="view-more" class="view">
+    <div class="section-heading">
+      <span class="eyebrow">everything else</span>
+      <h2>More</h2>
+    </div>
+    <div class="more-list">
+      <button class="more-item" data-goto="view-predictions">
+        <span class="more-icon">◔</span>
+        <span><strong>Prediction history</strong><small>Every call the engine made, and how it turned out</small></span>
+      </button>
+      <button class="more-item" data-goto="view-watchlist">
+        <span class="more-icon">◐</span>
+        <span><strong>Watchlist</strong><small>Multi-day price predictions with tracked accuracy</small></span>
+      </button>
+      <button class="more-item" data-goto="view-analysis">
+        <span class="more-icon">◈</span>
+        <span><strong>Analysis</strong><small>Longer-horizon forecast for the last stock you opened</small></span>
+      </button>
+      <button class="more-item" data-goto="view-intraday">
+        <span class="more-icon">⚙</span>
+        <span><strong>Auto-simulation</strong><small>The original rule-based bot, still running on 5m/15m/30m</small></span>
+      </button>
+      <button class="more-item" data-goto="view-settings">
+        <span class="more-icon">◎</span>
+        <span><strong>Risk settings</strong><small>Capital, risk per trade, daily loss cap, minimum R:R</small></span>
+      </button>
+      <div id="platformStatusBox" class="platform-status"></div>
+    </div>
+  </main>
+
   </div>
 
   <nav class="tab-bar">
     <button class="tab-btn active" data-view="view-search">
       <span class="tab-icon">◎</span><span>Search</span>
     </button>
-    <button class="tab-btn" data-view="view-analysis">
-      <span class="tab-icon">◈</span><span>Analyse</span>
-    </button>
-    <button class="tab-btn" data-view="view-watchlist">
-      <span class="tab-icon">◐</span><span>Watchlist</span>
-    </button>
-    <button class="tab-btn" data-view="view-intraday">
+    <button class="tab-btn" data-view="view-signals">
       <span class="tab-icon">⚡</span><span>Intraday</span>
+    </button>
+    <button class="tab-btn" data-view="view-market">
+      <span class="tab-icon">◈</span><span>Market</span>
+    </button>
+    <button class="tab-btn" data-view="view-paper">
+      <span class="tab-icon">▤</span><span>Paper</span>
+    </button>
+    <button class="tab-btn" data-view="view-more">
+      <span class="tab-icon">⋯</span><span>More</span>
     </button>
   </nav>
 
   <div class="toast-host" id="toastHost"></div>
 
 <script src="app.js"></script>
+<script src="platform.js"></script>
 </body>
 </html>

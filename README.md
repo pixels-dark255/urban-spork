@@ -1,147 +1,259 @@
-# Tickerboard — NSE/BSE stock analyser & predictor (personal use)
+# Urban Spork
 
-A local-ish personal app: a Python backend that gathers NSE/BSE stock data,
-news, and a weather feed, runs an ensemble prediction, and tracks its own
-accuracy over time — plus a phone-installable web app (PWA) frontend.
+An AI-assisted analysis and intraday-trading platform for Indian equities
+(NSE + BSE). It searches the full stock universe, analyses a stock across
+ten intraday timeframes, and produces a complete, risk-checked trade idea —
+entry, stop loss, target, position size, risk, reward, R:R and confidence —
+or an explicit refusal, with its reasoning shown either way.
 
-**Read this first — an honest framing:** stock prices cannot be reliably
-predicted, by this app or anyone else's. This tool gives you a transparent,
-data-backed *estimate* with a visible confidence range, and it grades its own
-past predictions so you can see for yourself how good they actually are for a
-given stock and horizon. Treat it as a research aid, not a trading signal.
+**Read this first — an honest framing.** Stock prices cannot be reliably
+predicted, by this software or anyone else's. This platform combines
+transparent, well-understood methods (technical analysis, statistics,
+market regime, volume, and machine learning where it has *earned* the
+right to vote), records every call it makes, and grades itself afterwards
+so you can see what its confidence numbers are actually worth. It makes no
+claim of guaranteed profits or accuracy. The design goal is fewer, better
+signals — not more of them.
 
 ---
 
-## 1. What's inside
+## 1. What it does
+
+| Tab | What's there |
+| --- | --- |
+| **Search** | Fuzzy search across the whole NSE + BSE universe. Works with the market shut and with NSE/BSE unreachable. |
+| **Intraday** | The recommendation engine. Pick a stock and one of ten timeframes; get a full trade plan or a reasoned "no trade". |
+| **Market** | NIFTY / SENSEX / BANK NIFTY / India VIX, market breadth, top movers, sector performance — also fed back into every prediction. |
+| **Paper** | Simulated trades with a live scorecard: win rate, average win vs average loss, profit factor, expectancy. |
+| **More → Predictions** | Every recommendation ever made and how it turned out, sliced by timeframe, stock, regime, and confidence bucket. |
+| **More → Settings** | Capital, risk per trade, daily loss cap, minimum R:R, confidence floor. |
+| **More → Watchlist / Analysis** | The original multi-day forecast screens, with their 90-day backtest and tracked accuracy. |
+| **More → Auto-simulation** | The original rule-based paper-trading bot, still running on 5m/15m/30m. |
+
+---
+
+## 2. How a recommendation is built
 
 ```
-stock-analyzer/
-  backend/          FastAPI app — data fetching, prediction engine, watchlist scheduler
-    main.py
-    data_sources.py   NSE/BSE list, yfinance prices, news, weather
-    indicators.py     RSI / MACD / Bollinger / volatility
-    predictor.py       the ensemble prediction engine
-    scheduler.py       background job that keeps watchlist predictions live
-    db.py              SQLite models (watchlist + prediction history)
-    requirements.txt
-    render.yaml         one-click Render deployment config
-    .env.example
-  frontend/          Mobile PWA (installs to your phone's home screen)
-    index.html / style.css / app.js
-    manifest.json / sw.js
-    icons/
+             Market data (provider layer)
+                        |
+                 Feature engineering
+                        |
+      Technical + ML + Statistical + Volume + Market context
+                        |
+             Adaptive ensemble (fusion)
+                        |
+               Risk management engine
+                        |
+        BUY / SELL / HOLD / NO TRADE + full plan
 ```
 
-The backend also **serves the frontend** — one deployment, one URL.
+**1. Market data.** `providers/` is a swappable layer — Yahoo Finance today,
+Kotak Neo stubbed for later. The prediction engine never imports a broker
+SDK, so changing data source is a config change, not a rewrite.
+
+**2. Indicators.** RSI, MACD, EMA (9/21/50), SMA, Bollinger Bands, ATR, ADX
+with +DI/−DI, VWAP, OBV, volume profile, and clustered swing-pivot
+support/resistance. All pure pandas — no TA library to install or go stale.
+
+**3. Market regime.** Before predicting anything, classify the environment:
+`STRONG_UPTREND / UPTREND / SIDEWAYS / DOWNTREND / STRONG_DOWNTREND`, plus
+flags for high volatility, thin volume, and gap up/down. This matters
+because the right strategy in each is different and mutually contradictory
+— buying a breakout is correct in a strong trend and wrong in a range.
+Trend-following, mean-reversion and breakout signals are re-weighted
+accordingly.
+
+**4. Five components vote**, each in [−1, +1] with its own stated reasons:
+technical, ML, statistical, volume, and market context.
+
+**5. Adaptive ensemble.** Weights are not fixed. They start from a sane
+baseline, are tilted by the regime, and are then scaled by each component's
+*measured* hit rate for this regime and timeframe — but only once there are
+at least 20 resolved predictions to judge by, and always within bounds, so
+one lucky streak can never hand a component the whole vote.
+
+**6. Confidence** starts from the size of the combined score, is scaled by
+how much the components actually agree, and is then penalised for thin
+volume, extreme volatility, an uncertain regime read, missing components,
+and approximated data.
+
+**7. Risk management has the final word.** It sizes an ATR-based stop
+(widened in high volatility, tightened to structure when a real level sits
+closer), sets a target from the minimum R:R or the next real level,
+computes position size from your capital and risk-per-trade, and **vetoes
+the trade** if the R:R doesn't clear your floor, the size rounds to zero, a
+level sits squarely in the path, your daily loss limit is spent, or
+confidence is below your threshold. A veto is a first-class result with a
+reason, not an error.
 
 ---
 
-## 2. Get your free API key (5 minutes)
+## 3. Timeframes
 
-The app works without this (falls back to keyless Google News RSS), but a
-real key gives better news coverage:
+30s · 1m · 2m · 5m · 10m · 15m · 30m · 1h · 1.5h · 2h
 
-1. Go to https://newsapi.org/register — sign up free (100 requests/day).
-2. Copy your API key.
-3. You'll paste it into Render's environment variables in step 4.
+Where the data source doesn't serve a timeframe natively (10m, 1.5h, 2h),
+bars are rolled up from finer ones, aligned to each session's 09:15 open so
+a 10-minute candle never splices two sessions together.
 
-Weather (Open-Meteo) and price data (Yahoo Finance via `yfinance`) need **no
-key at all**.
+**30s is approximated.** No free provider serves sub-minute Indian equity
+bars, so it runs on 1-minute data. It is flagged as approximated in the API
+and marked with an asterisk in the UI, and its confidence is penalised —
+rather than pretending to a resolution the data doesn't have.
 
 ---
 
-## 3. Test it locally first (optional but recommended)
+## 4. Machine learning: the rule that matters
 
-You'll need Python 3.11+ installed on your computer.
+A model is allowed to influence a live recommendation **only if it beat a
+majority-class baseline on data it never saw during training.** Everything
+else is stored with `usable: false` and ignored by the ensemble. An
+unvalidated model that quietly votes is worse than no model, because its
+votes look identical to a good one's.
+
+- Validation is a **chronological hold-out**, never a shuffled split.
+  Shuffling a time series lets a model learn from its own future, which
+  produces beautiful validation scores and a system that loses money.
+- Labels are three-way (up / down / **neutral**), where neutral is any move
+  smaller than a noise band scaled to that stock's own bar range. Training
+  on raw sign teaches a model to call a 0.02% drift a "buy".
+- Backends: XGBoost and LightGBM when installed, otherwise scikit-learn's
+  RandomForest / GradientBoosting / logistic regression. The platform must
+  run on a free tier, and a RandomForest that exists beats an XGBoost that
+  doesn't.
+- Retraining runs **daily after the close**, not after every trade. A model
+  retrained on each new outcome chases the last hour of noise.
+- No LSTM yet — deliberately. Adding a sequential model before the local
+  bar database holds months of history would be theatre. The registry takes
+  any classifier with `fit`/`predict_proba`, so one can be added without
+  touching anything else.
+
+Models report their top features, so a recommendation is explainable rather
+than a black box.
+
+---
+
+## 5. Historical data
+
+Every bar the platform fetches is written to a local SQLite database and
+**never deleted** — not at the close, not over the weekend, not on restart.
+The background collector adds to it every few minutes during market hours
+for everything you track. That growing dataset is what makes ML training
+possible at all, and it doubles as the offline fallback: when the market is
+shut or the data source is unreachable, the app serves stored history
+instead of an error.
+
+SQLite by default, plain SQL with no ORM, so moving to PostgreSQL later is
+a driver swap rather than a rewrite.
+
+---
+
+## 6. Running it
 
 ```bash
 cd backend
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
+python -m venv venv && source venv/bin/activate     # Windows: venv\Scripts\activate
 pip install -r requirements.txt
-cp .env.example .env            # then edit .env and paste your NEWS_API_KEY
+cp .env.example .env                                 # optional - edit as needed
 uvicorn main:app --reload --port 8000
 ```
 
-Open `http://localhost:8000` in your browser (or on your phone if it's on
-the same wifi, using your computer's local IP instead of `localhost`).
+Open `http://localhost:8000`. The backend serves the frontend, so it's one
+process and one URL. On first run the stock universe is seeded from a
+bundled file (search works instantly, with no network at all) and a live
+NSE/BSE refresh runs in the background.
+
+### Tests
+
+```bash
+cd backend
+pip install -r requirements-dev.txt
+python -m pytest tests/ -q
+```
+
+The suite runs entirely on synthetic data with the network stubbed out, so
+it passes at weekends, offline, and under a rate limit.
+
+### Deploying to Render
+
+Render picks up `backend/render.yaml`. Set `NEWS_API_KEY` (optional) and
+`DATABASE_URL` (optional) in the Environment tab.
+
+Two caveats on the free tier: services spin down after ~15 minutes idle, so
+the collector and scheduler pause while asleep; and the disk resets on
+redeploy, which takes the collected bar database with it. For continuous
+collection, either use a paid tier with a persistent disk or point
+`MARKET_DB_PATH` at one.
+
+### Install on a phone
+
+Open the URL in Chrome → **⋮** → **Add to Home screen**. It runs full-screen
+as a PWA.
 
 ---
 
-## 4. Deploy to Render (free) so it runs continuously
+## 7. API
 
-1. Push this whole `stock-analyzer` folder to a new **GitHub repository**
-   (Render deploys from a git repo — create one at github.com if you don't
-   have it there yet, `git init`, `git add .`, `git commit`, `git push`).
-2. Go to https://render.com, sign up free, click **New → Web Service**.
-3. Connect your GitHub repo. Render will detect `backend/render.yaml`
-   automatically — if it asks for a root directory, set it to `backend`.
-4. In the **Environment** tab, add:
-   - `NEWS_API_KEY` = your key from step 2
-   - (leave `DATABASE_URL` unset to use SQLite, or see note below)
-5. Click **Deploy**. Render gives you a URL like
-   `https://tickerboard-xxxx.onrender.com`.
+| Endpoint | Purpose |
+| --- | --- |
+| `GET /api/stocks/search?q=` | Fuzzy search the NSE + BSE universe |
+| `GET /api/timeframes` | Supported timeframes and their horizons |
+| `GET /api/intraday/analyze?symbol=&timeframe=` | Full recommendation + trade plan |
+| `POST /api/intraday/scan` | Same, across up to 25 symbols |
+| `GET/POST /api/settings` | Risk configuration |
+| `GET /api/paper/positions`, `POST /api/paper/open`, `POST /api/paper/close/{id}` | Paper trading |
+| `GET /api/predictions`, `GET /api/predictions/accuracy` | History and the report card |
+| `GET /api/market/overview` | Indices, breadth, movers, sectors |
+| `GET /api/models`, `POST /api/models/train` | ML registry |
+| `GET /api/data/status`, `POST /api/data/collect` | Historical bar store |
+| `GET /api/platform/status` | Providers, universe, data and model counts |
 
-**Free tier note:** Render's free web services spin down after ~15 minutes
-of no traffic, and spin back up (takes ~30-60s) on the next request. This
-means the watchlist scheduler pauses while asleep and resumes once you open
-the app again — fine for personal use, just not truly 24/7. If you want real
-24/7 tracking, either upgrade to Render's paid tier, or set up a free
-uptime-pinger (e.g. UptimeRobot hitting `/api/health` every 10 minutes) to
-keep it awake during market hours.
-
-**Persistent storage note:** Render's free tier disk resets on every
-redeploy. Your watchlist/prediction history will survive restarts but not
-redeploys, unless you point `DATABASE_URL` at a free Postgres from
-[supabase.com](https://supabase.com) or [neon.tech](https://neon.tech) — copy
-their connection string into the `DATABASE_URL` env var (see `.env.example`).
+The original watchlist and analysis endpoints (`/api/watchlist`,
+`/api/stocks/{symbol}/analyze`, `/api/intraday/stocks`) are unchanged.
 
 ---
 
-## 5. Install it on your phone as an app
+## 8. Secrets
 
-1. Open your Render URL in **Chrome** on your Android phone.
-2. Tap the **⋮** menu → **Add to Home screen** (or you may see an automatic
-   "Install app" banner).
-3. It now opens full-screen from an icon on your home screen, no browser
-   bar — a real app-like experience, just not a compiled `.apk`.
-
----
-
-## 6. How the prediction actually works
-
-For each stock, the backend pulls history across every window you asked for
-(5y, 1y, 6mo, 3mo, 2mo, 1mo, 4wk, 3wk, 2wk, 1wk, 4d, 3d, 2d, 1d, and recent
-intraday), then blends:
-
-- **Multi-timeframe trend** — weighted average drift, reweighted by how far
-  ahead you're predicting (a 15-minute prediction leans on the last few
-  days; a 3-month prediction leans on years of history).
-- **Momentum** — RSI overbought/oversold + MACD histogram direction.
-- **Volatility-based projection** — a Geometric Brownian Motion model
-  (the standard stochastic model for price paths) turns the drift + volatility
-  into a predicted price *and* a genuine confidence band, not just a point guess.
-- **News sentiment** — VADER sentiment score across recent headlines nudges
-  the drift up or down.
-- **Seasonality** — average historical return for this calendar month,
-  computed from the stock's own 5-year history (the honest, data-backed
-  version of "does the season matter").
-- **Weather** — a small, explicitly experimental nudge. There's no strong
-  general evidence that weather predicts stock prices outside a few sectors
-  (agriculture, power demand, travel), so this is deliberately capped small.
-
-Every prediction is logged with a target time. Once that time passes, the
-scheduler fetches the real price and computes the error — this is what
-powers the "tracked accuracy" number on your watchlist, so the app's
-track record is always visible, not just its guesses.
+Broker credentials, API keys and database URLs are read from environment
+variables only, via `config.py`. `.env` is git-ignored. Nothing sensitive
+belongs in source, and `providers/kotak_neo.py` contains **no order-placement
+code at all** — that is Phase 6 of the roadmap, gated behind extensive
+validation and a manual-approval default. An untested order path is the
+most expensive kind of bug this project could ship.
 
 ---
 
-## 7. Extending it later
+## 9. Roadmap
 
-- Swap the ensemble for a trained ML model (XGBoost/LightGBM) once you've
-  collected enough of your own resolved-prediction history to train on.
-- Add more exchanges/asset types by extending `to_yf_symbol()` in
-  `data_sources.py`.
-- Add push notifications (e.g. via a free service like Pushover) when a
-  watchlist prediction resolves.
+- **Phase 1 — done.** Full NSE/BSE search, persistent universe, improved
+  prediction engine.
+- **Phase 2 — done.** Intraday tab, all ten timeframes, stop loss, target,
+  position sizing, risk/reward.
+- **Phase 3 — done.** Historical intraday database, collection pipeline,
+  paper trading, prediction grading. (A dedicated backtesting screen for the
+  intraday engine is still to come; the 90-day backtest currently covers the
+  multi-day watchlist engine only.)
+- **Phase 4 — in progress.** Hybrid ML, ensemble fusion, regime detection
+  and adaptive weighting are all live. What they need now is *data*: the
+  models get useful only once the collector has built up months of local
+  history.
+- **Phase 5 — pending.** Kotak Neo integration for live prices, historical
+  data and WebSocket streaming.
+- **Phase 6 — pending.** Optional real execution, manual approval by
+  default, automated only after extensive validation.
+
+---
+
+## 10. What this software will not do
+
+- Claim guaranteed profits or guaranteed accuracy.
+- Let an unvalidated model vote on a live recommendation.
+- Emit a trade it cannot give a sane stop, a worthwhile target and a
+  survivable size.
+- Trade past your daily loss limit.
+- Hide its reasoning.
+
+It will say **NO TRADE** often. Most market moments do not contain a good
+trade, and an engine that always finds one is not being clever.

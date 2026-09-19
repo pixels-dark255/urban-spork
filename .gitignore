@@ -1,0 +1,19 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+
+# Secrets - never commit these
+.env
+.env.local
+
+# Collected market data, trained models and legacy JSON stores. These are
+# generated at runtime and are per-deployment; the whole point of the local
+# database is that it grows on the machine that runs it.
+backend/data/
+backend/*.db
+backend/*.db-wal
+backend/*.db-shm
+backend/stockapp.db

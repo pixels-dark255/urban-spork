@@ -476,6 +476,7 @@ async function runSearch(q) {
           <div class="result-name">${escapeHtml(r.name)}</div>
         </div>
         <div class="result-exchange">${r.exchange}</div>
+        <button class="result-quick-intraday" data-symbol="${r.symbol}" data-exchange="${r.exchange}" data-name="${escapeHtml(r.name)}" title="Intraday analysis" aria-label="Intraday analysis for ${r.symbol}">⚡</button>
         <button class="result-quick-add" data-symbol="${r.symbol}" data-exchange="${r.exchange}" data-name="${escapeHtml(r.name)}" title="Add to watchlist" aria-label="Add ${r.symbol} to watchlist">+</button>
       </div>
     `).join("");
@@ -486,6 +487,18 @@ async function runSearch(q) {
           exchange: el.dataset.exchange,
           name: el.dataset.name,
         });
+      });
+    });
+    searchResults.querySelectorAll(".result-quick-intraday").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        if (typeof window.urbanSporkPickStock === "function") {
+          window.urbanSporkPickStock({
+            symbol: btn.dataset.symbol,
+            exchange: btn.dataset.exchange,
+            name: btn.dataset.name,
+          });
+        }
       });
     });
     searchResults.querySelectorAll(".result-quick-add").forEach((btn) => {

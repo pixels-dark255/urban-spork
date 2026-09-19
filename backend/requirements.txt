@@ -12,3 +12,9 @@ sqlalchemy==2.0.32
 psycopg2-binary==2.9.9
 python-dotenv==1.0.1
 pytz==2024.1
+
+# Optional gradient-boosting backends. The ML layer uses them when present and
+# falls back to scikit-learn's own ensembles when not, so neither is required -
+# uncomment if the deployment target can install them.
+# xgboost>=2.1.0
+# lightgbm>=4.5.0

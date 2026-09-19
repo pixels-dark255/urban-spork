@@ -1,5 +1,5 @@
-const CACHE_NAME = "tickerboard-shell-v2";
-const SHELL_FILES = ["/", "/style.css", "/app.js", "/manifest.json"];
+const CACHE_NAME = "urban-spork-shell-v1";
+const SHELL_FILES = ["/", "/style.css", "/app.js", "/platform.js", "/manifest.json"];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(

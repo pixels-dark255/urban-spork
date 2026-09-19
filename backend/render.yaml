@@ -1,6 +1,6 @@
 services:
   - type: web
-    name: stock-analyzer
+    name: urban-spork
     env: python
     plan: free
     buildCommand: "pip install -r requirements.txt"
@@ -8,9 +8,20 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11.11"
+      # Secrets are entered in Render's dashboard, never committed here.
       - key: NEWS_API_KEY
         sync: false
       - key: DATABASE_URL
         sync: false
+      - key: MARKET_DATA_PROVIDER
+        value: "yahoo"
       - key: TICK_MINUTES
         value: "5"
+      - key: COLLECTOR_MINUTES
+        value: "5"
+      - key: MIN_TRADE_CONFIDENCE
+        value: "0.55"
+      # Point this at a persistent disk if you want the collected bar
+      # database to survive redeploys - the free tier's disk does not.
+      - key: MARKET_DB_PATH
+        sync: false
