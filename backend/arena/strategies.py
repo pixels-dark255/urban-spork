@@ -71,7 +71,11 @@ def enrich(bars: pd.DataFrame) -> pd.DataFrame:
     df["atr14"] = tr.rolling(14, min_periods=5).mean()
     mid = close.rolling(20, min_periods=20).mean()
     sd = close.rolling(20, min_periods=20).std()
-    df["bb_mid"], df["bb_up"] = mid, mid + 2 * sd
+    # The lower band has no consumer yet - the breakout strategy trades the
+    # upper band and exits on the middle - but a band set missing a side is
+    # a trap for the next mean-reversion strategy, which would reach for
+    # bb_low and silently get None.
+    df["bb_mid"], df["bb_up"], df["bb_low"] = mid, mid + 2 * sd, mid - 2 * sd
     df["vol_avg20"] = vol.rolling(20, min_periods=10).mean()
 
     g = df.groupby("session", sort=False)

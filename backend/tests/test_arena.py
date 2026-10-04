@@ -5,6 +5,7 @@ prove the simulator does NOT flatter strategies: costs are charged, stops
 win ties, nothing is held overnight, and a losing strategy gets benched.
 """
 import datetime as dt
+import math
 
 import numpy as np
 import pandas as pd
@@ -158,6 +159,16 @@ def test_all_benched_verdict_says_sit_in_cash():
 
 
 # ---------------------------------------------------------------- no lookahead
+
+def test_bollinger_bands_are_symmetric_around_the_middle():
+    """Spec asks for Bollinger bands (20, 2); the lower band is part of a
+    band set even though nothing trades it yet."""
+    df = enrich(session("2026-08-03", np.linspace(100, 104, 75)))
+    row = df.iloc[-1]
+    assert math.isfinite(row["bb_low"]) and math.isfinite(row["bb_up"])
+    assert row["bb_low"] < row["bb_mid"] < row["bb_up"]
+    assert row["bb_up"] - row["bb_mid"] == pytest.approx(row["bb_mid"] - row["bb_low"])
+
 
 def test_opening_range_unknown_until_its_last_bar_closes():
     df = enrich(session("2026-09-01", np.linspace(100, 101, 10)))
