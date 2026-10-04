@@ -25,6 +25,8 @@ Mechanics, deliberately simple for this first version:
   than hoping the score-based exit gets there in time.
 """
 import datetime as dt
+import math
+
 import pandas as pd
 
 from indicators import sma, rsi as rsi_series
@@ -73,7 +75,12 @@ def compute_signal(bars: pd.DataFrame) -> dict | None:
     last_close = float(close.iloc[-1])
     fast_ma = float(sma(close, 5).iloc[-1])
     slow_ma = float(sma(close, 20).iloc[-1])
+    # A non-finite RSI means "no usable reading", which is neither overbought
+    # nor oversold - so it contributes nothing to the score rather than
+    # crashing the detail endpoint on the way out as JSON.
     rsi_val = float(rsi_series(close, 14).iloc[-1])
+    if not math.isfinite(rsi_val):
+        rsi_val = 50.0
 
     today = _today_bars(bars)
     if len(today) >= 3 and "Volume" in today.columns and today["Volume"].sum() > 0:

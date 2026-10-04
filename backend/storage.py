@@ -25,6 +25,8 @@ import json
 import threading
 import datetime as dt
 
+import jsonsafe
+
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -114,6 +116,12 @@ def _load() -> dict:
 
 
 def _save(data: dict):
+    # Postgres JSONB rejects NaN outright, so one non-finite float anywhere in
+    # the store makes the whole write fail and silently lose the update. The
+    # JSON file backend would accept it, but then round-trips it as the
+    # literal `NaN`, which is not valid JSON for anything else reading it.
+    # Cleaning here keeps both backends storing the same, valid thing.
+    data = jsonsafe.clean(data)
     if _pg_pool:
         _pg_save(data)
     else:
@@ -325,6 +333,9 @@ def _intraday_load() -> dict:
 
 
 def _intraday_save(data: dict):
+    # Same reason as _save: a NaN RSI used to reach here and make the whole
+    # Postgres write fail, losing the tick's portfolio update.
+    data = jsonsafe.clean(data)
     if _pg_pool:
         _intraday_pg_save(data)
     else:

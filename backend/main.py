@@ -2,10 +2,12 @@ import os
 import json
 import datetime as dt
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import jsonsafe
 import storage
 from data_sources import (
     search_stocks, to_yf_symbol, fetch_multi_timeframe,
@@ -17,7 +19,23 @@ from backtest import run_backtest_and_refine
 from scheduler import start_scheduler, make_fresh_prediction
 import intraday
 
-app = FastAPI(title="NSE/BSE Stock Analyzer & Predictor")
+class SafeJSONResponse(JSONResponse):
+    """Strip non-finite floats from every response body.
+
+    Starlette serialises with allow_nan=False, so one stray NaN anywhere in a
+    payload turns a correct answer into a 500. Rather than auditing every
+    endpoint for every float it might one day return, the rule is enforced
+    once, here, on the way out. See jsonsafe.py.
+    """
+
+    def render(self, content) -> bytes:
+        return super().render(jsonsafe.clean(content))
+
+
+app = FastAPI(
+    title="NSE/BSE Stock Analyzer & Predictor",
+    default_response_class=SafeJSONResponse,
+)
 
 app.add_middleware(
     CORSMiddleware,

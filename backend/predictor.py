@@ -155,6 +155,12 @@ def predict_price(
         mean_return = summary["mean_return"]
         vol = summary["volatility"]
 
+        # One non-finite timeframe would otherwise contaminate the weighted
+        # average for every other timeframe too - NaN propagates through the
+        # sum - so a bad summary is dropped rather than blended in.
+        if not (np.isfinite(mean_return) and np.isfinite(vol)):
+            continue
+
         weighted_drift += w * mean_return * ppy  # annualized drift contribution
         weighted_vol_annual += w * vol * np.sqrt(ppy)
         total_weight_used += w
@@ -204,10 +210,16 @@ def predict_price(
         + weather_annual * sig_w["weather"]
     )
 
-    # Project forward using GBM over the requested horizon
+    # Project forward using GBM over the requested horizon.
+    #
+    # The finite guards matter more than they look: max(nan, 0.05) is nan in
+    # Python (every comparison against nan is False, so the nan is kept), so
+    # a single NaN volatility used to sail straight through into np.exp and
+    # out into the JSON response, where Starlette refuses to serialise it and
+    # the caller gets a 500 instead of a prediction.
     t_years = horizon_minutes / (60 * 24 * 365)
-    sigma = max(weighted_vol_annual, 0.05)
-    mu = total_annual_drift
+    sigma = max(weighted_vol_annual, 0.05) if np.isfinite(weighted_vol_annual) else 0.30
+    mu = total_annual_drift if np.isfinite(total_annual_drift) else 0.0
 
     expected_log_return = (mu - 0.5 * sigma ** 2) * t_years
     predicted_price = current_price * np.exp(expected_log_return)
@@ -261,7 +273,11 @@ def gbm_path(current_price: float, mu_annualized: float, sigma_annualized: float
     intermediate t, which is mathematically how GBM confidence bands
     actually behave (they widen with sqrt(t), not linearly)."""
     now = dt.datetime.utcnow()
-    sigma = max(sigma_annualized, 0.05)
+    # Same guards as predict_price: this is fed mu/sigma straight from a
+    # response dict, so it has to defend itself rather than assume the
+    # caller already did.
+    sigma = max(sigma_annualized, 0.05) if np.isfinite(sigma_annualized) else 0.30
+    mu_annualized = mu_annualized if np.isfinite(mu_annualized) else 0.0
     path = []
     for i in range(steps + 1):
         frac = i / steps
