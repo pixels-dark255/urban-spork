@@ -24,6 +24,7 @@
     <div class="app-header-top">
       <h1>Tickerboard</h1>
       <span class="market-status-pill" id="marketStatusPill">…</span>
+      <button class="arena-open-btn" id="openArenaBtn" aria-label="Open Strategy Arena">⚔ Arena</button>
     </div>
     <p class="eyebrow">nse &middot; bse &middot; personal terminal</p>
   </header>
@@ -81,6 +82,13 @@
     </div>
   </main>
 
+  <main id="view-arena" class="view">
+    <div class="modal-card">
+      <button class="back-btn arena-close" id="backFromArena">&larr; close</button>
+      <div id="arenaContent"><p class="muted">Loading…</p></div>
+    </div>
+  </main>
+
   </div>
 
   <nav class="tab-bar">
@@ -96,10 +104,14 @@
     <button class="tab-btn" data-view="view-intraday">
       <span class="tab-icon">⚡</span><span>Intraday</span>
     </button>
+    <button class="tab-btn" data-view="view-arena">
+      <span class="tab-icon">⚔</span><span>Arena</span>
+    </button>
   </nav>
 
   <div class="toast-host" id="toastHost"></div>
 
 <script src="app.js"></script>
+<script src="arena.js"></script>
 </body>
 </html>

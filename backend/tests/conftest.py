@@ -138,6 +138,8 @@ def isolated_storage(monkeypatch, tmp_path):
     monkeypatch.setattr(storage, "STORE_PATH", str(tmp_path / "watchlists.json"))
     monkeypatch.setattr(storage, "INTRADAY_STORE_PATH", str(tmp_path / "intraday.json"))
     monkeypatch.setattr(storage, "_pg_pool", None)
+    from arena import store as arena_store
+    monkeypatch.setattr(arena_store, "ARENA_PATH", str(tmp_path / "arena.json"))
     return tmp_path
 
 

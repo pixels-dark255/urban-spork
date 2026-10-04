@@ -268,6 +268,11 @@ function renderView(viewId, state = {}) {
   } else if (viewId === "view-intraday") {
     loadIntradayList();
     startViewPolling(() => loadIntradayList(true), 20000);
+  } else if (viewId === "view-arena") {
+    if (typeof loadArena === "function") {
+      loadArena();
+      startViewPolling(() => loadArena(true), 60000);
+    }
   } else if (viewId === "view-intraday-detail") {
     currentIntradaySymbol = state.symbol ?? currentIntradaySymbol;
     if (currentIntradaySymbol) {

@@ -125,7 +125,9 @@ def test_service_worker_does_not_cache_api_responses():
 
 
 def test_service_worker_cache_name_was_bumped():
-    assert "tickerboard-shell-v3" in _sw_source()
+    import re
+    m = re.search(r"tickerboard-shell-v(\d+)", _sw_source())
+    assert m and int(m.group(1)) >= 3   # bumped past the v2 that cached POSTs
 
 
 # --- the endpoint sweep -----------------------------------------------------

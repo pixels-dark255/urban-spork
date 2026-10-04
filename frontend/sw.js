@@ -1,5 +1,5 @@
-const CACHE_NAME = "tickerboard-shell-v3";
-const SHELL_FILES = ["/", "/style.css", "/app.js", "/manifest.json"];
+const CACHE_NAME = "tickerboard-shell-v4";
+const SHELL_FILES = ["/", "/style.css", "/app.js", "/arena.js", "/manifest.json"];
 
 // Same-origin GETs for the app shell and static assets. Anything else -
 // POST/DELETE, /api/*, cross-origin CDN requests - is passed straight to the

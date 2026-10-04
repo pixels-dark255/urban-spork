@@ -586,3 +586,77 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 @media (max-width: 1023px) {
   .modal-card { all: unset; display: block; }
 }
+
+/* ---------- Strategy Arena ---------- */
+.arena-open-btn {
+  display: none;
+  margin-left: auto;
+  background: var(--paper-raised); color: var(--brass);
+  border: 1px solid var(--brass-dim); border-radius: 999px;
+  padding: 5px 14px; font-family: var(--font-body); font-size: 13px; cursor: pointer;
+}
+.arena-verdict {
+  border-radius: 10px; padding: 12px 14px; margin: 12px 0 8px;
+  font-size: 14px; line-height: 1.45; border: 1px solid var(--hairline);
+}
+.arena-verdict-good { background: rgba(60, 154, 92, 0.12); border-color: rgba(60, 154, 92, 0.45); }
+.arena-verdict-bad { background: rgba(193, 68, 60, 0.12); border-color: rgba(193, 68, 60, 0.45); }
+.arena-verdict-neutral { background: var(--paper-raised); }
+.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.arena-board td, .arena-board th { white-space: nowrap; vertical-align: top; }
+.arena-row { cursor: pointer; }
+.arena-row:hover { background: rgba(255, 255, 255, 0.03); }
+.arena-bench td { color: var(--mist); }
+.arena-name { font-weight: 600; white-space: normal; min-width: 130px; }
+.arena-sub { font-size: 11px; color: var(--mist); font-family: var(--font-body); }
+.arena-pill {
+  display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 999px;
+  font-size: 10.5px; letter-spacing: 0.02em; border: 1px solid var(--hairline);
+}
+.arena-pill-on { color: #7fd19b; border-color: rgba(60, 154, 92, 0.5); }
+.arena-pill-off { color: var(--mist); }
+.arena-detail-row td { background: var(--paper-raised); white-space: normal; }
+.arena-hint { font-size: 12px; color: var(--mist); margin: 8px 0; line-height: 1.45; }
+.arena-row-inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+.arena-row-inline select, .arena-field input, .arena-field select, .arena-field textarea {
+  background: var(--paper-raised); color: var(--bone); border: 1px solid var(--hairline);
+  border-radius: 8px; padding: 8px 10px; font-family: var(--font-body); font-size: 14px;
+}
+.arena-btn { width: auto; margin: 0; padding-left: 18px; padding-right: 18px; }
+.arena-settings { margin-top: 22px; border-top: 1px solid var(--hairline); padding-top: 12px; }
+.arena-settings summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
+.arena-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--mist); margin: 12px 0; }
+.arena-field textarea { resize: vertical; width: 100%; }
+.arena-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0 12px; }
+.arena-check { display: flex; gap: 10px; align-items: flex-start; color: var(--bone); font-size: 13px; padding: 6px 0; line-height: 1.35; }
+.arena-check input { margin-top: 3px; }
+.arena-link { background: none; border: none; color: var(--brass); padding: 0; font-size: 12px; cursor: pointer; text-decoration: underline; }
+.arena-reset { display: block; margin-top: 14px; }
+
+@media (max-width: 1023px) {
+  #backFromArena { display: none; }
+  .tab-btn { font-size: 10.5px; }
+}
+
+@media (min-width: 1024px) {
+  .arena-open-btn { display: inline-block; }
+  #view-arena {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0, 0, 0, 0.55);
+    z-index: 50;
+    padding: 40px;
+    align-items: flex-start;
+    justify-content: center;
+    overflow-y: auto;
+  }
+  #view-arena.active { display: flex; animation: view-in 180ms ease; }
+  #view-arena .modal-card {
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 20px 24px 32px;
+    max-width: 980px;
+    width: 100%;
+  }
+}

@@ -518,6 +518,70 @@ def api_intraday_detail(symbol: str, request: Request):
     return {"symbol": symbol, "live_price": live_price, "timeframes": timeframes}
 
 
+# ---------- Strategy Arena (several strategies, simulated money, side by side) ----------
+
+from arena import service as arena_service
+
+
+class ArenaConfigRequest(BaseModel):
+    enabled: bool | None = None
+    daily_capital: float | None = None
+    capital_mode: str | None = None
+    symbols: list[str] | None = None
+    strategies: list[str] | None = None
+    risk: dict | None = None
+    costs: dict | None = None
+
+
+class ArenaBacktestRequest(BaseModel):
+    days: int = 30
+
+
+@app.get("/api/arena")
+def api_arena(request: Request):
+    return arena_service.view(get_client_ip(request))
+
+
+@app.put("/api/arena/config")
+def api_arena_config(req: ArenaConfigRequest, request: Request):
+    raw = {k: v for k, v in req.model_dump().items() if v is not None}
+    return {"config": arena_service.update_config(get_client_ip(request), raw)}
+
+
+@app.post("/api/arena/reset")
+def api_arena_reset(request: Request):
+    arena_service.reset(get_client_ip(request))
+    return {"reset": True}
+
+
+@app.post("/api/arena/strategies/{strategy_id}/{action}")
+def api_arena_strategy_status(strategy_id: str, action: str, request: Request):
+    status = {"bench": "benched", "reinstate": "active"}.get(action)
+    if not status:
+        raise HTTPException(400, "action must be 'bench' or 'reinstate'")
+    if not arena_service.set_status(get_client_ip(request), strategy_id, status):
+        raise HTTPException(404, "strategy not found in this arena yet")
+    return {"id": strategy_id, "status": status}
+
+
+@app.get("/api/arena/trades")
+def api_arena_trades(request: Request, strategy: str | None = None, limit: int = 100):
+    return {"trades": arena_service.trades(get_client_ip(request), strategy, limit)}
+
+
+@app.post("/api/arena/backtest")
+def api_arena_backtest(req: ArenaBacktestRequest, request: Request):
+    result = arena_service.run_backtest(get_client_ip(request), req.days)
+    if not result.get("ok"):
+        raise HTTPException(502, result.get("reason", "backtest failed"))
+    return result
+
+
+@app.get("/api/arena/backtest")
+def api_arena_last_backtest(request: Request):
+    return {"backtest": arena_service.last_backtest(get_client_ip(request))}
+
+
 # ---------- Serve the PWA frontend ----------
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
 if os.path.isdir(frontend_dir):

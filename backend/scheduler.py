@@ -18,6 +18,7 @@ from data_sources import (
 )
 from predictor import predict_price, nudge_weights
 import intraday
+from arena import service as arena_service
 
 IST = pytz.timezone("Asia/Kolkata")
 
@@ -119,6 +120,13 @@ def intraday_tick():
                 print(f"[warn] intraday tick failed for {symbol} {tf}: {e}")
 
 
+def arena_tick():
+    """Advances every Strategy Arena. Runs every tick, not just in market
+    hours: it also opens the day at 09:15 and settles it after the close, and
+    catches up a session the server slept through."""
+    arena_service.tick_all()
+
+
 scheduler = BackgroundScheduler(timezone=str(IST))
 
 
@@ -136,5 +144,7 @@ def start_scheduler(interval_minutes: int = 5):
 
     scheduler.add_job(tick, "interval", minutes=interval_minutes, id="watchlist_tick", replace_existing=True)
     scheduler.add_job(intraday_tick, "interval", minutes=interval_minutes, id="intraday_tick", replace_existing=True)
+    scheduler.add_job(arena_tick, "interval", minutes=interval_minutes, id="arena_tick", replace_existing=True,
+                      max_instances=1, coalesce=True)
     scheduler.start()
     return scheduler

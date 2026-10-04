@@ -27,12 +27,13 @@ stock-analyzer/
     timeutil.py        timezone-aware UTC helpers
     jsonsafe.py        strips NaN/inf before JSON or storage
     nse_holidays.json  trading-holiday dates (see "Trading holidays" below)
+    arena/             Strategy Arena: strategies competing with simulated money
     requirements.txt
     tests/             pytest suite (no network required)
     render.yaml         one-click Render deployment config
     .env.example
   frontend/          Mobile PWA (installs to your phone's home screen)
-    index.html / style.css / app.js
+    index.html / style.css / app.js / arena.js
     manifest.json / sw.js
     icons/
 ```
@@ -206,6 +207,42 @@ entirely while the service is asleep.
 every 5 minutes, but overlapping forecasts of the same move are not each
 graded - the newest is shown as an interim preview and only the tracked one
 counts towards accuracy and weight learning.
+
+---
+
+## 6c. Strategy Arena (simulated money)
+
+Open the **Arena** tab (desktop: the ⚔ Arena button). Several intraday
+strategies paper-trade the same stocks on the same 5-minute bars, each with
+its own copy of your daily capital (default ₹10,000), so the leaderboard
+answers one question: **which one actually makes money after costs?**
+
+- **Strategies:** opening-range breakout, VWAP reclaim, EMA 9/21 crossover,
+  RSI oversold bounce, Bollinger volume breakout, the app's original
+  4-signal score - plus a **benchmark** (buy every stock at the open, sell at
+  the close). A strategy that can't beat the benchmark isn't adding anything.
+- **Realistic costs:** every trade pays brokerage, STT, exchange fees, SEBI
+  fee, stamp duty, GST and slippage (`backend/arena/costs.py` - edit the
+  rates there if your broker differs). Trades whose target can't cover
+  costs are skipped.
+- **Pessimistic fills:** stops are checked against the bar's low; if a bar
+  touches both stop and target, the stop counts. Gaps fill at the open.
+- **Survival rules:** a strategy that loses its daily limit (default 2%)
+  stops for the day. Once it has 20+ trades, it is **benched** if its
+  recent trades lose money after costs, or if its drawdown passes 10%.
+  Benched strategies keep trading in *shadow* and are reinstated
+  automatically when they start earning again. If every strategy is
+  benched, the arena says so - a live account would sit in cash.
+- **Daily cycle:** opens at 09:15 IST, no new entries after 14:45, everything
+  squared off at 15:15, settled after 15:30. A day the server slept through
+  is caught up and settled from Yahoo's bars on the next tick.
+- **Backtest:** replays the last 10-60 sessions of real 5-minute bars (Yahoo
+  keeps about 60 days) through the same engine, so you see results today
+  instead of after weeks. Treat a short backtest as a hint, not proof.
+
+Nothing in the arena places a real order. No strategy, rule or setting can
+guarantee a profit; the arena exists to find out which ones earn and to
+stop the ones that don't before any real money is involved.
 
 ---
 
