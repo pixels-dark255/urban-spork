@@ -1,0 +1,159 @@
+"""Shared test fixtures.
+
+Everything here exists so the suite never touches Yahoo. Tests monkeypatch
+``data_sources._yf_download`` with synthetic OHLCV frames carrying a
+tz-aware Asia/Kolkata index - the same shape yfinance returns for Indian
+intraday data - so the suite passes offline, at weekends, and under a rate
+limit, and so timezone behaviour is actually exercised rather than assumed.
+"""
+import datetime as dt
+import os
+import sys
+
+import numpy as np
+import pandas as pd
+import pytest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+IST = "Asia/Kolkata"
+
+
+def make_frame(n: int = 60, start: float = 100.0, step: float = 0.5,
+               freq: str = "5min", session_date: str = "2026-03-03",
+               open_time: str = "09:15", volume: float = 1000.0,
+               prices: list[float] | None = None) -> pd.DataFrame:
+    """Synthetic OHLCV with a tz-aware IST index, stamped inside a real NSE
+    session so market-hours and session-boundary logic get exercised."""
+    if prices is not None:
+        n = len(prices)
+        closes = np.asarray(prices, dtype=float)
+    else:
+        closes = start + np.arange(n, dtype=float) * step
+
+    begin = pd.Timestamp(f"{session_date} {open_time}", tz=IST)
+    index = pd.date_range(start=begin, periods=n, freq=freq, tz=IST)
+    return pd.DataFrame(
+        {
+            "Open": closes,
+            "High": closes + 0.4,
+            "Low": closes - 0.4,
+            "Close": closes,
+            "Volume": np.full(n, volume, dtype=float),
+        },
+        index=index,
+    )
+
+
+def make_daily_frame(n: int = 300, start: float = 100.0, step: float = 0.2,
+                     end_date: str = "2026-03-03") -> pd.DataFrame:
+    """Daily bars stamped at IST midnight, the way Yahoo returns them for
+    .NS symbols - the exact case that used to render as the previous date."""
+    closes = start + np.arange(n, dtype=float) * step
+    index = pd.date_range(end=pd.Timestamp(end_date, tz=IST), periods=n, freq="D", tz=IST)
+    return pd.DataFrame(
+        {
+            "Open": closes,
+            "High": closes + 1.0,
+            "Low": closes - 1.0,
+            "Close": closes,
+            "Volume": np.full(n, 5000.0),
+        },
+        index=index,
+    )
+
+
+@pytest.fixture
+def frames():
+    """Factory namespace so tests read declaratively."""
+    return type("Frames", (), {"intraday": staticmethod(make_frame),
+                               "daily": staticmethod(make_daily_frame)})
+
+
+@pytest.fixture
+def fake_yf(monkeypatch):
+    """Replace the single network chokepoint.
+
+    Every price fetch in the app funnels through data_sources._yf_download,
+    so patching it is enough to make the whole stack deterministic. Returns a
+    recorder so tests can assert on call counts (used by the cache tests).
+    """
+    import data_sources
+
+    calls: list[tuple] = []
+    responses: dict = {}
+    default = {"frame": None}
+
+    def fake_download(symbol, period, interval):
+        calls.append((symbol, period, interval))
+        if (symbol, period, interval) in responses:
+            return responses[(symbol, period, interval)].copy()
+        if interval in ("1d", "1wk"):
+            return make_daily_frame().copy()
+        if default["frame"] is not None:
+            return default["frame"].copy()
+        return make_frame().copy()
+
+    monkeypatch.setattr(data_sources, "_yf_download", fake_download)
+    data_sources.clear_caches()
+
+    class Handle:
+        calls = calls
+
+        @staticmethod
+        def set(symbol, period, interval, frame):
+            responses[(symbol, period, interval)] = frame
+
+        @staticmethod
+        def set_default(frame):
+            default["frame"] = frame
+
+        @staticmethod
+        def reset():
+            calls.clear()
+
+    yield Handle
+    data_sources.clear_caches()
+
+
+@pytest.fixture
+def isolated_storage(monkeypatch, tmp_path):
+    """Point both JSON stores at a temp dir so tests never read or write the
+    developer's real watchlist."""
+    import storage
+
+    monkeypatch.setattr(storage, "STORE_PATH", str(tmp_path / "watchlists.json"))
+    monkeypatch.setattr(storage, "INTRADAY_STORE_PATH", str(tmp_path / "intraday.json"))
+    monkeypatch.setattr(storage, "_pg_pool", None)
+    return tmp_path
+
+
+@pytest.fixture
+def no_news_or_weather(monkeypatch):
+    """Analysis endpoints call out for news and weather; neither is under
+    test and both are network calls."""
+    import data_sources
+
+    monkeypatch.setattr(data_sources, "fetch_company_news", lambda *a, **k: [])
+    monkeypatch.setattr(data_sources, "fetch_weather_signal", lambda *a, **k: {})
+
+
+@pytest.fixture
+def client(fake_yf, isolated_storage, monkeypatch):
+    """TestClient with the scheduler stubbed - a test suite must not start
+    background jobs."""
+    from fastapi.testclient import TestClient
+
+    import scheduler
+    monkeypatch.setattr(scheduler, "start_scheduler", lambda *a, **k: None)
+    import main
+    monkeypatch.setattr(main, "start_scheduler", lambda *a, **k: None)
+    monkeypatch.setattr(main, "fetch_company_news", lambda *a, **k: [])
+    monkeypatch.setattr(main, "fetch_weather_signal", lambda *a, **k: {})
+
+    with TestClient(main.app) as c:
+        yield c
+
+
+def utc_now() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
