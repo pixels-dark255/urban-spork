@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+venv/
+.venv/
+
+# Runtime data: the watchlist/intraday JSON stores are per-deployment state,
+# not source. They are recreated on demand.
+backend/data/
+
+# Secrets
+.env
+.env.local
