@@ -123,6 +123,18 @@ scheduler = BackgroundScheduler(timezone=str(IST))
 
 
 def start_scheduler(interval_minutes: int = 5):
+    """Idempotent: a second call is a no-op.
+
+    Uvicorn with --reload, and anything that imports the app module twice,
+    would otherwise start a second scheduler - doubling every tick, so every
+    stock got two predictions per interval and the weights were nudged
+    twice per outcome.
+    """
+    if scheduler.running:
+        print("[info] scheduler already running - not starting a second one")
+        return scheduler
+
     scheduler.add_job(tick, "interval", minutes=interval_minutes, id="watchlist_tick", replace_existing=True)
     scheduler.add_job(intraday_tick, "interval", minutes=interval_minutes, id="intraday_tick", replace_existing=True)
     scheduler.start()
+    return scheduler

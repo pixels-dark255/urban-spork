@@ -318,12 +318,12 @@ async function runIntradaySearch(q) {
       return;
     }
     intradaySearchResults.innerHTML = data.results.map((r) => `
-      <div class="result-item" data-symbol="${r.symbol}" data-exchange="${r.exchange}" data-name="${escapeHtml(r.name)}">
+      <div class="result-item" data-symbol="${escapeHtml(r.symbol)}" data-exchange="${escapeHtml(r.exchange)}" data-name="${escapeHtml(r.name)}">
         <div>
-          <div class="result-symbol">${r.symbol}</div>
+          <div class="result-symbol">${escapeHtml(r.symbol)}</div>
           <div class="result-name">${escapeHtml(r.name)}</div>
         </div>
-        <div class="result-exchange">${r.exchange}</div>
+        <div class="result-exchange">${escapeHtml(r.exchange)}</div>
       </div>
     `).join("");
     intradaySearchResults.querySelectorAll(".result-item").forEach((el) => {
@@ -600,13 +600,13 @@ async function runSearch(q) {
       return;
     }
     searchResults.innerHTML = data.results.map((r) => `
-      <div class="result-item" data-symbol="${r.symbol}" data-exchange="${r.exchange}" data-name="${escapeHtml(r.name)}">
+      <div class="result-item" data-symbol="${escapeHtml(r.symbol)}" data-exchange="${escapeHtml(r.exchange)}" data-name="${escapeHtml(r.name)}">
         <div class="result-main">
-          <div class="result-symbol">${r.symbol}</div>
+          <div class="result-symbol">${escapeHtml(r.symbol)}</div>
           <div class="result-name">${escapeHtml(r.name)}</div>
         </div>
-        <div class="result-exchange">${r.exchange}</div>
-        <button class="result-quick-add" data-symbol="${r.symbol}" data-exchange="${r.exchange}" data-name="${escapeHtml(r.name)}" title="Add to watchlist" aria-label="Add ${r.symbol} to watchlist">+</button>
+        <div class="result-exchange">${escapeHtml(r.exchange)}</div>
+        <button class="result-quick-add" data-symbol="${escapeHtml(r.symbol)}" data-exchange="${escapeHtml(r.exchange)}" data-name="${escapeHtml(r.name)}" title="Add to watchlist" aria-label="Add ${escapeHtml(r.symbol)} to watchlist">+</button>
       </div>
     `).join("");
     searchResults.querySelectorAll(".result-item").forEach((el) => {
@@ -654,6 +654,19 @@ async function runSearch(q) {
     });
   } catch (e) {
     searchResults.innerHTML = `<p class="muted">Search failed — check the backend is reachable.</p>`;
+  }
+}
+
+// News URLs come from a third-party feed and land straight in an href.
+// Only http/https are allowed through: "javascript:" in an href executes on
+// click, and "data:" can carry a whole document.
+function safeUrl(value) {
+  if (typeof value !== "string" || !value) return null;
+  try {
+    const url = new URL(value, window.location.origin);
+    return (url.protocol === "http:" || url.protocol === "https:") ? url.href : null;
+  } catch (e) {
+    return null;   // not a parseable URL at all
   }
 }
 
@@ -717,7 +730,9 @@ function renderAnalysis(data) {
 
   const newsHtml = (data.news || []).slice(0, 6).map((n) => `
     <div class="news-item">
-      <a href="${n.url}" target="_blank" rel="noopener">${escapeHtml(n.title)}</a>
+      ${safeUrl(n.url)
+        ? `<a href="${escapeHtml(safeUrl(n.url))}" target="_blank" rel="noopener noreferrer">${escapeHtml(n.title)}</a>`
+        : `<span>${escapeHtml(n.title)}</span>`}
       <span class="news-source">${escapeHtml(n.source || "")}</span>
     </div>
   `).join("") || `<p class="muted">No recent news found.</p>`;

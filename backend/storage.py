@@ -154,6 +154,14 @@ def get_item(ip: str, item_id: int) -> dict | None:
 def add_item(ip: str, symbol: str, display_name: str, horizon_minutes: int) -> dict:
     def mutate(data):
         items = data.setdefault(ip, [])
+
+        # Same symbol at the same horizon is the same watchlist entry. Adding
+        # it twice used to create a duplicate that then ran its own 90-day
+        # backtest and its own prediction stream for identical data.
+        for existing in items:
+            if existing["symbol"] == symbol and existing["horizon_minutes"] == horizon_minutes:
+                return existing
+
         next_id = (max((i["id"] for i in items), default=0)) + 1
         new_item = {
             "id": next_id,

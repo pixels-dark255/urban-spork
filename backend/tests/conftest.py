@@ -141,14 +141,34 @@ def isolated_storage(monkeypatch, tmp_path):
     return tmp_path
 
 
-@pytest.fixture
-def no_news_or_weather(monkeypatch):
-    """Analysis endpoints call out for news and weather; neither is under
-    test and both are network calls."""
+@pytest.fixture(autouse=True)
+def no_outbound_calls(monkeypatch):
+    """Stub every remaining network edge, at the module that owns it.
+
+    Patching main's re-exports is not enough: backtest, scheduler and the
+    search endpoint call data_sources directly, so a watchlist POST was
+    still reaching news.google.com, api.open-meteo.com and api.bseindia.com
+    for real. A test suite that depends on the internet fails at weekends,
+    offline and under a rate limit.
+    """
     import data_sources
 
-    monkeypatch.setattr(data_sources, "fetch_company_news", lambda *a, **k: [])
-    monkeypatch.setattr(data_sources, "fetch_weather_signal", lambda *a, **k: {})
+    # Only the uncached layer is stubbed. The cached wrappers stay real so
+    # the caching behaviour itself is still under test, and they cannot
+    # reach the network because the thing they call is stubbed.
+    monkeypatch.setattr(data_sources, "_fetch_company_news_uncached", lambda *a, **k: [])
+    monkeypatch.setattr(data_sources, "_fetch_weather_signal_uncached", lambda *a, **k: {})
+    monkeypatch.setattr(data_sources, "fetch_nse_list", lambda *a, **k: [])
+    monkeypatch.setattr(data_sources, "fetch_bse_list", lambda *a, **k: [])
+    monkeypatch.setattr(
+        data_sources, "get_stock_universe",
+        lambda *a, **k: [
+            {"symbol": "RELIANCE", "name": "Reliance Industries Ltd", "exchange": "NSE"},
+            {"symbol": "TCS", "name": "Tata Consultancy Services Ltd", "exchange": "NSE"},
+            {"symbol": "INFY", "name": "Infosys Ltd", "exchange": "NSE"},
+            {"symbol": "WIPRO", "name": "Wipro Ltd", "exchange": "NSE"},
+        ],
+    )
 
 
 @pytest.fixture
@@ -161,8 +181,6 @@ def client(fake_yf, isolated_storage, monkeypatch):
     monkeypatch.setattr(scheduler, "start_scheduler", lambda *a, **k: None)
     import main
     monkeypatch.setattr(main, "start_scheduler", lambda *a, **k: None)
-    monkeypatch.setattr(main, "fetch_company_news", lambda *a, **k: [])
-    monkeypatch.setattr(main, "fetch_weather_signal", lambda *a, **k: {})
 
     with TestClient(main.app) as c:
         yield c

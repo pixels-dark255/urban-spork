@@ -22,8 +22,13 @@ stock-analyzer/
     indicators.py     RSI / MACD / Bollinger / volatility
     predictor.py       the ensemble prediction engine
     scheduler.py       background job that keeps watchlist predictions live
-    db.py              SQLite models (watchlist + prediction history)
+    storage.py         watchlist + prediction persistence (JSON file or Postgres)
+    market_calendar.py NSE session hours + trading holidays (one shared rule)
+    timeutil.py        timezone-aware UTC helpers
+    jsonsafe.py        strips NaN/inf before JSON or storage
+    nse_holidays.json  trading-holiday dates (see "Trading holidays" below)
     requirements.txt
+    tests/             pytest suite (no network required)
     render.yaml         one-click Render deployment config
     .env.example
   frontend/          Mobile PWA (installs to your phone's home screen)
@@ -52,7 +57,11 @@ key at all**.
 
 ## 3. Test it locally first (optional but recommended)
 
-You'll need Python 3.11+ installed on your computer.
+You'll need Python 3.11, 3.12 or 3.13.
+
+(numpy and pandas are version *ranges* rather than exact pins: the previous
+`numpy==1.26.4` / `pandas==2.2.3` have no Python 3.13 wheels, so `pip
+install` either failed outright or spent minutes compiling them.)
 
 ```bash
 cd backend
@@ -65,6 +74,17 @@ uvicorn main:app --reload --port 8000
 
 Open `http://localhost:8000` in your browser (or on your phone if it's on
 the same wifi, using your computer's local IP instead of `localhost`).
+
+Run the tests with:
+
+```bash
+pip install pytest pyflakes httpx
+python -m pytest tests/ -q
+python -m pyflakes .
+```
+
+The suite stubs the market data source, so it needs no network and passes
+at weekends and offline.
 
 ---
 
@@ -134,6 +154,38 @@ Every prediction is logged with a target time. Once that time passes, the
 scheduler fetches the real price and computes the error — this is what
 powers the "tracked accuracy" number on your watchlist, so the app's
 track record is always visible, not just its guesses.
+
+---
+
+## 6b. Things worth knowing
+
+**Intraday positions are squared off before the close.** From 15:15 IST any
+open simulated position is force-exited (`exit_reason: eod_square_off`,
+shown as "EOD" on the chart) and no new ones are opened. An "intraday"
+strategy that holds overnight is quietly taking gap risk it never measured,
+and a real broker would auto-square-off an MIS position anyway.
+
+**Trading holidays.** Session state comes from `/api/market-status`, which
+knows about weekends, session hours (09:15-15:30 IST) and NSE trading
+holidays. The holiday *dates* live in `backend/nse_holidays.json` and
+**ship empty** - fill them from the official list at
+<https://www.nseindia.com/resources/exchange-communication-holidays>
+(Trading Holidays tab, Equities segment; the same data is served as JSON at
+`https://www.nseindia.com/api/holiday-master?type=trading`). Until a year is
+populated, `/api/market-status` reports `holidays_known_for_year: false` and
+every weekday looks like a trading day - which is the behaviour the app
+already had, now visible instead of implied. The file has instructions in
+it; weekends are handled in code and must not be listed.
+
+**The watchlist shows a last price, not a live one.** It is the price from
+the most recent scheduler tick, labelled with the time it was taken. The
+scheduler only runs during market hours, and on Render's free tier it stops
+entirely while the service is asleep.
+
+**One tracked prediction per stock at a time.** The scheduler still refreshes
+every 5 minutes, but overlapping forecasts of the same move are not each
+graded - the newest is shown as an interim preview and only the tracked one
+counts towards accuracy and weight learning.
 
 ---
 

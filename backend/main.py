@@ -1,5 +1,7 @@
 import os
 import json
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -33,9 +35,17 @@ class SafeJSONResponse(JSONResponse):
         return super().render(jsonsafe.clean(content))
 
 
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup/shutdown hook. Replaces the deprecated on_event decorator."""
+    start_scheduler(interval_minutes=int(os.getenv("TICK_MINUTES", "5")))
+    yield
+
+
 app = FastAPI(
     title="NSE/BSE Stock Analyzer & Predictor",
     default_response_class=SafeJSONResponse,
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -62,11 +72,6 @@ def get_client_ip(request: Request) -> str:
     if xff:
         return xff.split(",")[0].strip()
     return request.client.host if request.client else "unknown"
-
-
-@app.on_event("startup")
-def on_startup():
-    start_scheduler(interval_minutes=int(os.getenv("TICK_MINUTES", "5")))
 
 
 # ---------- Stock search ----------
