@@ -11,7 +11,7 @@ to a small bundled sample list so the app never hard-crashes.
 import os
 import io
 import time
-import datetime as dt
+import threading
 import requests
 import pandas as pd
 import yfinance as yf
@@ -157,6 +157,90 @@ TIMEFRAMES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Response caching
+#
+# The watch-analysis screen used to poll /analysis + /chart every 30 seconds,
+# and each of those does roughly ten yf.download calls. That is ~40 Yahoo
+# requests a minute for a single open screen, which earns a rate limit and
+# turns into the 502s users saw. Nothing here needs to be fresher than the
+# bar interval it is asking for, so a short TTL cache removes almost all of
+# it without changing a single number the user sees.
+#
+# TTLs are tied to the interval: a 1-minute bar is worth re-fetching after a
+# minute, a daily bar is not worth re-fetching for half an hour.
+# ---------------------------------------------------------------------------
+
+_CACHE_TTL_BY_INTERVAL = {
+    "1m": 60, "2m": 60, "5m": 60,
+    "15m": 300, "30m": 300, "60m": 300, "1h": 300, "90m": 300,
+    "1d": 1800, "5d": 1800, "1wk": 1800, "1mo": 1800, "3mo": 1800,
+}
+_DEFAULT_CACHE_TTL = 300
+_PRICE_CACHE_MAX_ENTRIES = 256
+
+_price_cache: dict[tuple, tuple[float, pd.DataFrame]] = {}
+_news_cache: dict[str, tuple[float, list]] = {}
+_weather_cache: dict[tuple, tuple[float, dict]] = {}
+_cache_lock = threading.Lock()
+
+NEWS_CACHE_TTL = 15 * 60
+WEATHER_CACHE_TTL = 30 * 60
+
+
+def _cache_get(store: dict, key, ttl: float):
+    with _cache_lock:
+        entry = store.get(key)
+        if not entry:
+            return None
+        stored_at, value = entry
+        if (time.time() - stored_at) > ttl:
+            store.pop(key, None)
+            return None
+        return value
+
+
+def _cache_put(store: dict, key, value, max_entries: int = _PRICE_CACHE_MAX_ENTRIES):
+    with _cache_lock:
+        if len(store) >= max_entries:
+            # Evict the oldest. A strict LRU would need access bookkeeping for
+            # no real benefit at this size - the cache exists to collapse a
+            # burst of identical calls, not to be a long-lived store.
+            oldest = min(store, key=lambda k: store[k][0])
+            store.pop(oldest, None)
+        store[key] = (time.time(), value)
+
+
+def clear_caches():
+    """Drop every cached response. Used by tests, and worth having for a
+    manual 'force refresh'."""
+    with _cache_lock:
+        _price_cache.clear()
+        _news_cache.clear()
+        _weather_cache.clear()
+
+
+def _yf_download_cached(symbol: str, period: str, interval: str) -> pd.DataFrame:
+    """Cached front door to _yf_download.
+
+    Empty frames are never cached: an empty result usually means a transient
+    Yahoo failure, and caching it would turn a blip into minutes of a blank
+    screen. Callers get a copy so a mutation downstream cannot corrupt the
+    cached frame for everyone else.
+    """
+    key = (symbol, period, interval)
+    ttl = _CACHE_TTL_BY_INTERVAL.get(interval, _DEFAULT_CACHE_TTL)
+    hit = _cache_get(_price_cache, key, ttl)
+    if hit is not None:
+        return hit.copy()
+
+    frame = _yf_download(symbol, period, interval)
+    if frame is not None and not frame.empty:
+        _cache_put(_price_cache, key, frame)
+        return frame.copy()
+    return frame
+
+
 def _yf_download(symbol: str, period: str, interval: str) -> pd.DataFrame:
     """Thin wrapper around yf.download with the impersonating session,
     normalised to single-level columns (yf.download can return a MultiIndex
@@ -188,7 +272,7 @@ def fetch_multi_timeframe(yf_symbol: str) -> dict[str, pd.DataFrame]:
     for label, cfg in TIMEFRAMES.items():
         key = (cfg["period"], cfg["interval"])
         if key not in seen:
-            seen[key] = _yf_download(yf_symbol, cfg["period"], cfg["interval"])
+            seen[key] = _yf_download_cached(yf_symbol, cfg["period"], cfg["interval"])
         out[label] = seen[key]
     return out
 
@@ -198,7 +282,7 @@ def fetch_latest_price(yf_symbol: str) -> float | None:
     if intraday data is unavailable (e.g. outside market hours, or Yahoo
     throttling intraday specifically)."""
     for period, interval in [("5d", "1m"), ("5d", "15m"), ("1mo", "1d")]:
-        hist = _yf_download(yf_symbol, period, interval)
+        hist = _yf_download_cached(yf_symbol, period, interval)
         if not hist.empty and "Close" in hist.columns:
             closes = hist["Close"].dropna()
             if not closes.empty:
@@ -211,18 +295,33 @@ def fetch_intraday_bars(yf_symbol: str, interval: str) -> pd.DataFrame:
     fine-grained intervals go, so period is tuned per interval - these are
     the widest ranges Yahoo actually serves for each."""
     period = {"5m": "5d", "15m": "1mo", "30m": "1mo"}.get(interval, "5d")
-    return _yf_download(yf_symbol, period, interval)
+    return _yf_download_cached(yf_symbol, period, interval)
 
 
 def fetch_daily_history(yf_symbol: str, period: str = "2y") -> pd.DataFrame:
     """Single fetch of long daily history, used by the backtest engine
     (which then slices it locally rather than hitting Yahoo 90+ times)."""
-    return _yf_download(yf_symbol, period, "1d")
+    return _yf_download_cached(yf_symbol, period, "1d")
 
 
 def fetch_company_news(company_name: str, max_articles: int = 15) -> list[dict]:
     """Uses NewsAPI.org (https://newsapi.org) - free key required, set NEWS_API_KEY.
-    Falls back to Google News RSS (keyless) if no key is configured."""
+    Falls back to Google News RSS (keyless) if no key is configured.
+
+    Cached for 15 minutes: headlines do not change on a 30-second poll, and
+    NewsAPI's free tier allows only 100 requests a day - which a single open
+    analysis screen would burn through before lunch."""
+    cache_key = f"{company_name}::{max_articles}"
+    cached = _cache_get(_news_cache, cache_key, NEWS_CACHE_TTL)
+    if cached is not None:
+        return cached
+    articles = _fetch_company_news_uncached(company_name, max_articles)
+    if articles:
+        _cache_put(_news_cache, cache_key, articles, max_entries=128)
+    return articles
+
+
+def _fetch_company_news_uncached(company_name: str, max_articles: int = 15) -> list[dict]:
     if NEWS_API_KEY:
         try:
             r = requests.get(
@@ -277,7 +376,19 @@ def fetch_company_news(company_name: str, max_articles: int = 15) -> list[dict]:
 def fetch_weather_signal(lat: float = 28.6139, lon: float = 77.2090) -> dict:
     """Open-Meteo (keyless). Defaults to Delhi as a general India-wide proxy.
     This is a coarse, experimental signal - weather has no proven general
-    relationship to stock prices outside a few sectors (agri, power, travel)."""
+    relationship to stock prices outside a few sectors (agri, power, travel).
+
+    Cached for 30 minutes; the forecast it reads updates hourly at best."""
+    cached = _cache_get(_weather_cache, (lat, lon), WEATHER_CACHE_TTL)
+    if cached is not None:
+        return cached
+    data = _fetch_weather_signal_uncached(lat, lon)
+    if data:
+        _cache_put(_weather_cache, (lat, lon), data, max_entries=32)
+    return data
+
+
+def _fetch_weather_signal_uncached(lat: float = 28.6139, lon: float = 77.2090) -> dict:
     try:
         r = requests.get(
             "https://api.open-meteo.com/v1/forecast",
