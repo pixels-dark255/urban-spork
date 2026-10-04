@@ -1,7 +1,34 @@
 // Same-origin API (backend serves this frontend directly)
 // ---------- IST formatting + market status ----------
+
+// The backend now stamps every timestamp with an offset, but data written
+// before that fix is naive UTC with no offset at all - and `new Date("...")`
+// parses an offset-less datetime string as LOCAL time. On a phone set to IST
+// that read every stored timestamp 5h30m early, which is what put "target
+// time" and the BUY/SELL markers in the wrong place.
+//
+// Appending "Z" to an offset-less string says what those timestamps always
+// meant: UTC. Strings that already carry an offset are left alone.
+function parseUTC(value) {
+  if (value instanceof Date) return value;
+  if (typeof value === "number") return new Date(value);
+  if (typeof value !== "string") return new Date(NaN);
+  const text = value.trim();
+  // Date-only ("2026-03-03") is already treated as UTC by the spec.
+  const hasOffset = /(?:Z|z|[+-]\d{2}:?\d{2})$/.test(text);
+  const hasTime = text.includes("T") || text.includes(" ");
+  return new Date(hasTime && !hasOffset ? `${text.replace(" ", "T")}Z` : text);
+}
+
+// Seconds since the epoch, for Lightweight Charts marker/series times.
+function toUnixSeconds(value) {
+  const parsed = parseUTC(value);
+  const ms = parsed.getTime();
+  return Number.isNaN(ms) ? null : Math.floor(ms / 1000);
+}
+
 function fmtIST(dateInput, opts = {}) {
-  return new Date(dateInput).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", ...opts });
+  return parseUTC(dateInput).toLocaleString("en-IN", { timeZone: "Asia/Kolkata", ...opts });
 }
 function fmtISTDate(dateInput) {
   return fmtIST(dateInput, { day: "2-digit", month: "short", year: "numeric" });
@@ -9,6 +36,59 @@ function fmtISTDate(dateInput) {
 function fmtISTDateTime(dateInput) {
   return fmtIST(dateInput, { day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit", hour12: true });
 }
+
+// ---------- Lightweight Charts: IST axes ----------
+// The library formats its axis in UTC, so an NSE session rendered as
+// 03:45-10:00 instead of 09:15-15:30, and a daily candle stamped at IST
+// midnight (which Yahoo returns for .NS symbols) fell on the previous date.
+// These formatters put both back into Asia/Kolkata.
+const IST_TZ = "Asia/Kolkata";
+
+function istTimeLabel(timeSeconds) {
+  return new Date(timeSeconds * 1000).toLocaleTimeString("en-IN", {
+    timeZone: IST_TZ, hour: "2-digit", minute: "2-digit", hour12: false,
+  });
+}
+
+function istDateLabel(timeSeconds) {
+  return new Date(timeSeconds * 1000).toLocaleDateString("en-IN", {
+    timeZone: IST_TZ, day: "2-digit", month: "short",
+  });
+}
+
+// Lightweight Charts hands business-day values as {year, month, day} objects
+// and intraday values as epoch seconds.
+function chartTimeToSeconds(time) {
+  if (typeof time === "number") return time;
+  if (time && typeof time === "object" && "year" in time) {
+    return Date.UTC(time.year, time.month - 1, time.day) / 1000;
+  }
+  return null;
+}
+
+function istTickMarkFormatter(time, tickMarkType) {
+  const seconds = chartTimeToSeconds(time);
+  if (seconds === null) return "";
+  // tickMarkType 0=Year 1=Month 2=DayOfMonth 3=Time 4=TimeWithSeconds
+  return tickMarkType >= 3 ? istTimeLabel(seconds) : istDateLabel(seconds);
+}
+
+function istTimeFormatter(time) {
+  const seconds = chartTimeToSeconds(time);
+  if (seconds === null) return "";
+  return `${istDateLabel(seconds)} ${istTimeLabel(seconds)}`;
+}
+
+// Shared chart options so both charts read in IST without duplicating this.
+const IST_CHART_OPTIONS = {
+  localization: { timeFormatter: istTimeFormatter },
+  timeScale: {
+    borderColor: "rgba(255,255,255,0.1)",
+    timeVisible: true,
+    secondsVisible: false,
+    tickMarkFormatter: istTickMarkFormatter,
+  },
+};
 
 function isMarketOpenNow() {
   const parts = new Intl.DateTimeFormat("en-US", {
@@ -414,7 +494,7 @@ function renderIntradayChart(tf, t) {
     layout: { background: { color: "transparent" }, textColor: "#8FA39A" },
     grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
     rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
-    timeScale: { borderColor: "rgba(255,255,255,0.1)", timeVisible: true, secondsVisible: false },
+    ...IST_CHART_OPTIONS,
   });
   intradayChartInstances[tf] = chart;
 
@@ -424,7 +504,7 @@ function renderIntradayChart(tf, t) {
   });
   candles.setData(t.bars);
 
-  const toUnix = (iso) => Math.floor(new Date(iso).getTime() / 1000);
+  const toUnix = (iso) => toUnixSeconds(iso);
   const reasonMeta = {
     stop_loss: { color: "#C1443C", text: "SL" },
     target: { color: "#3c9a5c", text: "TGT" },
@@ -772,7 +852,7 @@ function renderPriceChart(container, historical, forecast) {
     layout: { background: { color: "transparent" }, textColor: "#8FA39A" },
     grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
     rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
-    timeScale: { borderColor: "rgba(255,255,255,0.1)", timeVisible: true, secondsVisible: false },
+    ...IST_CHART_OPTIONS,
   });
   priceChartInstance = chart;
 

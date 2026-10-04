@@ -29,7 +29,8 @@ import numpy as np
 import pandas as pd
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-from indicators import summarize_timeframe, rsi, macd
+import timeutil
+from indicators import summarize_timeframe
 
 _analyzer = SentimentIntensityAnalyzer()
 
@@ -194,7 +195,7 @@ def predict_price(
     sentiment_drift_annual = sentiment * 0.15  # cap sentiment's max annualized pull at ~15%
 
     # --- Seasonality (from the stock's own 5y history) ---
-    target_date = (dt.datetime.utcnow() + dt.timedelta(minutes=horizon_minutes)).date()
+    target_date = (timeutil.utc_now() + dt.timedelta(minutes=horizon_minutes)).date()
     seasonality = _seasonality_drift(timeframe_data.get("5y"), target_date)
     seasonality_annual = seasonality * 252
 
@@ -272,7 +273,11 @@ def gbm_path(current_price: float, mu_annualized: float, sigma_annualized: float
     fancier model - it's the same closed-form solution evaluated at
     intermediate t, which is mathematically how GBM confidence bands
     actually behave (they widen with sqrt(t), not linearly)."""
-    now = dt.datetime.utcnow()
+    # Timezone-aware: .timestamp() on a naive datetime is interpreted as
+    # LOCAL time, so on an IST machine every point on the forecast path was
+    # stamped 19800 seconds in the past and the chart started five and a
+    # half hours before "now".
+    now = timeutil.utc_now()
     # Same guards as predict_price: this is fed mu/sigma straight from a
     # response dict, so it has to defend itself rather than assume the
     # caller already did.
@@ -292,7 +297,7 @@ def gbm_path(current_price: float, mu_annualized: float, sigma_annualized: float
         high_95 = current_price * np.exp(expected_log_return + 2 * band_1sigma)
         point_time = now + dt.timedelta(minutes=minutes_elapsed)
         path.append({
-            "time": int(point_time.timestamp()),
+            "time": timeutil.epoch_seconds(point_time),
             "mid": round(float(mid), 2),
             "low_68": round(float(low_68), 2),
             "high_68": round(float(high_68), 2),

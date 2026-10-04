@@ -10,6 +10,7 @@ import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 
 import storage
+import timeutil
 from data_sources import fetch_multi_timeframe, fetch_latest_price, fetch_company_news, fetch_weather_signal, fetch_intraday_bars
 from predictor import predict_price, nudge_weights
 import intraday
@@ -44,7 +45,7 @@ def make_fresh_prediction(ip: str, item: dict):
         weights=item.get("signal_weights"),
     )
 
-    now = dt.datetime.utcnow()
+    now = timeutil.utc_now()
     prediction = {
         "made_at": now.isoformat(),
         "target_at": (now + dt.timedelta(minutes=item["horizon_minutes"])).isoformat(),
@@ -67,7 +68,7 @@ def tick():
     # not left queued until Monday's market open. This is what actually
     # drives weight refinement, so gating it behind market hours meant
     # nothing learned at all across any weekend.
-    now_iso = dt.datetime.utcnow().isoformat()
+    now_iso = timeutil.iso_now()
     storage.resolve_due_predictions(now_iso, fetch_latest_price, nudge_weights)
 
     # New predictions still only get made while the market's actually open -
@@ -97,7 +98,7 @@ def intraday_tick():
                 portfolio = intraday.step(portfolio, signal, tf)
                 portfolio["last_price"] = signal["last_close"]
                 portfolio["last_score"] = signal["score"]
-                portfolio["last_updated"] = dt.datetime.utcnow().isoformat()
+                portfolio["last_updated"] = timeutil.iso_now()
                 storage.save_intraday_portfolio(ip, symbol, tf, portfolio)
             except Exception as e:
                 print(f"[warn] intraday tick failed for {symbol} {tf}: {e}")

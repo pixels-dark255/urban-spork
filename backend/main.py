@@ -1,6 +1,5 @@
 import os
 import json
-import datetime as dt
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -9,6 +8,7 @@ from pydantic import BaseModel
 
 import jsonsafe
 import storage
+import timeutil
 from data_sources import (
     search_stocks, to_yf_symbol, fetch_multi_timeframe,
     fetch_latest_price, fetch_company_news, fetch_weather_signal,
@@ -381,7 +381,7 @@ def api_watchlist_detail(item_id: int, request: Request):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "time": dt.datetime.utcnow().isoformat()}
+    return {"status": "ok", "time": timeutil.iso_now()}
 
 
 # ---------- Intraday paper trading (simulated money only, no broker) ----------

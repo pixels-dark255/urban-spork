@@ -23,9 +23,9 @@ the same wifi/NAT apart. Fine for solo personal use.
 import os
 import json
 import threading
-import datetime as dt
 
 import jsonsafe
+import timeutil
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 
@@ -160,7 +160,7 @@ def add_item(ip: str, symbol: str, display_name: str, horizon_minutes: int) -> d
             "symbol": symbol,
             "display_name": display_name,
             "horizon_minutes": horizon_minutes,
-            "created_at": dt.datetime.utcnow().isoformat(),
+            "created_at": timeutil.iso_now(),
             "predictions": [],
             "signal_weights": {"trend": 1.0, "momentum": 1.0, "news": 1.0, "seasonality": 1.0, "weather": 1.0},
             "weights_history": [],
@@ -232,7 +232,14 @@ def resolve_due_predictions(now_iso: str, resolver_fn, weight_updater_fn=None):
         for ip, items in data.items():
             for item in items:
                 for pred in item.get("predictions", []):
-                    if not pred.get("resolved") and pred["target_at"] <= now_iso:
+                    # Compared as datetimes, not strings. Old stored rows are
+                    # naive-UTC with no offset and new ones carry "+00:00";
+                    # lexicographic comparison across those two formats gives
+                    # the wrong answer silently, which here means resolving a
+                    # prediction hours early or never resolving it at all.
+                    if not pred.get("resolved") and timeutil.is_before_or_equal(
+                        pred.get("target_at"), now_iso
+                    ):
                         actual = resolver_fn(item["symbol"])
                         if actual is None:
                             continue
@@ -369,7 +376,7 @@ def add_intraday_stock(ip: str, symbol: str, display_name: str) -> dict:
         bucket["stocks"].append({
             "symbol": symbol,
             "display_name": display_name,
-            "added_at": dt.datetime.utcnow().isoformat(),
+            "added_at": timeutil.iso_now(),
         })
         for tf in intraday_module.TIMEFRAMES:
             bucket["portfolios"][f"{symbol}::{tf}"] = intraday_module.default_portfolio()

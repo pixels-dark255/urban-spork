@@ -24,11 +24,11 @@ Mechanics, deliberately simple for this first version:
   this is what actually enforces "profits should outweigh losses" rather
   than hoping the score-based exit gets there in time.
 """
-import datetime as dt
 import math
 
 import pandas as pd
 
+import timeutil
 from indicators import sma, rsi as rsi_series
 
 TIMEFRAMES = ["5m", "15m", "30m"]
@@ -46,7 +46,7 @@ def default_portfolio() -> dict:
         "cash": STARTING_CAPITAL,
         "position": None,  # {"qty", "entry_price", "entry_at", "timeframe"}
         "trade_log": [],
-        "created_at": dt.datetime.utcnow().isoformat(),
+        "created_at": timeutil.iso_now(),
     }
 
 
@@ -130,7 +130,7 @@ def step(portfolio: dict, signal: dict, timeframe: str) -> dict:
                 "timeframe": timeframe,
                 "entry_at": pos["entry_at"],
                 "entry_price": pos["entry_price"],
-                "exit_at": dt.datetime.utcnow().isoformat(),
+                "exit_at": timeutil.iso_now(),
                 "exit_price": price,
                 "qty": pos["qty"],
                 "pnl": round(pnl, 2),
@@ -149,7 +149,7 @@ def step(portfolio: dict, signal: dict, timeframe: str) -> dict:
                 portfolio["position"] = {
                     "qty": qty,
                     "entry_price": price,
-                    "entry_at": dt.datetime.utcnow().isoformat(),
+                    "entry_at": timeutil.iso_now(),
                     "timeframe": timeframe,
                 }
 
