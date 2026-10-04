@@ -1,0 +1,34 @@
+# Render Blueprint.
+#
+# This file must live at the REPOSITORY ROOT - Render only auto-detects a
+# blueprint here. It used to sit in backend/, where Render never looked, so
+# the service had to be wired up by hand in the dashboard instead.
+#
+# rootDir below is what makes the backend/ layout work: build and start
+# commands run from there, while the blueprint itself stays at the root.
+services:
+  - type: web
+    name: tickerboard
+    env: python
+    plan: free
+    rootDir: backend
+    buildCommand: "pip install -r requirements.txt"
+    startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.11.11"
+      # Optional. Without it, news falls back to keyless Google News RSS.
+      - key: NEWS_API_KEY
+        sync: false
+      # STRONGLY recommended. Without it the watchlist, intraday portfolios
+      # and Strategy Arena are stored as JSON files under backend/data/,
+      # which the free tier wipes on every redeploy AND every spin-down.
+      # Point it at a free Postgres (supabase.com / neon.tech) and all three
+      # stores persist. See README section 4.
+      - key: DATABASE_URL
+        sync: false
+      # Scheduler cadence: watchlist predictions, intraday paper trading and
+      # the Strategy Arena all tick on this interval.
+      - key: TICK_MINUTES
+        value: "5"

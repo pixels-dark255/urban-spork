@@ -16,6 +16,7 @@ given stock and horizon. Treat it as a research aid, not a trading signal.
 
 ```
 stock-analyzer/
+  render.yaml        Render Blueprint (must stay at the repo root)
   backend/          FastAPI app — data fetching, prediction engine, watchlist scheduler
     main.py
     data_sources.py   NSE/BSE list, yfinance prices, news, weather
@@ -30,7 +31,6 @@ stock-analyzer/
     arena/             Strategy Arena: strategies competing with simulated money
     requirements.txt
     tests/             pytest suite (no network required)
-    render.yaml         one-click Render deployment config
     .env.example
   frontend/          Mobile PWA (installs to your phone's home screen)
     index.html / style.css / app.js / arena.js
@@ -99,31 +99,57 @@ cd backend && TZ=Asia/Kolkata python tests/devserver.py --port 8131
 
 ## 4. Deploy to Render (free) so it runs continuously
 
-1. Push this whole `stock-analyzer` folder to a new **GitHub repository**
-   (Render deploys from a git repo — create one at github.com if you don't
-   have it there yet, `git init`, `git add .`, `git commit`, `git push`).
-2. Go to https://render.com, sign up free, click **New → Web Service**.
-3. Connect your GitHub repo. Render will detect `backend/render.yaml`
-   automatically — if it asks for a root directory, set it to `backend`.
-4. In the **Environment** tab, add:
-   - `NEWS_API_KEY` = your key from step 2
-   - (leave `DATABASE_URL` unset to use SQLite, or see note below)
-5. Click **Deploy**. Render gives you a URL like
+`render.yaml` sits at the **repository root**, which is the only place
+Render looks for a Blueprint. It sets `rootDir: backend`, so the build and
+start commands run from `backend/` while the blueprint stays where Render
+can find it.
+
+### First deploy
+
+1. Go to https://render.com and sign up (free).
+2. **New → Blueprint**, connect this GitHub repository, pick the `main`
+   branch. Render reads `render.yaml` and proposes a `tickerboard` web
+   service — no manual build/start commands needed.
+3. Fill in the two env vars marked `sync: false`:
+   - `DATABASE_URL` — see below. Set this.
+   - `NEWS_API_KEY` — optional; without it news falls back to keyless
+     Google News RSS.
+4. **Apply**. First build takes a few minutes. Render gives you a URL like
    `https://tickerboard-xxxx.onrender.com`.
 
-**Free tier note:** Render's free web services spin down after ~15 minutes
-of no traffic, and spin back up (takes ~30-60s) on the next request. This
-means the watchlist scheduler pauses while asleep and resumes once you open
-the app again — fine for personal use, just not truly 24/7. If you want real
-24/7 tracking, either upgrade to Render's paid tier, or set up a free
-uptime-pinger (e.g. UptimeRobot hitting `/api/health` every 10 minutes) to
-keep it awake during market hours.
+After that, **every push to `main` redeploys automatically** — that is the
+deploy mechanism, so there is nothing else to run.
 
-**Persistent storage note:** Render's free tier disk resets on every
-redeploy. Your watchlist/prediction history will survive restarts but not
-redeploys, unless you point `DATABASE_URL` at a free Postgres from
-[supabase.com](https://supabase.com) or [neon.tech](https://neon.tech) — copy
-their connection string into the `DATABASE_URL` env var (see `.env.example`).
+Health check: `/api/health`, already wired into the blueprint.
+
+### Set DATABASE_URL — it matters more than it used to
+
+Without it, the watchlist, the intraday paper portfolios and the Strategy
+Arena are all JSON files under `backend/data/`, and the free tier wipes
+that disk on every redeploy *and* every spin-down. Point it at a free
+Postgres from [supabase.com](https://supabase.com) or
+[neon.tech](https://neon.tech) and all three persist (tables
+`watchlist_store`, `intraday_store`, `arena_store`). See `.env.example`.
+
+### Free tier sleeps, and the Arena notices
+
+Free web services spin down after ~15 minutes without traffic and take
+30-60s to wake. The scheduler is asleep for that whole time, which affects
+the three features differently:
+
+- **Watchlist predictions** resolve against the price *at* their target
+  time, so a nap costs nothing — they are graded correctly whenever the
+  service next wakes.
+- **Intraday paper trading** and the **Strategy Arena** read live 5-minute
+  bars. Bars printed while the service slept are never seen, so trades that
+  would have triggered during the nap simply do not happen. The Arena
+  settles a slept-through day correctly, but it cannot trade a session it
+  was not awake for.
+
+So if you want the Arena to mean anything, keep the service awake during
+market hours: a free uptime-pinger (e.g. UptimeRobot hitting `/api/health`
+every 10 minutes, 09:00-15:45 IST, Mon-Fri) is enough, or use a paid
+instance.
 
 ---
 
