@@ -9,6 +9,7 @@ import datetime as dt
 import pytz
 from apscheduler.schedulers.background import BackgroundScheduler
 
+import market_calendar
 import storage
 import timeutil
 from data_sources import (
@@ -22,12 +23,10 @@ IST = pytz.timezone("Asia/Kolkata")
 
 
 def is_market_hours() -> bool:
-    now = dt.datetime.now(IST)
-    if now.weekday() >= 5:  # Sat/Sun
-        return False
-    open_t = now.replace(hour=9, minute=15, second=0, microsecond=0)
-    close_t = now.replace(hour=15, minute=30, second=0, microsecond=0)
-    return open_t <= now <= close_t
+    """Delegates to the shared calendar so the backend, the frontend and the
+    scheduler cannot disagree about whether the market is open - and so
+    trading holidays are honoured rather than ignored."""
+    return market_calendar.is_market_open()
 
 
 def make_fresh_prediction(ip: str, item: dict):

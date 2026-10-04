@@ -24,6 +24,7 @@ Mechanics, deliberately simple for this first version:
   this is what actually enforces "profits should outweigh losses" rather
   than hoping the score-based exit gets there in time.
 """
+import datetime as dt
 import math
 
 import pandas as pd
@@ -32,6 +33,13 @@ import timeutil
 from indicators import sma, rsi as rsi_series
 
 TIMEFRAMES = ["5m", "15m", "30m"]
+
+# An "intraday" strategy that holds overnight is not an intraday strategy: it
+# silently takes on gap risk the backtest never measured, and a real broker
+# would auto-square-off an MIS position anyway. From this time, open
+# positions are force-exited and no new ones are opened.
+SQUARE_OFF_HOUR = 15
+SQUARE_OFF_MINUTE = 15
 STARTING_CAPITAL = 100_000.0
 POSITION_SIZE_FRACTION = 0.20   # of current cash, per new trade
 STOP_LOSS_PCT = -0.015           # -1.5%
@@ -39,6 +47,16 @@ TARGET_PCT = 0.025                # +2.5% (target > stop, by design - the
                                    # asymmetry is what should make profits
                                    # outweigh losses over many trades, not a
                                    # guarantee any single trade works out)
+
+
+def is_square_off_time(now: dt.datetime | None = None) -> bool:
+    """Whether the session is close enough to the 15:30 close to force flat.
+
+    Evaluated in IST regardless of where the server runs - the NSE close is
+    an IST fact, not a property of the host's clock.
+    """
+    moment = (now or timeutil.utc_now()).astimezone(timeutil.IST)
+    return (moment.hour, moment.minute) >= (SQUARE_OFF_HOUR, SQUARE_OFF_MINUTE)
 
 
 def default_portfolio() -> dict:
@@ -114,11 +132,13 @@ def step(portfolio: dict, signal: dict, timeframe: str) -> dict:
     if a sell happens this tick."""
     price = signal["last_close"]
     pos = portfolio.get("position")
+    square_off = is_square_off_time()
 
     if pos:
         change_pct = (price - pos["entry_price"]) / pos["entry_price"]
         should_exit = (
-            change_pct <= STOP_LOSS_PCT
+            square_off
+            or change_pct <= STOP_LOSS_PCT
             or change_pct >= TARGET_PCT
             or signal["score"] <= -2
         )
@@ -135,13 +155,18 @@ def step(portfolio: dict, signal: dict, timeframe: str) -> dict:
                 "qty": pos["qty"],
                 "pnl": round(pnl, 2),
                 "pnl_pct": round(change_pct * 100, 3),
-                "exit_reason": "stop_loss" if change_pct <= STOP_LOSS_PCT
+                # Square-off is checked first: if the session is ending, that
+                # is why the position closed, whatever the score says.
+                "exit_reason": "eod_square_off" if square_off
+                    else "stop_loss" if change_pct <= STOP_LOSS_PCT
                     else "target" if change_pct >= TARGET_PCT else "signal_reversal",
             })
             portfolio["trade_log"] = portfolio["trade_log"][-200:]
             portfolio["position"] = None
     else:
-        if signal["score"] >= 2:
+        # No new positions once square-off starts - opening one at 15:20 just
+        # to force it shut minutes later is a guaranteed round-trip cost.
+        if signal["score"] >= 2 and not square_off:
             spend = portfolio["cash"] * POSITION_SIZE_FRACTION
             qty = int(spend // price)
             if qty > 0:

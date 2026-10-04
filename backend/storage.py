@@ -504,9 +504,21 @@ def _blank_ip_intraday() -> dict:
     return {"stocks": [], "portfolios": {}}  # portfolios keyed "SYMBOL::timeframe"
 
 
-def get_intraday_stocks(ip: str) -> list[dict]:
+def get_intraday_bucket(ip: str) -> dict:
+    """This caller's whole intraday state in a single load.
+
+    /api/intraday/stocks used to call get_intraday_stocks() once and
+    get_intraday_portfolio() three times per stock, and every one of those
+    re-read and re-parsed the entire store (all users included). That is
+    1 + 3N full loads to render one screen. One load answers everything.
+    """
     data = _intraday_load()
-    return data.get(ip, _blank_ip_intraday())["stocks"]
+    bucket = data.get(ip)
+    return bucket if bucket else _blank_ip_intraday()
+
+
+def get_intraday_stocks(ip: str) -> list[dict]:
+    return get_intraday_bucket(ip)["stocks"]
 
 
 def add_intraday_stock(ip: str, symbol: str, display_name: str) -> dict:

@@ -90,6 +90,10 @@ const IST_CHART_OPTIONS = {
   },
 };
 
+// Local fallback only. The authoritative answer - which knows about NSE
+// trading holidays - comes from /api/market-status; this covers the moment
+// before the first response lands, and any time the backend is unreachable.
+// It cannot know holidays, so it is only ever used as a stopgap.
 function isMarketOpenNow() {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "Asia/Kolkata", weekday: "short", hour: "2-digit", minute: "2-digit", hour12: false,
@@ -103,18 +107,52 @@ function isMarketOpenNow() {
   return mins >= (9 * 60 + 15) && mins <= (15 * 60 + 30);
 }
 
-function updateMarketStatusPill() {
+let marketStatus = null;
+
+function renderMarketStatusPill() {
   const pill = document.getElementById("marketStatusPill");
   if (!pill) return;
-  const open = isMarketOpenNow();
-  pill.textContent = open ? "🟢 Market Open" : "🔴 Market Closed";
-  pill.title = "9:15 AM – 3:30 PM IST, Mon–Fri";
+
+  const open = marketStatus ? marketStatus.is_open : isMarketOpenNow();
+  let label = open ? "🟢 Market Open" : "🔴 Market Closed";
+  let title = "9:15 AM – 3:30 PM IST, Mon–Fri (NSE holidays excluded)";
+
+  if (marketStatus && !open) {
+    if (marketStatus.reason === "holiday" && marketStatus.holiday_name) {
+      label = `🔴 Holiday — ${marketStatus.holiday_name}`;
+      title = `NSE trading holiday: ${marketStatus.holiday_name}`;
+    } else if (marketStatus.reason === "weekend") {
+      title = "Weekend — NSE is closed";
+    }
+    if (marketStatus.next_trading_day) {
+      title += ` · next trading day ${marketStatus.next_trading_day}`;
+    }
+  }
+  pill.textContent = label;
+  pill.title = title;
   pill.className = `market-status-pill ${open ? "open" : "closed"}`;
 }
-updateMarketStatusPill();
-setInterval(updateMarketStatusPill, 30000);
+
+async function refreshMarketStatus() {
+  try {
+    const res = await fetch(`${API}/api/market-status`);
+    if (res.ok) marketStatus = await res.json();
+  } catch (e) {
+    marketStatus = null;   // fall back to the local approximation
+  }
+  renderMarketStatusPill();
+}
 
 const API = "";
+
+// Started after API is defined: `const` is hoisted but stays in its temporal
+// dead zone, so calling refreshMarketStatus() above this line would throw a
+// ReferenceError on the very first fetch and silently fall back.
+renderMarketStatusPill();
+refreshMarketStatus();
+// The session state only changes on minute boundaries, so once a minute is
+// ample - this used to re-render every 30s off purely local arithmetic.
+setInterval(refreshMarketStatus, 60000);
 
 // Stable per-device identity, replacing fragile IP-based lookup (public IP
 // changes constantly on Indian mobile networks - sleep/wake, wifi<->mobile
@@ -214,7 +252,9 @@ function renderView(viewId, state = {}) {
       currentWatchItemId = state.itemId;
       backBtn.textContent = "← back to watchlist";
       loadWatchAnalysis(state.itemId);
-      startViewPolling(() => loadWatchAnalysis(state.itemId, true), 30000);
+      // 2 minutes, not 30 seconds: each refresh is a full re-analysis and
+      // the numbers do not meaningfully move faster than that.
+      startViewPolling(() => loadWatchAnalysis(state.itemId, true), 120000);
     } else {
       backBtn.textContent = "← back to search";
       // normal search-driven flow: openAnalysis() calls loadAnalysis() itself
@@ -223,7 +263,7 @@ function renderView(viewId, state = {}) {
     currentWatchItemId = state.itemId ?? currentWatchItemId;
     if (currentWatchItemId != null) {
       loadWatchDetail(currentWatchItemId);
-      startViewPolling(() => loadWatchDetail(currentWatchItemId, true), 30000);
+      startViewPolling(() => loadWatchDetail(currentWatchItemId, true), 120000);
     }
   } else if (viewId === "view-intraday") {
     loadIntradayList();
@@ -447,7 +487,7 @@ function renderIntradayDetail(data) {
               <td>₹${tr.entry_price}</td>
               <td>₹${tr.exit_price}</td>
               <td class="${tr.pnl >= 0 ? "pos" : "neg"}">${tr.pnl >= 0 ? "+" : ""}₹${tr.pnl} (${tr.pnl_pct}%)</td>
-              <td>${tr.exit_reason.replace("_", " ")}</td>
+              <td>${escapeHtml(formatExitReason(tr.exit_reason))}</td>
             </tr>
           `).join("")}
         </tbody>
@@ -479,6 +519,13 @@ function renderIntradayDetail(data) {
 }
 
 const intradayChartInstances = {};
+function formatExitReason(reason) {
+  if (!reason) return "exit";
+  // replace("_", " ") only swaps the first underscore, so "eod_square_off"
+  // came out as "eod square_off".
+  return reason === "eod_square_off" ? "EOD square-off" : reason.replace(/_/g, " ");
+}
+
 function renderIntradayChart(tf, t) {
   const container = document.getElementById(`intradayChart-${tf}`);
   if (!container || typeof LightweightCharts === "undefined" || !t) return;
@@ -509,6 +556,9 @@ function renderIntradayChart(tf, t) {
     stop_loss: { color: "#C1443C", text: "SL" },
     target: { color: "#3c9a5c", text: "TGT" },
     signal_reversal: { color: "#C9A227", text: "EXIT" },
+    // Forced flat before the 15:30 close - not a signal, so it reads
+    // differently from a reversal exit.
+    eod_square_off: { color: "#8FA39A", text: "EOD" },
   };
   const markers = [];
   (t.trade_log || []).forEach((tr) => {
@@ -737,13 +787,13 @@ async function loadWatchAnalysis(itemId, silent = false) {
       content.innerHTML = `<p class="muted">${escapeHtml(data.detail || "Could not load analysis.")}</p>`;
       return;
     }
-    renderWatchAnalysis(data, itemId);
+    renderWatchAnalysis(data, itemId, silent);
   } catch (e) {
     content.innerHTML = `<p class="muted">Could not reach the backend.</p>`;
   }
 }
 
-function renderWatchAnalysis(data, itemId) {
+function renderWatchAnalysis(data, itemId, silent = false) {
   const delta = data.predicted_price - data.current_price;
   const deltaPct = (delta / data.current_price) * 100;
   const dirClass = delta >= 0 ? "up" : "down";
@@ -805,7 +855,12 @@ function renderWatchAnalysis(data, itemId) {
   `;
 
   document.getElementById("viewBacktestBtn").addEventListener("click", () => openWatchDetail(itemId));
-  loadPriceChart(data.symbol, null, minutesToHorizonLabel(data.horizon_minutes), weights, data.symbol);
+  // A background poll must not re-fetch the chart: /chart is another ~10
+  // Yahoo downloads, and tearing the chart down and rebuilding it also
+  // throws away the user's pan/zoom mid-look.
+  if (!silent) {
+    loadPriceChart(data.symbol, null, minutesToHorizonLabel(data.horizon_minutes), weights, data.symbol);
+  }
 }
 
 const HORIZON_MINUTES = { "15m": 15, "1h": 60, "4h": 240, "1d": 1440, "3d": 4320, "1wk": 10080, "1mo": 43200, "3mo": 129600 };

@@ -1,0 +1,32 @@
+{
+  "_comment": [
+    "NSE equity-segment trading holidays, one entry per non-trading day.",
+    "",
+    "THIS LIST IS DELIBERATELY EMPTY. It must be filled from the official",
+    "source and not from memory or a third-party summary: a wrong date here",
+    "makes the app believe the market is open when it is shut (it will then",
+    "try to trade and predict off stale quotes) or shut when it is open.",
+    "",
+    "To populate it:",
+    "  1. Open https://www.nseindia.com/resources/exchange-communication-holidays",
+    "     and select the 'Trading Holidays' tab, Equities segment. The same",
+    "     data is served as JSON at",
+    "     https://www.nseindia.com/api/holiday-master?type=trading",
+    "  2. Copy each date into the matching year below as",
+    "     {\"date\": \"YYYY-MM-DD\", \"description\": \"...\"}.",
+    "  3. Set \"source\" and \"updated\" so the next person knows what this",
+    "     came from and how stale it is.",
+    "",
+    "Weekends are handled in code and must NOT be listed here.",
+    "",
+    "Until a year has entries, market_calendar reports holidays_loaded=false",
+    "for it and falls back to weekday-plus-session-time only - the behaviour",
+    "this app already had - rather than silently inventing a trading day."
+  ],
+  "source": "",
+  "updated": "",
+  "holidays": {
+    "2026": [],
+    "2027": []
+  }
+}

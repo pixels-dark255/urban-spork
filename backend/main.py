@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import jsonsafe
+import market_calendar
 import storage
 import timeutil
 from data_sources import (
@@ -406,6 +407,13 @@ def api_watchlist_detail(item_id: int, request: Request):
     }
 
 
+@app.get("/api/market-status")
+def api_market_status():
+    """Session state plus the holiday calendar, so the frontend reads one
+    answer instead of reimplementing the rule (and forgetting holidays)."""
+    return market_calendar.market_status()
+
+
 @app.get("/api/health")
 def health():
     return {"status": "ok", "time": timeutil.iso_now()}
@@ -422,13 +430,17 @@ class IntradayAddRequest(BaseModel):
 @app.get("/api/intraday/stocks")
 def api_get_intraday_stocks(request: Request):
     ip = get_client_ip(request)
-    stocks = storage.get_intraday_stocks(ip)
+    # One load for the whole screen. This used to be 1 + 3N full reads and
+    # re-parses of the entire store (every user's data) to render one list.
+    bucket = storage.get_intraday_bucket(ip)
+    stocks = bucket["stocks"]
+    portfolios = bucket["portfolios"]
     out = []
     for s in stocks:
         timeframes = {}
         live_price = None
         for tf in intraday.TIMEFRAMES:
-            portfolio = storage.get_intraday_portfolio(ip, s["symbol"], tf)
+            portfolio = portfolios.get(f"{s['symbol']}::{tf}")
             if portfolio:
                 # Cached from the last scheduler tick - avoids up to 4 live
                 # Yahoo calls per stock on every list load, which was slow
