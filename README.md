@@ -175,15 +175,27 @@ and a real broker would auto-square-off an MIS position anyway.
 
 **Trading holidays.** Session state comes from `/api/market-status`, which
 knows about weekends, session hours (09:15-15:30 IST) and NSE trading
-holidays. The holiday *dates* live in `backend/nse_holidays.json` and
-**ship empty** - fill them from the official list at
+holidays. The dates live in `backend/nse_holidays.json`.
+
+**2026 is populated** (16 trading holidays). Those dates were transcribed
+from secondary sources rather than read from nseindia.com directly, so
+please spot-check them against the official list before relying on this:
 <https://www.nseindia.com/resources/exchange-communication-holidays>
-(Trading Holidays tab, Equities segment; the same data is served as JSON at
-`https://www.nseindia.com/api/holiday-master?type=trading`). Until a year is
-populated, `/api/market-status` reports `holidays_known_for_year: false` and
-every weekday looks like a trading day - which is the behaviour the app
-already had, now visible instead of implied. The file has instructions in
-it; weekends are handled in code and must not be listed.
+(Trading Holidays tab, Equities segment; also served as JSON at
+`https://www.nseindia.com/api/holiday-master?type=trading`).
+
+**2027 is empty on purpose.** The 2027 list available at the time was
+checked and rejected - five of its dates fell on a weekend, which means it
+was a festival calendar rather than a trading calendar, and it omitted
+Diwali, Dussehra, Guru Nanak Jayanti and Christmas. Fill it in from the
+official circular when NSE publishes it. Until a year is populated,
+`/api/market-status` reports `holidays_known_for_year: false` and every
+weekday looks like a trading day - the behaviour the app already had, now
+visible instead of implied.
+
+Weekends are handled in code and must not be listed. The loader refuses any
+weekend date outright and says so, and `tests/test_holidays.py` fails the
+build on one - that check is what caught the bad 2027 list.
 
 **The watchlist shows a last price, not a live one.** It is the price from
 the most recent scheduler tick, labelled with the time it was taken. The

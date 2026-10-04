@@ -199,15 +199,17 @@ def test_weekends_are_closed():
 
 
 def test_weekday_session_hours():
-    friday = dt.datetime(2026, 10, 2, 11, 0, tzinfo=timeutil.IST)
-    assert market_calendar.is_market_open(friday)
-    assert not market_calendar.is_market_open(friday.replace(hour=8))
-    assert not market_calendar.is_market_open(friday.replace(hour=16))
+    # 2026-10-01 (Thu). NOT the 2nd - that is Gandhi Jayanti, a real
+    # trading holiday now that the calendar is populated.
+    weekday = dt.datetime(2026, 10, 1, 11, 0, tzinfo=timeutil.IST)
+    assert market_calendar.is_market_open(weekday)
+    assert not market_calendar.is_market_open(weekday.replace(hour=8))
+    assert not market_calendar.is_market_open(weekday.replace(hour=16))
 
 
 def test_market_open_is_evaluated_in_ist_not_server_local_time():
     """Same instant expressed in UTC must give the same answer."""
-    ist_noon = dt.datetime(2026, 10, 2, 12, 0, tzinfo=timeutil.IST)
+    ist_noon = dt.datetime(2026, 10, 1, 12, 0, tzinfo=timeutil.IST)
     assert market_calendar.is_market_open(ist_noon)
     assert market_calendar.is_market_open(ist_noon.astimezone(dt.timezone.utc))
 

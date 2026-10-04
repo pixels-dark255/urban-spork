@@ -48,8 +48,27 @@ def _load_holidays() -> None:
         years.add(str(year))
         for entry in entries:
             date = (entry or {}).get("date")
-            if date:
-                holidays[date] = entry.get("description", "Trading holiday")
+            if not date:
+                continue
+            try:
+                parsed = dt.date.fromisoformat(date)
+            except (TypeError, ValueError):
+                print(f"[warn] ignoring unparseable holiday date {date!r}")
+                continue
+            # NSE never publishes a weekend date as a trading holiday - the
+            # market is already shut. A weekend entry means the list is a
+            # festival calendar rather than a trading calendar, which is how
+            # a bad 2027 list was caught. Loading it would imply the rest of
+            # that list is trustworthy, so it is rejected loudly instead.
+            if parsed.weekday() >= 5:
+                print(f"[warn] ignoring weekend holiday {date} "
+                      f"({entry.get('description', '?')}) - NSE does not list "
+                      f"weekend dates as trading holidays; check the source list")
+                continue
+            if str(parsed.year) != str(year):
+                print(f"[warn] ignoring {date}: filed under {year}")
+                continue
+            holidays[date] = entry.get("description", "Trading holiday")
 
     with _lock:
         _holidays = holidays
