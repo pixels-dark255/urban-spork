@@ -158,12 +158,20 @@ def step(portfolio: dict, signal: dict, timeframe: str) -> dict:
 
 def portfolio_summary(portfolio: dict, last_price: float | None) -> dict:
     pos = portfolio.get("position")
-    open_value = pos["qty"] * last_price if (pos and last_price) else 0.0
+    # With a position open and no price to mark it at, the old code valued it
+    # at zero - so a missing quote looked exactly like the stock going to
+    # zero, and equity dropped by the entire position value. Falling back to
+    # the entry price marks it flat, which is the honest reading of "we have
+    # no new information since we bought".
+    mark_price = last_price if last_price else (pos["entry_price"] if pos else None)
+    open_value = pos["qty"] * mark_price if (pos and mark_price) else 0.0
     equity = portfolio["cash"] + open_value
     closed = portfolio.get("trade_log", [])
     wins = [t for t in closed if t["pnl"] > 0]
+    # Unrealised P&L uses the same mark, so an unavailable quote reads as 0
+    # unrealised rather than a full-position loss.
     total_pnl = sum(t["pnl"] for t in closed) + (
-        (last_price - pos["entry_price"]) * pos["qty"] if (pos and last_price) else 0
+        (mark_price - pos["entry_price"]) * pos["qty"] if (pos and mark_price) else 0
     )
     return {
         "cash": round(portfolio["cash"], 2),

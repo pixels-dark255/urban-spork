@@ -402,7 +402,7 @@ function renderIntradayCard(stock) {
         <span class="watch-symbol watch-symbol-link intraday-card-link" data-symbol="${stock.symbol}">${stock.symbol} ›</span>
         <button class="watch-remove intraday-remove" data-symbol="${stock.symbol}">remove</button>
       </div>
-      <div class="watch-row"><span>${stock.display_name || ""}</span><span>live: ${stock.live_price != null ? "₹" + stock.live_price.toFixed(2) : "—"}</span></div>
+      <div class="watch-row"><span>${stock.display_name || ""}</span><span>last: ${stock.live_price != null ? "₹" + stock.live_price.toFixed(2) : "—"}</span></div>
       <div class="tf-compare-row">${tfRows}</div>
     </div>
   `;
@@ -470,7 +470,7 @@ function renderIntradayDetail(data) {
 
   document.getElementById("intradayDetailContent").innerHTML = `
     <h2 class="stock-title">${escapeHtml(data.symbol)}</h2>
-    <div class="stock-sub">live: ${data.live_price != null ? "₹" + data.live_price.toFixed(2) : "—"} &middot; simulated money only</div>
+    <div class="stock-sub">last: ${data.live_price != null ? "₹" + data.live_price.toFixed(2) : "—"} &middot; simulated money only</div>
     <div class="disclaimer">Rule-based (MA crossover + RSI + VWAP + opening-range breakout), all simulated. Nothing here is a guarantee of real-world performance.</div>
     ${sections}
   `;
@@ -1118,18 +1118,25 @@ function renderWatchCard(item) {
   const lp = item.latest_prediction;
   const tr = item.track_record;
   const bt = item.backtest_summary;
-  const livePrice = item.live_price;
+  // This is the price from the last scheduler tick, not a live quote: the
+  // scheduler only runs in market hours and stops entirely while a free-tier
+  // Render service is asleep, so it can be hours or days old. Labelling it
+  // "live now" was the bug - it is shown as a last price, with its age.
+  const lastPrice = item.last_price != null ? item.last_price : item.live_price;
+  const lastPriceAt = item.last_price_at || (lp && lp.made_at) || null;
+  const asOf = lastPriceAt ? `as of ${fmtISTDateTime(lastPriceAt)}` : "time unknown";
 
   let heroRow;
-  if (livePrice != null && lp) {
-    const delta = lp.predicted_price - livePrice;
-    const deltaPct = (delta / livePrice) * 100;
+  if (lastPrice != null && lp) {
+    const delta = lp.predicted_price - lastPrice;
+    const deltaPct = (delta / lastPrice) * 100;
     const dirClass = delta >= 0 ? "up" : "down";
     heroRow = `
       <div class="watch-hero">
         <div class="watch-hero-block">
-          <div class="watch-hero-label">live now</div>
-          <div class="watch-hero-price">₹${livePrice.toFixed(2)}</div>
+          <div class="watch-hero-label">last price</div>
+          <div class="watch-hero-price">₹${lastPrice.toFixed(2)}</div>
+          <div class="watch-hero-sub">${escapeHtml(asOf)}</div>
         </div>
         <div class="watch-hero-arrow">→</div>
         <div class="watch-hero-block">
@@ -1138,10 +1145,10 @@ function renderWatchCard(item) {
           <div class="watch-hero-sub ${dirClass}">${delta >= 0 ? "+" : ""}${deltaPct.toFixed(2)}%</div>
         </div>
       </div>`;
-  } else if (livePrice != null) {
-    heroRow = `<div class="watch-hero"><div class="watch-hero-block"><div class="watch-hero-label">live now</div><div class="watch-hero-price">₹${livePrice.toFixed(2)}</div></div></div>`;
+  } else if (lastPrice != null) {
+    heroRow = `<div class="watch-hero"><div class="watch-hero-block"><div class="watch-hero-label">last price</div><div class="watch-hero-price">₹${lastPrice.toFixed(2)}</div><div class="watch-hero-sub">${escapeHtml(asOf)}</div></div></div>`;
   } else {
-    heroRow = `<div class="watch-row"><span>live price unavailable right now</span></div>`;
+    heroRow = `<div class="watch-row"><span>no price recorded yet</span></div>`;
   }
 
   const targetRow = lp

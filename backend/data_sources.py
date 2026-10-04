@@ -16,6 +16,8 @@ import requests
 import pandas as pd
 import yfinance as yf
 
+import timeutil
+
 # Yahoo Finance actively blocks plain Python-requests traffic from datacenter
 # IPs (Render, AWS, etc.) - it returns an empty body, which yfinance then
 # fails to parse as JSON ("Expecting value: line 1 column 1"). Impersonating
@@ -296,6 +298,71 @@ def fetch_intraday_bars(yf_symbol: str, interval: str) -> pd.DataFrame:
     the widest ranges Yahoo actually serves for each."""
     period = {"5m": "5d", "15m": "1mo", "30m": "1mo"}.get(interval, "5d")
     return _yf_download_cached(yf_symbol, period, interval)
+
+
+def _index_as_utc(df: pd.DataFrame):
+    """Yahoo returns a tz-aware IST index for .NS intraday data and a
+    tz-naive one for some daily frames. Normalise to UTC so comparisons
+    against our timestamps are meaningful rather than accidental."""
+    index = df.index
+    if getattr(index, "tz", None) is not None:
+        return index.tz_convert("UTC")
+    return index.tz_localize("UTC")
+
+
+# Yahoo only serves fine-grained history for a limited lookback. Past that,
+# daily bars are the only thing available - which is fine, because a
+# prediction that old is being graded on its daily close anyway.
+_INTRADAY_LOOKBACK_DAYS = 55
+_RESOLUTION_SOURCES = [
+    ("5d", "5m"),
+    ("1mo", "15m"),
+    ("3mo", "1h"),
+]
+
+
+def price_at_time(yf_symbol: str, target_at, made_at=None) -> float | None:
+    """Close of the last bar at or before `target_at`.
+
+    Predictions used to be resolved with whatever the price happened to be
+    when the scheduler got round to it. On Render's free tier the service
+    sleeps after ~15 minutes idle, so "whenever the scheduler ran" could be
+    the next morning - the prediction was then graded against a price from
+    hours after its own target time, and that wrong grade fed straight into
+    weight learning.
+
+    Returns None when the bar simply is not there yet, which the caller
+    treats as "leave it unresolved and try again later" rather than
+    inventing a number.
+    """
+    target = timeutil.parse_utc(target_at)
+    if target is None:
+        return None
+    made = timeutil.parse_utc(made_at)
+
+    age_days = (timeutil.utc_now() - target).total_seconds() / 86400.0
+    sources = list(_RESOLUTION_SOURCES) if age_days <= _INTRADAY_LOOKBACK_DAYS else []
+    sources.append(("2y", "1d"))
+
+    for period, interval in sources:
+        frame = _yf_download_cached(yf_symbol, period, interval)
+        if frame is None or frame.empty or "Close" not in frame.columns:
+            continue
+        index = _index_as_utc(frame)
+
+        # No bar after the prediction was made means the market has not
+        # traded since; there is nothing to grade against yet.
+        if made is not None and not bool((index > made).any()):
+            continue
+
+        at_or_before = frame[index <= target]
+        if at_or_before.empty:
+            continue
+        closes = at_or_before["Close"].dropna()
+        if closes.empty:
+            continue
+        return round(float(closes.iloc[-1]), 2)
+    return None
 
 
 def fetch_daily_history(yf_symbol: str, period: str = "2y") -> pd.DataFrame:

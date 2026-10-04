@@ -11,7 +11,10 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 import storage
 import timeutil
-from data_sources import fetch_multi_timeframe, fetch_latest_price, fetch_company_news, fetch_weather_signal, fetch_intraday_bars
+from data_sources import (
+    fetch_multi_timeframe, fetch_latest_price, fetch_company_news,
+    fetch_weather_signal, fetch_intraday_bars, price_at_time,
+)
 from predictor import predict_price, nudge_weights
 import intraday
 
@@ -59,7 +62,9 @@ def make_fresh_prediction(ip: str, item: dict):
         "error_pct": None,
         "raw_signals": result["signals"],
     }
-    storage.append_prediction(ip, item["id"], prediction)
+    # One tracked prediction per item at a time; the rest are interim
+    # previews that are shown but never graded (see storage.store_prediction).
+    return storage.store_prediction(ip, item["id"], prediction)
 
 
 def tick():
@@ -69,13 +74,24 @@ def tick():
     # drives weight refinement, so gating it behind market hours meant
     # nothing learned at all across any weekend.
     now_iso = timeutil.iso_now()
-    storage.resolve_due_predictions(now_iso, fetch_latest_price, nudge_weights)
+    # Resolve against the price AT the target time, not whatever the price
+    # happens to be now. On Render's free tier the service sleeps, so "now"
+    # can be the next morning - and that wrong price fed weight learning.
+    try:
+        storage.resolve_due_predictions(now_iso, price_at_time, nudge_weights)
+    except Exception as e:
+        print(f"[warn] prediction resolution pass failed: {e}")
 
     # New predictions still only get made while the market's actually open -
     # no point predicting off a stale, closed-market quote.
     if is_market_hours():
         for ip, item in storage.all_items():
-            make_fresh_prediction(ip, item)
+            # One bad symbol used to abort the whole pass, so every stock
+            # after it in the list silently stopped getting predictions.
+            try:
+                make_fresh_prediction(ip, item)
+            except Exception as e:
+                print(f"[warn] prediction failed for {item.get('symbol')}: {e}")
 
 
 def intraday_tick():

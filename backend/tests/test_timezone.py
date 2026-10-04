@@ -5,7 +5,6 @@ bug was invisible on a UTC machine and only appeared once the process ran
 with TZ=Asia/Kolkata, which is where the app actually runs.
 """
 import datetime as dt
-import math
 import os
 import subprocess
 import sys

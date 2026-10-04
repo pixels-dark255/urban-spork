@@ -208,63 +208,206 @@ def all_items() -> list[tuple]:
         return [(ip, item) for ip, items in data.items() for item in items]
 
 
+# Predictions were appended every 5 minutes per stock and kept forever
+# (~75/day, and the whole store is rewritten on every write). Capped at the
+# most recent 500, which is weeks of tracked history and still a small file.
+MAX_STORED_PREDICTIONS = 500
+
+
 def append_prediction(ip: str, item_id: int, prediction: dict):
     def mutate(data):
         for item in data.get(ip, []):
             if item["id"] == item_id:
-                item.setdefault("predictions", []).append(prediction)
+                predictions = item.setdefault("predictions", [])
+                predictions.append(prediction)
+                if len(predictions) > MAX_STORED_PREDICTIONS:
+                    del predictions[:-MAX_STORED_PREDICTIONS]
                 break
     _with_store(mutate)
 
 
-def resolve_due_predictions(now_iso: str, resolver_fn, weight_updater_fn=None):
-    """resolver_fn(symbol) -> actual_price or None.
-    weight_updater_fn(weights, raw_signals, actual_direction) -> updated weights
-    (pass predictor.nudge_weights) - keeps a stock's weights refining for as
-    long as it stays on the watchlist, not just during the initial backtest.
+def store_prediction(ip: str, item_id: int, prediction: dict) -> str:
+    """Append a tracked prediction, or overwrite the interim preview.
 
-    Also records whether the predicted DIRECTION (up/down) was correct, and
-    appends every weight change to weights_history. Raw % error on a single
-    day is dominated by market noise and will never shrink monotonically -
-    directional accuracy and the weight trend are the honest signals of
-    whether refinement is actually working. See README / detail view."""
+    The scheduler fires every 5 minutes, but a 1-day horizon does not become
+    a new, independent forecast every 5 minutes - those are overlapping
+    views of the same move. Grading all of them inflated the track record
+    and nudged the weights repeatedly on what is effectively one outcome.
+
+    So: one tracked prediction per item at a time. While it is outstanding,
+    the newest forecast goes into a single overwritten `latest_preview`
+    field, which the watchlist shows when it is fresher than the tracked one
+    but which is never graded and never moves the weights.
+
+    Returns "tracked" or "preview" so the caller can log what happened.
+    """
+    outcome = {"mode": "preview"}
+
     def mutate(data):
+        for item in data.get(ip, []):
+            if item["id"] != item_id:
+                continue
+            predictions = item.setdefault("predictions", [])
+            has_open_tracked = any(
+                (not p.get("resolved")) and is_tracked(p) for p in predictions
+            )
+            if has_open_tracked:
+                preview = dict(prediction)
+                preview["tracked"] = False
+                item["latest_preview"] = preview
+                outcome["mode"] = "preview"
+            else:
+                tracked = dict(prediction)
+                tracked["tracked"] = True
+                predictions.append(tracked)
+                if len(predictions) > MAX_STORED_PREDICTIONS:
+                    del predictions[:-MAX_STORED_PREDICTIONS]
+                # The tracked prediction is now the freshest thing there is.
+                item.pop("latest_preview", None)
+                outcome["mode"] = "tracked"
+            break
+
+    _with_store(mutate)
+    return outcome["mode"]
+
+
+def is_tracked(pred: dict) -> bool:
+    """Whether a stored prediction is one the system grades and learns from.
+
+    Predictions written before the tracked/preview split have no flag and
+    were all being graded, so the absence of the key means tracked. Getting
+    this default wrong would silently orphan every pre-existing prediction.
+    """
+    return bool(pred.get("tracked", True))
+
+
+def collect_due_predictions(now_iso: str) -> list[dict]:
+    """Read-only pass: which predictions are due, and for which symbols.
+
+    Deliberately separate from applying the results. The old code called
+    fetch_latest_price() from inside the mutator, i.e. while holding the
+    global storage lock - one blocking Yahoo request per due prediction,
+    uncached, with every other API request queued behind it. That is what
+    "could not load watchlist" actually was.
+    """
+    with _lock:
+        data = _load()
+        due = []
         for ip, items in data.items():
             for item in items:
-                for pred in item.get("predictions", []):
-                    # Compared as datetimes, not strings. Old stored rows are
-                    # naive-UTC with no offset and new ones carry "+00:00";
-                    # lexicographic comparison across those two formats gives
-                    # the wrong answer silently, which here means resolving a
-                    # prediction hours early or never resolving it at all.
-                    if not pred.get("resolved") and timeutil.is_before_or_equal(
-                        pred.get("target_at"), now_iso
-                    ):
-                        actual = resolver_fn(item["symbol"])
-                        if actual is None:
-                            continue
-                        pred["actual_price"] = actual
-                        pred["resolved"] = True
-                        if pred.get("predicted_price"):
-                            pred["error_pct"] = round(
-                                (actual - pred["predicted_price"]) / pred["predicted_price"] * 100, 3
+                for index, pred in enumerate(item.get("predictions", [])):
+                    if pred.get("resolved"):
+                        continue
+                    if not timeutil.is_before_or_equal(pred.get("target_at"), now_iso):
+                        continue
+                    due.append({
+                        "ip": ip,
+                        "item_id": item["id"],
+                        "index": index,
+                        "symbol": item["symbol"],
+                        "made_at": pred.get("made_at"),
+                        "target_at": pred.get("target_at"),
+                    })
+        return due
+
+
+def apply_resolutions(resolutions: list[dict], now_iso: str, weight_updater_fn=None):
+    """Short locked write applying prices fetched outside the lock.
+
+    Each resolution is {ip, item_id, index, actual_price}. The prediction is
+    re-identified by (ip, item_id, index) and re-checked for `resolved`,
+    because the store may have been written between the read pass and here.
+    """
+    if not resolutions:
+        return 0
+
+    by_item: dict[tuple, dict[int, float]] = {}
+    for entry in resolutions:
+        if entry.get("actual_price") is None:
+            continue
+        by_item.setdefault((entry["ip"], entry["item_id"]), {})[entry["index"]] = entry["actual_price"]
+    if not by_item:
+        return 0
+
+    def mutate(data):
+        applied = 0
+        for (ip, item_id), index_to_price in by_item.items():
+            for item in data.get(ip, []):
+                if item["id"] != item_id:
+                    continue
+                predictions = item.get("predictions", [])
+                for index, actual in index_to_price.items():
+                    if index >= len(predictions):
+                        continue  # store changed underneath us
+                    pred = predictions[index]
+                    if pred.get("resolved"):
+                        continue
+
+                    pred["actual_price"] = actual
+                    pred["resolved"] = True
+                    if pred.get("predicted_price"):
+                        pred["error_pct"] = round(
+                            (actual - pred["predicted_price"]) / pred["predicted_price"] * 100, 3
+                        )
+                    if pred.get("price_at_prediction"):
+                        base = pred["price_at_prediction"]
+                        actual_dir = 1 if actual > base else (-1 if actual < base else 0)
+                        predicted = pred.get("predicted_price", base)
+                        pred_dir = 1 if predicted > base else (-1 if predicted < base else 0)
+                        pred["correct_direction"] = (
+                            (actual_dir == pred_dir) if actual_dir != 0 else None
+                        )
+                        # Only tracked predictions move the weights. The old
+                        # code nudged on every 5-minute interim prediction,
+                        # so overlapping predictions of the same move were
+                        # counted repeatedly and the weights saturated at
+                        # their 0.1x/3.0x clamps within days.
+                        if weight_updater_fn and pred.get("raw_signals") and is_tracked(pred):
+                            item["signal_weights"] = weight_updater_fn(
+                                item.get("signal_weights", {}), pred["raw_signals"], actual_dir
                             )
-                        if pred.get("price_at_prediction"):
-                            base = pred["price_at_prediction"]
-                            actual_dir = 1 if actual > base else (-1 if actual < base else 0)
-                            pred_dir = 1 if pred.get("predicted_price", base) > base else (-1 if pred.get("predicted_price", base) < base else 0)
-                            pred["correct_direction"] = (actual_dir == pred_dir) if actual_dir != 0 else None
-                            if weight_updater_fn and pred.get("raw_signals"):
-                                item["signal_weights"] = weight_updater_fn(
-                                    item.get("signal_weights", {}), pred["raw_signals"], actual_dir
-                                )
-                                item.setdefault("weights_history", []).append({
-                                    "at": now_iso,
-                                    "weights": dict(item["signal_weights"]),
-                                    "trigger": "live_prediction",
-                                })
-                                item["weights_history"] = item["weights_history"][-100:]
-    _with_store(mutate)
+                            item.setdefault("weights_history", []).append({
+                                "at": now_iso,
+                                "weights": dict(item["signal_weights"]),
+                                "trigger": "live_prediction",
+                            })
+                            item["weights_history"] = item["weights_history"][-100:]
+                    applied += 1
+                break
+        return applied
+
+    return _with_store(mutate)
+
+
+def resolve_due_predictions(now_iso: str, resolver_fn, weight_updater_fn=None):
+    """Resolve every prediction whose target time has passed.
+
+    resolver_fn(symbol, target_at, made_at) -> actual price at target time,
+    or None to leave it unresolved. It is called OUTSIDE the storage lock,
+    once per distinct (symbol, target_at, made_at), so a slow or failing
+    data source can no longer stall every other request.
+    """
+    due = collect_due_predictions(now_iso)
+    if not due:
+        return 0
+
+    prices: dict[tuple, float | None] = {}
+    for entry in due:
+        key = (entry["symbol"], entry["target_at"], entry["made_at"])
+        if key in prices:
+            continue
+        try:
+            prices[key] = resolver_fn(*key)
+        except Exception as e:  # a bad symbol must not abort the whole pass
+            print(f"[warn] could not resolve price for {entry['symbol']}: {e}")
+            prices[key] = None
+
+    for entry in due:
+        entry["actual_price"] = prices.get(
+            (entry["symbol"], entry["target_at"], entry["made_at"])
+        )
+
+    return apply_resolutions(due, now_iso, weight_updater_fn)
 
 
 # ---------------------------------------------------------------------------

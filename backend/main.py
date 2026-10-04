@@ -202,6 +202,19 @@ def api_get_watchlist(request: Request):
     for item in items:
         preds = item.get("predictions", [])
         latest = preds[-1] if preds else None
+
+        # The newest forecast may be an ungraded interim preview rather than
+        # the outstanding tracked prediction. Show whichever is fresher, so
+        # the card still refreshes every tick, and say which it is.
+        preview = item.get("latest_preview")
+        showing_preview = False
+        if preview and (
+            latest is None
+            or timeutil.is_before_or_equal(latest.get("made_at"), preview.get("made_at"))
+        ):
+            latest = preview
+            showing_preview = True
+
         resolved = [p for p in preds if p.get("resolved")]
         avg_abs_error = None
         if resolved:
@@ -214,20 +227,34 @@ def api_get_watchlist(request: Request):
         # on every list load/poll was slow enough to time out the request
         # entirely (this is what "could not load watchlist" was). The
         # single-stock analysis screen still fetches genuinely live.
-        live_price = latest["price_at_prediction"] if latest else None
+        #
+        # This is the price as of the last scheduler tick, which can be hours
+        # or days old - the scheduler only runs during market hours, and on
+        # Render's free tier it stops entirely while the service is asleep.
+        # Calling it "live" was simply untrue, so it is reported as a last
+        # price with the time it was taken, and the UI labels it that way.
+        last_price = latest["price_at_prediction"] if latest else None
+        last_price_at = latest["made_at"] if latest else None
 
         out.append({
             "id": item["id"],
             "symbol": item["symbol"],
             "display_name": item.get("display_name"),
             "horizon_minutes": item["horizon_minutes"],
-            "live_price": live_price,
+            "last_price": last_price,
+            "last_price_at": last_price_at,
+            # Kept so an older cached frontend keeps rendering a price rather
+            # than a blank card while the new JS is still being picked up.
+            "live_price": last_price,
             "latest_prediction": {
                 "made_at": latest["made_at"],
                 "target_at": latest["target_at"],
                 "price_at_prediction": latest["price_at_prediction"],
                 "predicted_price": latest["predicted_price"],
                 "confidence": latest["confidence"],
+                # False means this is an interim forecast that will not be
+                # graded and does not move the weights.
+                "tracked": storage.is_tracked(latest) and not showing_preview,
             } if latest else None,
             "track_record": {
                 "resolved_count": len(resolved),

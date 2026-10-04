@@ -54,6 +54,33 @@ PERIODS_PER_YEAR = {
     "4d": 252 * 7, "3d": 252 * 7, "2d": 252 * 7, "1d": 252 * 78, "recent_hours": 252 * 78,
 }
 
+# An NSE equity session is 375 minutes (09:15-15:30), 252 of them a year.
+TRADING_MINUTES_PER_YEAR = 252 * 375      # 94,500
+CALENDAR_MINUTES_PER_YEAR = 365 * 24 * 60  # 525,600
+MINUTES_IN_A_DAY = 24 * 60
+
+
+def horizon_in_years(horizon_minutes: float) -> float:
+    """Convert a horizon to the same time units the volatility is annualised in.
+
+    Volatility here is annualised over *trading* periods (see
+    PERIODS_PER_YEAR), but the horizon used to be divided by calendar
+    minutes per year. Mixing the two understated short-horizon bands by
+    sqrt(525600 / 94500) = 2.36x - a 15-minute prediction claimed a
+    confidence band roughly 2.4 times tighter than its own volatility
+    estimate supports.
+
+    Intraday horizons are elapsed trading time, so they convert with trading
+    minutes. Horizons of a day or more are left on the calendar basis they
+    have always used: they span non-trading hours anyway, and re-basing them
+    would change long-horizon output well beyond the reported bug. That does
+    leave a discontinuity either side of one day, which is noted rather than
+    hidden.
+    """
+    if horizon_minutes < MINUTES_IN_A_DAY:
+        return horizon_minutes / TRADING_MINUTES_PER_YEAR
+    return horizon_minutes / CALENDAR_MINUTES_PER_YEAR
+
 
 def _news_sentiment_score(articles: list[dict]) -> float:
     """Average VADER compound score across headlines+descriptions, in [-1, 1]."""
@@ -218,7 +245,7 @@ def predict_price(
     # a single NaN volatility used to sail straight through into np.exp and
     # out into the JSON response, where Starlette refuses to serialise it and
     # the caller gets a 500 instead of a prediction.
-    t_years = horizon_minutes / (60 * 24 * 365)
+    t_years = horizon_in_years(horizon_minutes)
     sigma = max(weighted_vol_annual, 0.05) if np.isfinite(weighted_vol_annual) else 0.30
     mu = total_annual_drift if np.isfinite(total_annual_drift) else 0.0
 
@@ -287,7 +314,9 @@ def gbm_path(current_price: float, mu_annualized: float, sigma_annualized: float
     for i in range(steps + 1):
         frac = i / steps
         minutes_elapsed = horizon_minutes * frac
-        t_years = minutes_elapsed / (60 * 24 * 365)
+        # Same basis as predict_price, so the shaded band on the chart is the
+        # same band the point prediction reports rather than a tighter one.
+        t_years = horizon_in_years(minutes_elapsed)
         expected_log_return = (mu_annualized - 0.5 * sigma ** 2) * t_years
         mid = current_price * np.exp(expected_log_return)
         band_1sigma = sigma * np.sqrt(t_years)

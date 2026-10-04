@@ -9,6 +9,7 @@ limit, and so timezone behaviour is actually exercised rather than assumed.
 import datetime as dt
 import os
 import sys
+from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
@@ -19,8 +20,22 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 IST = "Asia/Kolkata"
 
 
+def recent_session_date() -> str:
+    """Today if it is a weekday, else the previous Friday.
+
+    Deliberately relative to now rather than a fixed date: price_at_time only
+    consults intraday bars inside Yahoo's ~55-day window, so a hardcoded date
+    silently falls out of that window as time passes and starts exercising a
+    different code path than the test intends.
+    """
+    day = dt.date.today()
+    while day.weekday() >= 5:
+        day -= dt.timedelta(days=1)
+    return day.isoformat()
+
+
 def make_frame(n: int = 60, start: float = 100.0, step: float = 0.5,
-               freq: str = "5min", session_date: str = "2026-03-03",
+               freq: str = "5min", session_date: str | None = None,
                open_time: str = "09:15", volume: float = 1000.0,
                prices: list[float] | None = None) -> pd.DataFrame:
     """Synthetic OHLCV with a tz-aware IST index, stamped inside a real NSE
@@ -31,7 +46,7 @@ def make_frame(n: int = 60, start: float = 100.0, step: float = 0.5,
     else:
         closes = start + np.arange(n, dtype=float) * step
 
-    begin = pd.Timestamp(f"{session_date} {open_time}", tz=IST)
+    begin = pd.Timestamp(f"{session_date or recent_session_date()} {open_time}", tz=IST)
     index = pd.date_range(start=begin, periods=n, freq=freq, tz=IST)
     return pd.DataFrame(
         {
@@ -46,11 +61,12 @@ def make_frame(n: int = 60, start: float = 100.0, step: float = 0.5,
 
 
 def make_daily_frame(n: int = 300, start: float = 100.0, step: float = 0.2,
-                     end_date: str = "2026-03-03") -> pd.DataFrame:
+                     end_date: str | None = None) -> pd.DataFrame:
     """Daily bars stamped at IST midnight, the way Yahoo returns them for
     .NS symbols - the exact case that used to render as the previous date."""
     closes = start + np.arange(n, dtype=float) * step
-    index = pd.date_range(end=pd.Timestamp(end_date, tz=IST), periods=n, freq="D", tz=IST)
+    index = pd.date_range(end=pd.Timestamp(end_date or recent_session_date(), tz=IST),
+                          periods=n, freq="D", tz=IST)
     return pd.DataFrame(
         {
             "Open": closes,
@@ -97,22 +113,19 @@ def fake_yf(monkeypatch):
     monkeypatch.setattr(data_sources, "_yf_download", fake_download)
     data_sources.clear_caches()
 
-    class Handle:
-        calls = calls
+    # A plain namespace rather than a class: inside a class body `calls =
+    # calls` resolves the name in class scope, not the enclosing function's,
+    # and raises NameError.
+    handle = SimpleNamespace(
+        calls=calls,
+        set=lambda symbol, period, interval, frame: responses.__setitem__(
+            (symbol, period, interval), frame),
+        set_default=lambda frame: default.__setitem__("frame", frame),
+        reset=calls.clear,
+        clear_cache=data_sources.clear_caches,
+    )
 
-        @staticmethod
-        def set(symbol, period, interval, frame):
-            responses[(symbol, period, interval)] = frame
-
-        @staticmethod
-        def set_default(frame):
-            default["frame"] = frame
-
-        @staticmethod
-        def reset():
-            calls.clear()
-
-    yield Handle
+    yield handle
     data_sources.clear_caches()
 
 
