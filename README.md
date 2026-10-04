@@ -79,12 +79,20 @@ Run the tests with:
 
 ```bash
 pip install pytest pyflakes httpx
-python -m pytest tests/ -q
+python -m pytest tests/ -q          # 103 backend tests
 python -m pyflakes .
+cd ../frontend && node --test app.helpers.test.js   # 11 frontend tests
 ```
 
 The suite stubs the market data source, so it needs no network and passes
 at weekends and offline.
+
+To click around the real PWA without a live data source, there's a dev
+server that serves the app with synthetic market data:
+
+```bash
+cd backend && TZ=Asia/Kolkata python tests/devserver.py --port 8131
+```
 
 ---
 
