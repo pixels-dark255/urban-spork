@@ -1,0 +1,2193 @@
+From 3a2e51006f31d8b2376e964971ecddfa3e60ac81 Mon Sep 17 00:00:00 2001
+From: Yashika <yashika@fedev.org>
+Date: Sun, 4 Oct 2026 05:26:21 +0000
+Subject: [PATCH] Add Strategy Arena: intraday strategies competing with
+ simulated money
+
+Several intraday strategies paper-trade the same stocks on the same
+5-minute bars, each with its own copy of the daily capital, so the
+leaderboard shows which one actually makes money after costs.
+
+- arena/strategies.py: ORB, VWAP reclaim, EMA 9/21, RSI bounce, Bollinger
+  volume breakout, the original 4-signal score, and a buy-at-open
+  benchmark. Causal indicators only (no lookahead).
+- arena/costs.py: brokerage, STT, exchange, SEBI, stamp duty, GST and
+  slippage on every leg.
+- arena/engine.py: pessimistic fills (stop wins ties, gaps fill at open),
+  risk-based sizing, daily loss limit, 14:45 entry cutoff, 15:15
+  square-off, end-of-day settlement, benching losers into shadow mode
+  and reinstating them on evidence. Same code path for live and replay.
+- arena/service.py + scheduler: opens/advances/settles each session,
+  catches up a day the server slept through; network fetched outside
+  the store lock.
+- API: /api/arena (view, config, reset, bench/reinstate, trades,
+  backtest over the last 10-60 sessions).
+- Frontend: Arena tab (desktop: header button) with leaderboard,
+  per-strategy trades, backtest and settings.
+- 15 new tests; full suite 138 passing.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KNQ65mKa3xPauNKDFd7oij
+---
+ README.md                                   |  39 +-
+ backend/arena/__init__.py                   |  17 +
+ backend/arena/costs.py                      |  77 +++
+ backend/arena/engine.py                     | 545 ++++++++++++++++++++
+ backend/arena/service.py                    | 206 ++++++++
+ backend/arena/store.py                      | 105 ++++
+ backend/arena/strategies.py                 | 280 ++++++++++
+ backend/main.py                             |  64 +++
+ backend/scheduler.py                        |  10 +
+ backend/tests/conftest.py                   |   2 +
+ backend/tests/test_arena.py                 | 234 +++++++++
+ backend/tests/test_hygiene_and_endpoints.py |   4 +-
+ frontend/app.js                             |   5 +
+ frontend/arena.js                           | 270 ++++++++++
+ frontend/index.html                         |  12 +
+ frontend/style.css                          |  74 +++
+ frontend/sw.js                              |   4 +-
+ 17 files changed, 1944 insertions(+), 4 deletions(-)
+ create mode 100644 backend/arena/__init__.py
+ create mode 100644 backend/arena/costs.py
+ create mode 100644 backend/arena/engine.py
+ create mode 100644 backend/arena/service.py
+ create mode 100644 backend/arena/store.py
+ create mode 100644 backend/arena/strategies.py
+ create mode 100644 backend/tests/test_arena.py
+ create mode 100644 frontend/arena.js
+
+diff --git a/README.md b/README.md
+index cbd442e..d83b527 100644
+--- a/README.md
++++ b/README.md
+@@ -27,12 +27,13 @@ stock-analyzer/
+     timeutil.py        timezone-aware UTC helpers
+     jsonsafe.py        strips NaN/inf before JSON or storage
+     nse_holidays.json  trading-holiday dates (see "Trading holidays" below)
++    arena/             Strategy Arena: strategies competing with simulated money
+     requirements.txt
+     tests/             pytest suite (no network required)
+     render.yaml         one-click Render deployment config
+     .env.example
+   frontend/          Mobile PWA (installs to your phone's home screen)
+-    index.html / style.css / app.js
++    index.html / style.css / app.js / arena.js
+     manifest.json / sw.js
+     icons/
+ ```
+@@ -209,6 +210,42 @@ counts towards accuracy and weight learning.
+ 
+ ---
+ 
++## 6c. Strategy Arena (simulated money)
++
++Open the **Arena** tab (desktop: the ⚔ Arena button). Several intraday
++strategies paper-trade the same stocks on the same 5-minute bars, each with
++its own copy of your daily capital (default ₹10,000), so the leaderboard
++answers one question: **which one actually makes money after costs?**
++
++- **Strategies:** opening-range breakout, VWAP reclaim, EMA 9/21 crossover,
++  RSI oversold bounce, Bollinger volume breakout, the app's original
++  4-signal score - plus a **benchmark** (buy every stock at the open, sell at
++  the close). A strategy that can't beat the benchmark isn't adding anything.
++- **Realistic costs:** every trade pays brokerage, STT, exchange fees, SEBI
++  fee, stamp duty, GST and slippage (`backend/arena/costs.py` - edit the
++  rates there if your broker differs). Trades whose target can't cover
++  costs are skipped.
++- **Pessimistic fills:** stops are checked against the bar's low; if a bar
++  touches both stop and target, the stop counts. Gaps fill at the open.
++- **Survival rules:** a strategy that loses its daily limit (default 2%)
++  stops for the day. Once it has 20+ trades, it is **benched** if its
++  recent trades lose money after costs, or if its drawdown passes 10%.
++  Benched strategies keep trading in *shadow* and are reinstated
++  automatically when they start earning again. If every strategy is
++  benched, the arena says so - a live account would sit in cash.
++- **Daily cycle:** opens at 09:15 IST, no new entries after 14:45, everything
++  squared off at 15:15, settled after 15:30. A day the server slept through
++  is caught up and settled from Yahoo's bars on the next tick.
++- **Backtest:** replays the last 10-60 sessions of real 5-minute bars (Yahoo
++  keeps about 60 days) through the same engine, so you see results today
++  instead of after weeks. Treat a short backtest as a hint, not proof.
++
++Nothing in the arena places a real order. No strategy, rule or setting can
++guarantee a profit; the arena exists to find out which ones earn and to
++stop the ones that don't before any real money is involved.
++
++---
++
+ ## 7. Extending it later
+ 
+ - Swap the ensemble for a trained ML model (XGBoost/LightGBM) once you've
+diff --git a/backend/arena/__init__.py b/backend/arena/__init__.py
+new file mode 100644
+index 0000000..ce00b44
+--- /dev/null
++++ b/backend/arena/__init__.py
+@@ -0,0 +1,17 @@
++"""
++Strategy Arena - several intraday strategies paper-trading side by side with
++simulated money, so the question "which algorithm actually makes money?" is
++answered by outcomes after costs, not by how convincing a strategy sounds.
++
++Modules:
++  costs       Indian intraday equity charges + slippage (configurable).
++  strategies  The competing strategies, plus a buy-at-open benchmark.
++  engine      Bar-by-bar simulation, risk rules, end-of-day settlement,
++              benching/reinstating, leaderboard. Pure functions over a plain
++              dict state, so live trading and the historical replay share
++              exactly one code path.
++  store       Persistence (JSON file, or Postgres when DATABASE_URL is set).
++  service     Glue between the scheduler/API and the engine.
++
++Simulated money only. Nothing in this package places a real order.
++"""
+diff --git a/backend/arena/costs.py b/backend/arena/costs.py
+new file mode 100644
+index 0000000..fcca406
+--- /dev/null
++++ b/backend/arena/costs.py
+@@ -0,0 +1,77 @@
++"""
++Transaction costs for NSE intraday (MIS) equity trades.
++
++Why this matters more than any strategy tweak: on a ₹5,000-₹10,000 book a
++typical intraday move is a few rupees per share, and a round trip costs a
++few rupees in charges plus slippage. A simulator that ignores costs reports
++strategies as profitable that would lose money for real. Every trade in the
++arena is charged both legs.
++
++Defaults follow a discount-broker schedule (Zerodha-style, as published in
++2025-26). Rates change - edit DEFAULT_COSTS or pass overrides in the arena
++config; everything reads from one dict.
++
++  brokerage       0.03% of turnover per executed order, capped at ₹20
++  STT             0.025% on the SELL side only (intraday equity)
++  exchange txn    NSE ~0.00297% of turnover, both legs
++  SEBI fee        ₹10 per crore of turnover, both legs
++  stamp duty      0.003% on the BUY side only
++  GST             18% on (brokerage + exchange txn + SEBI fee)
++  slippage        0.05% adverse fill per leg (market orders on liquid stocks)
++"""
++from __future__ import annotations
++
++DEFAULT_COSTS = {
++    "brokerage_pct": 0.0003,
++    "brokerage_cap": 20.0,
++    "stt_sell_pct": 0.00025,
++    "exchange_pct": 0.0000297,
++    "sebi_per_crore": 10.0,
++    "stamp_buy_pct": 0.00003,
++    "gst_pct": 0.18,
++    "slippage_pct": 0.0005,
++}
++
++
++def merged(overrides: dict | None) -> dict:
++    cfg = dict(DEFAULT_COSTS)
++    for k, v in (overrides or {}).items():
++        if k in cfg and isinstance(v, (int, float)) and v >= 0:
++            cfg[k] = float(v)
++    return cfg
++
++
++def fill_price(side: str, price: float, cfg: dict) -> float:
++    """Adverse slippage: buys fill a little higher, sells a little lower."""
++    slip = cfg["slippage_pct"]
++    return price * (1 + slip) if side == "BUY" else price * (1 - slip)
++
++
++def leg_charges(side: str, turnover: float, cfg: dict) -> dict:
++    """Statutory + broker charges for one executed order (not slippage,
++    which is already inside the fill price)."""
++    brokerage = min(turnover * cfg["brokerage_pct"], cfg["brokerage_cap"])
++    exchange = turnover * cfg["exchange_pct"]
++    sebi = turnover * cfg["sebi_per_crore"] / 1e7
++    stt = turnover * cfg["stt_sell_pct"] if side == "SELL" else 0.0
++    stamp = turnover * cfg["stamp_buy_pct"] if side == "BUY" else 0.0
++    gst = (brokerage + exchange + sebi) * cfg["gst_pct"]
++    total = brokerage + exchange + sebi + stt + stamp + gst
++    return {
++        "brokerage": round(brokerage, 4),
++        "stt": round(stt, 4),
++        "exchange": round(exchange, 4),
++        "sebi": round(sebi, 6),
++        "stamp": round(stamp, 4),
++        "gst": round(gst, 4),
++        "total": round(total, 4),
++    }
++
++
++def round_trip_cost_estimate(price: float, qty: int, cfg: dict) -> float:
++    """Charges + slippage for buying and selling `qty` at roughly `price`.
++    Used by the engine to refuse trades whose target can't cover costs."""
++    buy = fill_price("BUY", price, cfg) * qty
++    sell = fill_price("SELL", price, cfg) * qty
++    slippage = buy - sell
++    return slippage + leg_charges("BUY", buy, cfg)["total"] + leg_charges("SELL", sell, cfg)["total"]
+diff --git a/backend/arena/engine.py b/backend/arena/engine.py
+new file mode 100644
+index 0000000..602ebd8
+--- /dev/null
++++ b/backend/arena/engine.py
+@@ -0,0 +1,545 @@
++"""
++Arena engine - the simulation itself.
++
++State is a plain JSON-able dict (so it can be stored as-is). Every strategy
++gets its OWN book with the same starting capital and trades the same stocks
++on the same bars, so the comparison is fair: the only difference between
++two books is the strategy.
++
++Daily life of a book:
++  start_day      fresh capital (or carried equity in "compound" mode)
++  process_bar    for each completed 5m bar, in time order across stocks:
++                   1. if holding: stop / target / square-off / strategy exit
++                   2. if flat: maybe enter (sized by risk, costs checked)
++                   3. daily loss limit -> close everything, done for the day
++  settle_day     close leftovers, record the day, judge the strategy
++
++Survival rules (the realistic version of "only keep running if it makes
++money"):
++  - Daily loss limit: a book that loses N% in a day stops for that day.
++  - Benching: once a strategy has enough trades to judge, it is benched if
++    its recent trades lose money after costs (expectancy < 0 or profit
++    factor < 1), or if its drawdown from peak exceeds the limit.
++  - Benched strategies keep paper-trading in SHADOW mode, so a strategy
++    that starts working again is reinstated on evidence, not on hope.
++  - If every real strategy is benched, the arena reports that nothing
++    currently earns - i.e. the would-be-live account would stay in cash.
++Nothing here can guarantee a profit; these rules limit how much a bad
++strategy can lose before it is taken out of rotation.
++
++Fill model (stated so the numbers don't flatter):
++  - entries fill at the signal bar's close, plus slippage
++  - stops/targets are checked against the NEXT bars' high/low; if one bar
++    touches both, the stop is assumed to have hit first (pessimistic)
++  - a bar that opens through the stop fills at the open, not the stop
++  - every leg pays brokerage, STT, exchange, SEBI, stamp duty and GST
++"""
++from __future__ import annotations
++
++import datetime as dt
++import math
++
++import pandas as pd
++
++import timeutil
++from arena import costs as costs_mod
++from arena.strategies import STRATEGIES, LAST_ENTRY_MINUTE
++
++SQUARE_OFF_MINUTE = 15 * 60 + 15   # 15:15 IST
++SESSION_END_MINUTE = 15 * 60 + 30
++BAR_MINUTES = 5
++MAX_TRADES_KEPT = 300
++MAX_DAYS_KEPT = 250
++
++LIQUID_NIFTY = [
++    "RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "TCS.NS",
++    "SBIN.NS", "AXISBANK.NS", "ITC.NS", "BHARTIARTL.NS", "TATASTEEL.NS",
++]
++
++DEFAULT_RISK = {
++    "risk_per_trade_pct": 1.0,      # of the day's starting equity
++    "max_position_pct": 50.0,       # max capital in one position
++    "max_open_positions": 2,
++    "max_trades_per_day": 10,
++    "daily_loss_limit_pct": 2.0,
++    "max_drawdown_pct": 10.0,       # of capital, from the book's peak
++    "min_trades_to_judge": 20,
++    "judge_window": 30,             # most recent N trades are judged
++    "reinstate_profit_factor": 1.1,
++    "min_reward_to_cost": 2.0,      # skip trades whose target can't beat costs
++}
++
++INT_RISK_KEYS = {"max_open_positions", "max_trades_per_day", "min_trades_to_judge", "judge_window"}
++
++DEFAULT_CONFIG = {
++    "enabled": True,
++    "daily_capital": 10_000.0,
++    "capital_mode": "reset",        # "reset" daily, or "compound"
++    "symbols": LIQUID_NIFTY[:6],
++    "strategies": list(STRATEGIES.keys()),
++    "risk": DEFAULT_RISK,
++    "costs": {},
++}
++
++
++# ---------------------------------------------------------------------------
++# Config + state
++# ---------------------------------------------------------------------------
++
++def normalise_config(raw: dict | None, base: dict | None = None) -> dict:
++    """Validate and fill a config. Unknown keys are dropped; bad values fall
++    back to the current/base value rather than raising mid-trading-day."""
++    cfg = {**DEFAULT_CONFIG, **(base or {})}
++    cfg["risk"] = {**DEFAULT_RISK, **(base or {}).get("risk", {})}
++    raw = raw or {}
++
++    if isinstance(raw.get("enabled"), bool):
++        cfg["enabled"] = raw["enabled"]
++    cap = raw.get("daily_capital")
++    if isinstance(cap, (int, float)) and 500 <= cap <= 10_000_000:
++        cfg["daily_capital"] = float(cap)
++    if raw.get("capital_mode") in ("reset", "compound"):
++        cfg["capital_mode"] = raw["capital_mode"]
++    if isinstance(raw.get("symbols"), list):
++        syms = []
++        for s in raw["symbols"]:
++            if isinstance(s, str) and s.strip():
++                s = s.strip().upper()
++                if not s.endswith((".NS", ".BO")):
++                    s += ".NS"
++                if s not in syms:
++                    syms.append(s)
++        if syms:
++            cfg["symbols"] = syms[:25]
++    if isinstance(raw.get("strategies"), list):
++        ids = [s for s in raw["strategies"] if s in STRATEGIES]
++        if "benchmark" not in ids:
++            ids.append("benchmark")   # always compare against the yardstick
++        cfg["strategies"] = ids
++    for k, v in (raw.get("risk") or {}).items():
++        if k in DEFAULT_RISK and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
++            cfg["risk"][k] = max(1, int(v)) if k in INT_RISK_KEYS else float(v)
++    if isinstance(raw.get("costs"), dict):
++        cfg["costs"] = {k: float(v) for k, v in raw["costs"].items()
++                        if k in costs_mod.DEFAULT_COSTS and isinstance(v, (int, float)) and v >= 0}
++    return cfg
++
++
++def new_state(config: dict | None = None) -> dict:
++    return {
++        "config": normalise_config(config),
++        "books": {},
++        "day": None,
++        "day_settled": True,
++        "last_bar": {},       # symbol -> ISO time of last processed bar
++        "marks": {},          # symbol -> {"price", "at"}
++        "history": [],        # one arena-level summary per settled day
++        "created_at": timeutil.iso_now(),
++    }
++
++
++def _new_book(sid: str, capital: float) -> dict:
++    return {
++        "id": sid,
++        "status": "active",
++        "status_reason": None,
++        "status_changed": None,
++        "cash": capital,
++        "day_start_equity": capital,
++        "positions": {},
++        "day": _blank_day(),
++        "trades": [],
++        "stats": {"trades": 0, "wins": 0, "net": 0.0, "gross_win": 0.0, "gross_loss": 0.0,
++                  "charges": 0.0, "peak_net": 0.0, "max_drawdown": 0.0,
++                  "days": 0, "green_days": 0},
++        "day_history": [],
++    }
++
++
++def _blank_day() -> dict:
++    return {"trades": 0, "net": 0.0, "stopped": False, "stop_reason": None,
++            "per_symbol": {}, "skipped": {"too_expensive": 0, "costs_exceed_target": 0}}
++
++
++# ---------------------------------------------------------------------------
++# Day lifecycle
++# ---------------------------------------------------------------------------
++
++def start_day(state: dict, date: str) -> None:
++    if state["day"] and not state["day_settled"]:
++        settle_day(state)
++    cfg = state["config"]
++    capital = cfg["daily_capital"]
++    for sid in cfg["strategies"]:
++        book = state["books"].setdefault(sid, _new_book(sid, capital))
++        equity = book["cash"]  # positions are always flat between days
++        if cfg["capital_mode"] == "reset" or equity <= 0:
++            equity = capital
++        book["cash"] = equity
++        book["day_start_equity"] = equity
++        book["positions"] = {}
++        book["day"] = _blank_day()
++    state["day"] = date
++    state["day_settled"] = False
++
++
++def settle_day(state: dict) -> dict | None:
++    """Close leftovers at their last mark, record the day, judge every book."""
++    if not state["day"] or state["day_settled"]:
++        return None
++    cfg, risk = state["config"], state["config"]["risk"]
++    summary = {"date": state["day"], "books": {}}
++    for sid, book in state["books"].items():
++        if sid not in cfg["strategies"]:
++            continue
++        for sym in list(book["positions"]):
++            mark = state["marks"].get(sym, {}).get("price") or book["positions"][sym]["entry_price"]
++            _close(state, book, sym, mark, "eod_square_off", state["marks"].get(sym, {}).get("at"))
++        day_net = round(book["cash"] - book["day_start_equity"], 2)
++        traded = book["day"]["trades"] > 0
++        st = book["stats"]
++        if traded:
++            st["days"] += 1
++            st["green_days"] += 1 if day_net > 0 else 0
++        book["day_history"].append({
++            "date": state["day"], "net": day_net, "trades": book["day"]["trades"],
++            "equity_end": round(book["cash"], 2), "status": book["status"],
++            "stopped": book["day"]["stop_reason"], "skipped": book["day"]["skipped"],
++        })
++        book["day_history"] = book["day_history"][-MAX_DAYS_KEPT:]
++        _judge(book, risk, cfg["daily_capital"], state["day"])
++        summary["books"][sid] = {"net": day_net, "trades": book["day"]["trades"], "status": book["status"]}
++    state["day_settled"] = True
++    state["history"].append(summary)
++    state["history"] = state["history"][-MAX_DAYS_KEPT:]
++    return summary
++
++
++def _judge(book: dict, risk: dict, capital: float, date: str) -> None:
++    """Bench losers, reinstate recovered shadows. Benchmarks are exempt."""
++    strat = STRATEGIES.get(book["id"])
++    if strat is None or strat.benchmark:
++        return
++    m = window_metrics(book["trades"][-int(risk["judge_window"]):])
++    enough = book["stats"]["trades"] >= risk["min_trades_to_judge"]
++    dd_limit = capital * risk["max_drawdown_pct"] / 100
++    current_dd = book["stats"]["peak_net"] - book["stats"]["net"]
++
++    if book["status"] == "active":
++        reason = None
++        if current_dd >= dd_limit:
++            reason = f"drawdown ₹{current_dd:.0f} hit the {risk['max_drawdown_pct']:g}% limit"
++        elif enough and (m["expectancy"] < 0 or (m["profit_factor"] is not None and m["profit_factor"] < 1)):
++            reason = (f"last {m['trades']} trades lose money after costs "
++                      f"(₹{m['expectancy']:.2f}/trade, PF {m['profit_factor']})")
++        if reason:
++            book.update(status="benched", status_reason=reason, status_changed=date)
++    elif book["status"] == "benched":
++        pf = m["profit_factor"]
++        recovered = (m["trades"] >= min(risk["min_trades_to_judge"], risk["judge_window"])
++                     and m["expectancy"] > 0 and pf is not None and pf >= risk["reinstate_profit_factor"]
++                     and current_dd < dd_limit)
++        if recovered:
++            book.update(status="active",
++                        status_reason=f"reinstated: shadow trades earning again (PF {pf})",
++                        status_changed=date)
++
++
++# ---------------------------------------------------------------------------
++# Bars
++# ---------------------------------------------------------------------------
++
++def process_bars(state: dict, enriched: dict[str, pd.DataFrame],
++                 now: dt.datetime | None = None) -> int:
++    """Feed every not-yet-processed, completed bar of the current day, in
++    time order across all stocks. Returns how many bars were processed."""
++    day = state["day"]
++    if not day or state["day_settled"] or not state["config"]["enabled"]:
++        return 0
++    cutoff = None
++    if now is not None:
++        cutoff = timeutil.ensure_aware(now) - dt.timedelta(minutes=BAR_MINUTES)
++
++    queue = []
++    for sym, df in enriched.items():
++        if df is None or df.empty or sym not in state["config"]["symbols"]:
++            continue
++        last = timeutil.parse_utc(state["last_bar"].get(sym))
++        sess = (df["session"] == day).to_numpy()
++        positions = [i for i in range(len(df)) if sess[i]]
++        for i in positions:
++            ts = df.index[i]
++            if last is not None and ts <= last:
++                continue
++            if cutoff is not None and ts > cutoff:
++                continue          # still forming - Yahoo's last bar is live
++            queue.append((ts, sym, i))
++    queue.sort(key=lambda x: (x[0], x[1]))
++
++    n_symbols = max(1, len(state["config"]["symbols"]))
++    for ts, sym, i in queue:
++        df = enriched[sym]
++        row = df.iloc[i]
++        prev = df.iloc[i - 1] if i > 0 else row
++        process_bar(state, sym, ts, row, prev, n_symbols)
++        state["last_bar"][sym] = timeutil.to_iso(ts.to_pydatetime())
++    return len(queue)
++
++
++def process_bar(state: dict, sym: str, ts, row, prev, n_symbols: int) -> None:
++    cfg, risk = state["config"], state["config"]["risk"]
++    ccfg = costs_mod.merged(cfg["costs"])
++    at = timeutil.to_iso(ts.to_pydatetime())
++    state["marks"][sym] = {"price": float(row["Close"]), "at": at}
++    minute = int(row["minute"])
++
++    for sid in cfg["strategies"]:
++        book = state["books"].get(sid)
++        strat = STRATEGIES.get(sid)
++        if book is None or strat is None:
++            continue
++        pos = book["positions"].get(sym)
++        if pos:
++            price, reason = _exit_decision(strat, row, prev, pos, minute)
++            if reason:
++                _close(state, book, sym, price, reason, at, ccfg)
++        elif not book["day"]["stopped"]:
++            _maybe_enter(book, strat, sym, row, prev, minute, at, risk, ccfg, n_symbols)
++        _check_daily_loss(state, book, risk, at, ccfg)
++
++
++def _exit_decision(strat, row, prev, pos, minute):
++    o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
++    stop, target = pos["stop"], pos["target"]
++    if o <= stop:
++        return o, "stop_loss_gap"
++    if l <= stop:
++        return stop, "stop_loss"          # checked before target: pessimistic
++    if o >= target:
++        return o, "target"
++    if h >= target:
++        return target, "target"
++    if minute >= SQUARE_OFF_MINUTE:
++        return c, "eod_square_off"
++    why = strat.exit(row, prev, pos)
++    if why:
++        return c, f"signal: {why}"
++    return None, None
++
++
++def _maybe_enter(book, strat, sym, row, prev, minute, at, risk, ccfg, n_symbols):
++    if minute > LAST_ENTRY_MINUTE or minute >= SQUARE_OFF_MINUTE:
++        return
++    day = book["day"]
++    if (len(book["positions"]) >= risk["max_open_positions"] and not strat.benchmark) \
++            or day["trades"] >= risk["max_trades_per_day"] \
++            or day["per_symbol"].get(sym, 0) >= strat.max_trades_per_symbol_per_day:
++        return
++    sig = strat.entry(row, prev)
++    if not sig:
++        return
++
++    fill = costs_mod.fill_price("BUY", float(row["Close"]), ccfg)
++    stop, target = float(sig["stop"]), float(sig["target"])
++    if not (math.isfinite(stop) and math.isfinite(target)) or stop >= fill or target <= fill:
++        return
++    equity = book["day_start_equity"]
++    if strat.benchmark:
++        qty = int((equity / n_symbols) // fill)
++    else:
++        qty_risk = int((equity * risk["risk_per_trade_pct"] / 100) // (fill - stop))
++        qty_cap = int((equity * risk["max_position_pct"] / 100) // fill)
++        qty = min(qty_risk, qty_cap)
++    est_buy_charges = costs_mod.leg_charges("BUY", fill * max(qty, 1), ccfg)["total"]
++    qty = min(qty, int((book["cash"] - est_buy_charges) // fill))
++    if qty < 1:
++        day["skipped"]["too_expensive"] += 1
++        return
++    if not strat.benchmark:
++        reward = (target - fill) * qty
++        if reward < risk["min_reward_to_cost"] * costs_mod.round_trip_cost_estimate(fill, qty, ccfg):
++            day["skipped"]["costs_exceed_target"] += 1
++            return
++
++    charges = costs_mod.leg_charges("BUY", fill * qty, ccfg)
++    book["cash"] -= fill * qty + charges["total"]
++    book["positions"][sym] = {
++        "symbol": sym, "qty": qty, "entry_price": round(fill, 4), "entry_at": at,
++        "stop": round(stop, 4), "target": round(target, 4),
++        "buy_charges": charges["total"], "entry_reason": sig.get("reason", ""),
++    }
++    day["trades"] += 1
++    day["per_symbol"][sym] = day["per_symbol"].get(sym, 0) + 1
++
++
++def _close(state, book, sym, price, reason, at, ccfg=None):
++    ccfg = ccfg or costs_mod.merged(state["config"]["costs"])
++    pos = book["positions"].pop(sym, None)
++    if not pos:
++        return None
++    fill = costs_mod.fill_price("SELL", float(price), ccfg)
++    proceeds = fill * pos["qty"]
++    charges = costs_mod.leg_charges("SELL", proceeds, ccfg)
++    book["cash"] += proceeds - charges["total"]
++    gross = (fill - pos["entry_price"]) * pos["qty"]
++    total_charges = pos["buy_charges"] + charges["total"]
++    net = gross - charges["total"] - pos["buy_charges"]
++    trade = {
++        "strategy": book["id"], "symbol": sym, "qty": pos["qty"],
++        "entry_at": pos["entry_at"], "entry_price": round(pos["entry_price"], 2),
++        "exit_at": at or timeutil.iso_now(), "exit_price": round(fill, 2),
++        "gross": round(gross, 2), "charges": round(total_charges, 2), "net": round(net, 2),
++        "entry_reason": pos.get("entry_reason", ""), "exit_reason": reason,
++        "shadow": book["status"] == "benched",
++    }
++    book["trades"].append(trade)
++    book["trades"] = book["trades"][-MAX_TRADES_KEPT:]
++    st = book["stats"]
++    st["trades"] += 1
++    st["net"] = round(st["net"] + net, 2)
++    st["charges"] = round(st["charges"] + total_charges, 2)
++    if net > 0:
++        st["wins"] += 1
++        st["gross_win"] = round(st["gross_win"] + net, 2)
++    else:
++        st["gross_loss"] = round(st["gross_loss"] - net, 2)
++    st["peak_net"] = max(st["peak_net"], st["net"])
++    st["max_drawdown"] = round(max(st["max_drawdown"], st["peak_net"] - st["net"]), 2)
++    book["day"]["net"] = round(book["day"]["net"] + net, 2)
++    return trade
++
++
++def _equity(state, book) -> float:
++    eq = book["cash"]
++    for sym, pos in book["positions"].items():
++        mark = state["marks"].get(sym, {}).get("price") or pos["entry_price"]
++        eq += mark * pos["qty"]
++    return eq
++
++
++def _check_daily_loss(state, book, risk, at, ccfg):
++    if book["day"]["stopped"] or STRATEGIES[book["id"]].benchmark:
++        return  # the yardstick holds the day by definition
++    limit = book["day_start_equity"] * risk["daily_loss_limit_pct"] / 100
++    if book["day_start_equity"] - _equity(state, book) >= limit:
++        for sym in list(book["positions"]):
++            _close(state, book, sym, state["marks"][sym]["price"], "daily_loss_limit", at, ccfg)
++        book["day"]["stopped"] = True
++        book["day"]["stop_reason"] = f"daily loss limit ({risk['daily_loss_limit_pct']:g}%) hit"
++
++
++# ---------------------------------------------------------------------------
++# Reporting
++# ---------------------------------------------------------------------------
++
++def window_metrics(trades: list[dict]) -> dict:
++    n = len(trades)
++    if not n:
++        return {"trades": 0, "net": 0.0, "win_rate": None, "expectancy": 0.0,
++                "profit_factor": None, "avg_win": None, "avg_loss": None}
++    wins = [t["net"] for t in trades if t["net"] > 0]
++    losses = [-t["net"] for t in trades if t["net"] <= 0]
++    gw, gl = sum(wins), sum(losses)
++    return {
++        "trades": n,
++        "net": round(sum(t["net"] for t in trades), 2),
++        "win_rate": round(100 * len(wins) / n, 1),
++        "expectancy": round(sum(t["net"] for t in trades) / n, 2),
++        "profit_factor": round(gw / gl, 2) if gl > 0 else (None if gw == 0 else 99.0),
++        "avg_win": round(gw / len(wins), 2) if wins else None,
++        "avg_loss": round(gl / len(losses), 2) if losses else None,
++    }
++
++
++def leaderboard(state: dict) -> list[dict]:
++    cfg = state["config"]
++    bench = state["books"].get("benchmark")
++    bench_net = bench["stats"]["net"] if bench else None
++    rows = []
++    for sid in cfg["strategies"]:
++        book = state["books"].get(sid)
++        strat = STRATEGIES.get(sid)
++        if not book or not strat:
++            continue
++        st = book["stats"]
++        allm = window_metrics(book["trades"])
++        recent = window_metrics(book["trades"][-int(cfg["risk"]["judge_window"]):])
++        rows.append({
++            "id": sid, "name": strat.name, "benchmark": strat.benchmark,
++            "status": book["status"], "status_reason": book["status_reason"],
++            "net_total": st["net"], "charges_total": st["charges"],
++            "trades": st["trades"],
++            "win_rate": round(100 * st["wins"] / st["trades"], 1) if st["trades"] else None,
++            "expectancy": round(st["net"] / st["trades"], 2) if st["trades"] else None,
++            "profit_factor": allm["profit_factor"] if st["trades"] <= MAX_TRADES_KEPT else (
++                round(st["gross_win"] / st["gross_loss"], 2) if st["gross_loss"] else None),
++            "max_drawdown": st["max_drawdown"],
++            "days": st["days"], "green_days": st["green_days"],
++            "recent": recent,
++            "today": {"net": book["day"]["net"], "trades": book["day"]["trades"],
++                      "open_positions": len(book["positions"]),
++                      "equity": round(_equity(state, book), 2),
++                      "stopped": book["day"]["stop_reason"]},
++            "vs_benchmark": (round(st["net"] - bench_net, 2)
++                             if bench_net is not None and not strat.benchmark else None),
++        })
++    rows.sort(key=lambda r: (r["benchmark"], -r["net_total"]))
++    return rows
++
++
++def verdict(state: dict) -> dict:
++    """One-line answer to 'is anything working?'."""
++    board = [r for r in leaderboard(state) if not r["benchmark"]]
++    if not board or all(r["trades"] == 0 for r in board):
++        return {"level": "waiting", "text": "No trades yet - results appear after the first session."}
++    active = [r for r in board if r["status"] == "active"]
++    judged = [r for r in board if r["trades"] >= state["config"]["risk"]["min_trades_to_judge"]]
++    winners = [r for r in judged if r["net_total"] > 0 and (r["vs_benchmark"] or 0) > 0]
++    if not active:
++        return {"level": "halted",
++                "text": "Every strategy is benched: none is earning after costs right now. "
++                        "A live account following these rules would be sitting in cash."}
++    if winners:
++        best = max(winners, key=lambda r: r["net_total"])
++        return {"level": "good",
++                "text": f"{best['name']} leads: ₹{best['net_total']:,.0f} net after costs over "
++                        f"{best['trades']} trades, beating the benchmark by ₹{best['vs_benchmark']:,.0f}."}
++    if not judged:
++        return {"level": "early",
++                "text": f"Too early to judge - each strategy needs "
++                        f"{state['config']['risk']['min_trades_to_judge']} trades before its numbers mean anything."}
++    return {"level": "none",
++            "text": "No strategy has beaten the benchmark after costs yet."}
++
++
++def open_positions(state: dict) -> list[dict]:
++    out = []
++    for sid, book in state["books"].items():
++        if sid not in state["config"]["strategies"]:
++            continue
++        for sym, pos in book["positions"].items():
++            mark = state["marks"].get(sym, {}).get("price")
++            out.append({**pos, "strategy": sid, "mark": mark,
++                        "unrealised": round((mark - pos["entry_price"]) * pos["qty"], 2) if mark else None})
++    return out
++
++
++# ---------------------------------------------------------------------------
++# Historical replay
++# ---------------------------------------------------------------------------
++
++def replay(config: dict, enriched: dict[str, pd.DataFrame], days: int = 30) -> dict:
++    """Run the exact live code path over past sessions. Each session: start,
++    feed every bar, settle. Returns a fresh state (never touches the live one)."""
++    state = new_state(config)
++    state["config"]["enabled"] = True
++    sessions = sorted({s for df in enriched.values() if df is not None and not df.empty
++                       for s in df["session"].unique()})
++    sessions = sessions[-int(days):]
++    for s in sessions:
++        start_day(state, s)
++        process_bars(state, enriched, now=None)
++        settle_day(state)
++    state["replay"] = {"sessions": sessions, "symbols": sorted(enriched.keys()),
++                       "ran_at": timeutil.iso_now()}
++    return state
+diff --git a/backend/arena/service.py b/backend/arena/service.py
+new file mode 100644
+index 0000000..51cfeda
+--- /dev/null
++++ b/backend/arena/service.py
+@@ -0,0 +1,206 @@
++"""
++Glue between the outside world (scheduler, API) and the pure engine.
++
++Network fetches always happen OUTSIDE the store lock: bars are downloaded
++first, then the state is re-read, advanced and saved under the lock. The
++previous version of this app held its storage lock across Yahoo calls and
++that stalled every request.
++"""
++from __future__ import annotations
++
++import datetime as dt
++
++import data_sources
++import market_calendar
++import timeutil
++from arena import engine, store
++from arena import costs as costs_mod
++from arena.strategies import enrich, catalog
++
++BACKTEST_PREFIX = "bt::"
++REPLAY_PERIOD = "60d"     # Yahoo serves 5-minute bars for about 60 days
++OPEN_MINUTE = 9 * 60 + 15
++SETTLE_MINUTE = engine.SESSION_END_MINUTE + engine.BAR_MINUTES   # last bar complete
++
++
++def _ist(now: dt.datetime | None):
++    return (now or timeutil.utc_now()).astimezone(timeutil.IST)
++
++
++def _fetch_enriched(symbols: list[str], period: str | None = None) -> dict:
++    out = {}
++    for sym in symbols:
++        try:
++            raw = (data_sources._yf_download_cached(sym, period, "5m") if period
++                   else data_sources.fetch_intraday_bars(sym, "5m"))
++            out[sym] = enrich(raw)
++        except Exception as e:  # one bad symbol must not stop the others
++            print(f"[warn] arena: bars failed for {sym}: {e}")
++    return out
++
++
++def load_or_create(ip: str) -> dict:
++    with store.lock:
++        state = store.load(ip)
++        if state is None:
++            state = engine.new_state()
++            store.save(ip, state)
++        return state
++
++
++# ---------------------------------------------------------------------------
++# Scheduler entry points
++# ---------------------------------------------------------------------------
++
++def tick_all(now: dt.datetime | None = None) -> None:
++    for ip in store.all_ids():
++        if ip.startswith(BACKTEST_PREFIX):
++            continue
++        try:
++            tick_client(ip, now)
++        except Exception as e:
++            print(f"[warn] arena tick failed for {ip}: {e}")
++
++
++def tick_client(ip: str, now: dt.datetime | None = None) -> None:
++    now = now or timeutil.utc_now()
++    ist = _ist(now)
++    today, minute = ist.date().isoformat(), ist.hour * 60 + ist.minute
++    trading_today = market_calendar.is_trading_day(ist.date())
++
++    state = store.load(ip)
++    if not state or not state["config"].get("enabled"):
++        return
++    unsettled = bool(state["day"]) and not state["day_settled"]
++    should_open = trading_today and minute >= OPEN_MINUTE and state["day"] != today
++    if not (unsettled or should_open):
++        return
++
++    bars = _fetch_enriched(state["config"]["symbols"])
++
++    with store.lock:
++        state = store.load(ip)
++        if not state:
++            return
++        # Catch up a day the server slept through, then settle it.
++        if state["day"] and not state["day_settled"] and state["day"] != today:
++            engine.process_bars(state, bars, now=None)
++            engine.settle_day(state)
++        if trading_today and minute >= OPEN_MINUTE and state["day"] != today:
++            engine.start_day(state, today)
++        if state["day"] == today and not state["day_settled"]:
++            engine.process_bars(state, bars, now=now)
++            if minute >= SETTLE_MINUTE:
++                engine.settle_day(state)
++        store.save(ip, state)
++
++
++# ---------------------------------------------------------------------------
++# API operations
++# ---------------------------------------------------------------------------
++
++def view(ip: str) -> dict:
++    state = load_or_create(ip)
++    return {
++        "config": state["config"],
++        "strategies": catalog(),
++        "market": market_calendar.market_status(),
++        "day": state["day"],
++        "day_settled": state["day_settled"],
++        "verdict": engine.verdict(state),
++        "leaderboard": engine.leaderboard(state),
++        "open_positions": engine.open_positions(state),
++        "history": state["history"][-30:],
++        "presets": {"liquid_nifty": engine.LIQUID_NIFTY},
++        "default_costs": costs_mod.DEFAULT_COSTS,
++        "default_risk": engine.DEFAULT_RISK,
++    }
++
++
++def update_config(ip: str, raw: dict) -> dict:
++    with store.lock:
++        state = store.load(ip) or engine.new_state()
++        old = state["config"]
++        new = engine.normalise_config(raw, base=old)
++        in_session = bool(state["day"]) and not state["day_settled"]
++        if in_session:
++            # Close positions the new config no longer covers, at their mark,
++            # rather than leaving them unmanaged until the close.
++            for sid, book in state["books"].items():
++                for sym in list(book["positions"]):
++                    if sid not in new["strategies"] or sym not in new["symbols"]:
++                        mark = state["marks"].get(sym, {}).get("price") or book["positions"][sym]["entry_price"]
++                        engine._close(state, book, sym, mark, "config_changed",
++                                      state["marks"].get(sym, {}).get("at"))
++        state["config"] = new
++        if in_session:
++            # New strategies join the running day with today's capital
++            # (capital changes themselves apply from the next session).
++            for sid in new["strategies"]:
++                if sid not in state["books"]:
++                    book = engine._new_book(sid, old["daily_capital"])
++                    state["books"][sid] = book
++        store.save(ip, state)
++        return state["config"]
++
++
++def reset(ip: str) -> None:
++    with store.lock:
++        state = store.load(ip)
++        store.save(ip, engine.new_state(state["config"] if state else None))
++
++
++def set_status(ip: str, sid: str, status: str) -> bool:
++    with store.lock:
++        state = store.load(ip)
++        if not state or sid not in state["books"] or status not in ("active", "benched"):
++            return False
++        book = state["books"][sid]
++        if book["status"] != status:
++            book.update(status=status, status_reason=f"set to {status} manually",
++                        status_changed=timeutil.iso_now())
++        store.save(ip, state)
++        return True
++
++
++def trades(ip: str, sid: str | None = None, limit: int = 100) -> list[dict]:
++    state = store.load(ip)
++    if not state:
++        return []
++    out = []
++    for book_id, book in state["books"].items():
++        if sid and book_id != sid:
++            continue
++        out.extend(book["trades"])
++    out.sort(key=lambda t: t["exit_at"], reverse=True)
++    return out[:max(1, min(limit, 1000))]
++
++
++def run_backtest(ip: str, days: int = 30) -> dict:
++    state = load_or_create(ip)
++    bars = _fetch_enriched(state["config"]["symbols"], REPLAY_PERIOD)
++    bars = {k: v for k, v in bars.items() if v is not None and not v.empty}
++    if not bars:
++        return {"ok": False, "reason": "No historical 5-minute data could be fetched for these stocks."}
++    result = engine.replay(state["config"], bars, days=max(1, min(int(days), 60)))
++    with store.lock:
++        store.save(BACKTEST_PREFIX + ip, result)
++    return backtest_view(result)
++
++
++def last_backtest(ip: str) -> dict | None:
++    result = store.load(BACKTEST_PREFIX + ip)
++    return backtest_view(result) if result else None
++
++
++def backtest_view(result: dict) -> dict:
++    return {
++        "ok": True,
++        "replay": result.get("replay"),
++        "verdict": engine.verdict(result),
++        "leaderboard": engine.leaderboard(result),
++        "history": result["history"],
++        "recent_trades": sorted(
++            (t for b in result["books"].values() for t in b["trades"]),
++            key=lambda t: t["exit_at"], reverse=True)[:60],
++    }
+diff --git a/backend/arena/store.py b/backend/arena/store.py
+new file mode 100644
+index 0000000..7c4a9d1
+--- /dev/null
++++ b/backend/arena/store.py
+@@ -0,0 +1,105 @@
++"""
++Arena persistence, one state dict per client id.
++
++Same two backends as storage.py and the same rule: Postgres when
++DATABASE_URL is set (survives Render restarts), otherwise a JSON file under
++backend/data/. Reuses storage.py's connection pool rather than opening a
++second one. Every write goes through jsonsafe.clean, because Postgres JSONB
++rejects NaN and a rejected write would silently lose a day of trades.
++"""
++from __future__ import annotations
++
++import json
++import os
++import threading
++
++import jsonsafe
++import storage
++
++ARENA_PATH = os.path.join(storage.DATA_DIR, "arena.json")
++_lock = threading.RLock()
++
++if storage._pg_pool:
++    _conn = storage._pg_pool.getconn()
++    try:
++        with _conn.cursor() as cur:
++            cur.execute("""
++                CREATE TABLE IF NOT EXISTS arena_store (
++                    ip TEXT PRIMARY KEY,
++                    data JSONB NOT NULL DEFAULT '{}'::jsonb
++                )
++            """)
++        _conn.commit()
++    finally:
++        storage._pg_pool.putconn(_conn)
++
++
++def _file_load() -> dict:
++    if not os.path.exists(ARENA_PATH):
++        return {}
++    try:
++        with open(ARENA_PATH) as f:
++            return json.load(f)
++    except (json.JSONDecodeError, OSError):
++        return {}
++
++
++def _file_save(data: dict) -> None:
++    tmp = ARENA_PATH + ".tmp"
++    with open(tmp, "w") as f:
++        json.dump(data, f)
++    os.replace(tmp, ARENA_PATH)
++
++
++def load(ip: str) -> dict | None:
++    with _lock:
++        if storage._pg_pool:
++            conn = storage._pg_pool.getconn()
++            try:
++                with conn.cursor() as cur:
++                    cur.execute("SELECT data FROM arena_store WHERE ip = %s", (ip,))
++                    row = cur.fetchone()
++                return row[0] if row else None
++            finally:
++                storage._pg_pool.putconn(conn)
++        return _file_load().get(ip)
++
++
++def save(ip: str, state: dict) -> None:
++    state = jsonsafe.clean(state)
++    with _lock:
++        if storage._pg_pool:
++            conn = storage._pg_pool.getconn()
++            try:
++                with conn.cursor() as cur:
++                    cur.execute(
++                        """INSERT INTO arena_store (ip, data) VALUES (%s, %s)
++                           ON CONFLICT (ip) DO UPDATE SET data = EXCLUDED.data""",
++                        (ip, json.dumps(state)),
++                    )
++                conn.commit()
++            finally:
++                storage._pg_pool.putconn(conn)
++            return
++        data = _file_load()
++        data[ip] = state
++        _file_save(data)
++
++
++def all_ids() -> list[str]:
++    with _lock:
++        if storage._pg_pool:
++            conn = storage._pg_pool.getconn()
++            try:
++                with conn.cursor() as cur:
++                    cur.execute("SELECT ip FROM arena_store")
++                    return [r[0] for r in cur.fetchall()]
++            finally:
++                storage._pg_pool.putconn(conn)
++        return list(_file_load().keys())
++
++
++# Callers that read-modify-write hold this so the scheduler and an API call
++# can't interleave and lose each other's changes. Re-entrant, so load/save
++# can be called while holding it.
++lock = _lock
+diff --git a/backend/arena/strategies.py b/backend/arena/strategies.py
+new file mode 100644
+index 0000000..300cddc
+--- /dev/null
++++ b/backend/arena/strategies.py
+@@ -0,0 +1,280 @@
++"""
++The competing intraday strategies.
++
++Each strategy looks at ONE completed 5-minute bar (plus the bar before it)
++whose indicator columns were precomputed by `enrich()`, and answers:
++  - flat:      BUY (with a stop and a target) or nothing
++  - in a trade: EXIT or nothing
++Stops, targets, the end-of-day square-off and the daily loss limit are
++enforced by the engine, not here, so no strategy can skip them.
++
++All indicators are causal (they only use bars up to and including the
++current one), so the historical replay has no lookahead.
++
++Long-only for this first version: shorting intraday is allowed in MIS, but
++it adds borrow/auction edge cases that would muddy a first comparison.
++Add short variants once the long-only results are understood.
++
++Adding a strategy: subclass Strategy, implement entry() (and exit() if it
++has a signal-based exit), add it to STRATEGIES. Nothing else changes.
++"""
++from __future__ import annotations
++
++import math
++
++import numpy as np
++import pandas as pd
++
++OPENING_RANGE_BARS = 3          # 3 x 5m = the first 15 minutes
++LAST_ENTRY_MINUTE = 14 * 60 + 45  # no new entries after 14:45 IST
++
++
++# ---------------------------------------------------------------------------
++# Indicators, computed once per symbol per refresh
++# ---------------------------------------------------------------------------
++
++def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
++    delta = close.diff()
++    gain = delta.clip(lower=0).ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
++    loss = (-delta.clip(upper=0)).ewm(alpha=1 / n, adjust=False, min_periods=n).mean()
++    rs = gain / loss.replace(0, np.nan)
++    out = 100 - 100 / (1 + rs)
++    out = out.where(~((loss == 0) & (gain > 0)), 100.0)
++    out = out.where(~((loss == 0) & (gain == 0)), 50.0)
++    return out
++
++
++def enrich(bars: pd.DataFrame) -> pd.DataFrame:
++    """Add every indicator column the strategies read. Input: OHLCV with a
++    tz-aware index (Yahoo returns Asia/Kolkata for NSE/BSE)."""
++    if bars is None or bars.empty:
++        return pd.DataFrame()
++    df = bars[["Open", "High", "Low", "Close", "Volume"]].copy().dropna(subset=["Close"])
++    if df.empty:
++        return df
++    idx = df.index
++    if idx.tz is None:
++        idx = idx.tz_localize("Asia/Kolkata")
++    df.index = idx.tz_convert("Asia/Kolkata")
++
++    close, high, low, vol = df["Close"], df["High"], df["Low"], df["Volume"].fillna(0)
++    df["session"] = [t.date().isoformat() for t in df.index]
++    df["minute"] = [t.hour * 60 + t.minute for t in df.index]
++
++    df["ema9"] = close.ewm(span=9, adjust=False).mean()
++    df["ema21"] = close.ewm(span=21, adjust=False).mean()
++    df["sma5"] = close.rolling(5, min_periods=5).mean()
++    df["sma20"] = close.rolling(20, min_periods=20).mean()
++    df["rsi14"] = _rsi(close, 14)
++    prev_close = close.shift(1)
++    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
++    df["atr14"] = tr.rolling(14, min_periods=5).mean()
++    mid = close.rolling(20, min_periods=20).mean()
++    sd = close.rolling(20, min_periods=20).std()
++    df["bb_mid"], df["bb_up"] = mid, mid + 2 * sd
++    df["vol_avg20"] = vol.rolling(20, min_periods=10).mean()
++
++    g = df.groupby("session", sort=False)
++    df["bar_no"] = g.cumcount()
++    pv = (close * vol).groupby(df["session"]).cumsum()
++    cv = vol.groupby(df["session"]).cumsum()
++    df["vwap"] = (pv / cv.replace(0, np.nan)).fillna(close)
++    # Opening range only becomes known once its last bar has closed - before
++    # that the columns are NaN so no strategy can peek at it.
++    in_or = df["bar_no"] < OPENING_RANGE_BARS
++    or_high = high.where(in_or).groupby(df["session"]).transform("max")
++    or_low = low.where(in_or).groupby(df["session"]).transform("min")
++    known = df["bar_no"] >= OPENING_RANGE_BARS - 1
++    df["or_high"] = or_high.where(known)
++    df["or_low"] = or_low.where(known)
++    return df
++
++
++def _ok(*vals) -> bool:
++    return all(v is not None and isinstance(v, (int, float)) and math.isfinite(v) for v in vals)
++
++
++# ---------------------------------------------------------------------------
++# Strategies
++# ---------------------------------------------------------------------------
++
++class Strategy:
++    id = "base"
++    name = "Base"
++    description = ""
++    benchmark = False          # benchmarks are never benched, only compared
++    max_trades_per_symbol_per_day = 2
++
++    def entry(self, row, prev) -> dict | None:
++        """Return {"stop", "target", "reason"} to buy at this bar's close."""
++        return None
++
++    def exit(self, row, prev, position) -> str | None:
++        """Return a reason string to exit at this bar's close."""
++        return None
++
++    @staticmethod
++    def atr_levels(price, atr, stop_mult, target_mult):
++        if not _ok(price, atr) or atr <= 0:
++            atr = price * 0.004
++        return price - stop_mult * atr, price + target_mult * atr
++
++
++class OpeningRangeBreakout(Strategy):
++    id = "orb"
++    name = "Opening-range breakout"
++    description = ("Buys when price closes above the high of the first 15 minutes. "
++                   "Stop under the range low (max 1.5%), target 2x the risk.")
++    max_trades_per_symbol_per_day = 1
++
++    def entry(self, row, prev):
++        if not _ok(row["or_high"], row["or_low"], prev["Close"]):
++            return None
++        if row["bar_no"] < OPENING_RANGE_BARS or row["Close"] <= row["or_high"] or prev["Close"] > row["or_high"]:
++            return None
++        price = row["Close"]
++        stop = max(row["or_low"], price * (1 - 0.015))
++        if stop >= price:
++            return None
++        return {"stop": stop, "target": price + 2 * (price - stop), "reason": "closed above opening range"}
++
++
++class VwapReclaim(Strategy):
++    id = "vwap_reclaim"
++    name = "VWAP reclaim"
++    description = ("Buys when price crosses back above the day's VWAP with above-average volume. "
++                   "Exits if it falls back below VWAP. Target 2x risk.")
++
++    def entry(self, row, prev):
++        if row["bar_no"] < 3 or not _ok(row["vwap"], prev["vwap"], row["vol_avg20"], row["atr14"]):
++            return None
++        crossed = prev["Close"] <= prev["vwap"] and row["Close"] > row["vwap"]
++        if not crossed or row["Volume"] < row["vol_avg20"]:
++            return None
++        price = row["Close"]
++        stop = min(row["Low"], row["vwap"]) - 0.5 * row["atr14"]
++        if stop >= price:
++            return None
++        return {"stop": stop, "target": price + 2 * (price - stop), "reason": "reclaimed VWAP on volume"}
++
++    def exit(self, row, prev, position):
++        if _ok(row["vwap"]) and row["Close"] < row["vwap"] * 0.998:
++            return "lost VWAP"
++        return None
++
++
++class EmaCrossover(Strategy):
++    id = "ema_cross"
++    name = "EMA 9/21 crossover"
++    description = "Trend-following: buys when the 9-EMA crosses above the 21-EMA, exits on the cross back."
++
++    def entry(self, row, prev):
++        if row["bar_no"] < 2 or not _ok(row["ema9"], row["ema21"], prev["ema9"], prev["ema21"]):
++            return None
++        if prev["ema9"] <= prev["ema21"] and row["ema9"] > row["ema21"]:
++            stop, target = self.atr_levels(row["Close"], row["atr14"], 1.5, 3.0)
++            return {"stop": stop, "target": target, "reason": "EMA9 crossed above EMA21"}
++        return None
++
++    def exit(self, row, prev, position):
++        if _ok(row["ema9"], row["ema21"]) and row["ema9"] < row["ema21"]:
++            return "EMA9 crossed back below EMA21"
++        return None
++
++
++class RsiReversion(Strategy):
++    id = "rsi_reversion"
++    name = "RSI oversold bounce"
++    description = ("Mean-reversion: buys when RSI(14) climbs back above 30 after being oversold, "
++                   "exits once RSI recovers past 55.")
++
++    def entry(self, row, prev):
++        if row["bar_no"] < 3 or not _ok(row["rsi14"], prev["rsi14"]):
++            return None
++        if prev["rsi14"] < 30 <= row["rsi14"]:
++            stop, target = self.atr_levels(row["Close"], row["atr14"], 1.5, 2.0)
++            return {"stop": stop, "target": target, "reason": "RSI back above 30"}
++        return None
++
++    def exit(self, row, prev, position):
++        if _ok(row["rsi14"]) and row["rsi14"] > 55:
++            return "RSI recovered above 55"
++        return None
++
++
++class BollingerBreakout(Strategy):
++    id = "bb_breakout"
++    name = "Bollinger volume breakout"
++    description = ("Momentum: buys a close above the upper Bollinger band on 1.5x average volume, "
++                   "exits when price falls back to the middle band.")
++
++    def entry(self, row, prev):
++        if row["bar_no"] < 3 or not _ok(row["bb_up"], row["vol_avg20"]):
++            return None
++        if row["Close"] > row["bb_up"] and row["Volume"] >= 1.5 * row["vol_avg20"]:
++            stop, target = self.atr_levels(row["Close"], row["atr14"], 1.5, 3.0)
++            return {"stop": stop, "target": target, "reason": "volume breakout above upper band"}
++        return None
++
++    def exit(self, row, prev, position):
++        if _ok(row["bb_mid"]) and row["Close"] < row["bb_mid"]:
++            return "back below middle band"
++        return None
++
++
++class LegacyScore(Strategy):
++    id = "score4"
++    name = "4-signal score (original)"
++    description = ("The app's original intraday rule: MA trend + RSI + VWAP + opening range, "
++                   "buy at score >= +2, exit at <= -2. Stop -1.5%, target +2.5%.")
++
++    @staticmethod
++    def score(row) -> int | None:
++        if not _ok(row["sma5"], row["sma20"], row["rsi14"], row["vwap"]):
++            return None
++        s = 1 if row["sma5"] > row["sma20"] else -1
++        s += 1 if row["rsi14"] < 30 else (-1 if row["rsi14"] > 70 else 0)
++        s += 1 if row["Close"] > row["vwap"] else -1
++        if _ok(row["or_high"], row["or_low"]):
++            s += 1 if row["Close"] > row["or_high"] else (-1 if row["Close"] < row["or_low"] else 0)
++        return s
++
++    def entry(self, row, prev):
++        s, p = self.score(row), self.score(prev)
++        if s is None or s < 2 or (p is not None and p >= 2):
++            return None  # act on the transition into >=2, not every bar it stays there
++        price = row["Close"]
++        return {"stop": price * 0.985, "target": price * 1.025, "reason": f"score {s:+d}"}
++
++    def exit(self, row, prev, position):
++        s = self.score(row)
++        if s is not None and s <= -2:
++            return f"score {s:+d}"
++        return None
++
++
++class BuyAtOpenBenchmark(Strategy):
++    id = "benchmark"
++    name = "Benchmark: buy first bar, hold to close"
++    description = ("Not a strategy - the yardstick. Buys every selected stock on the first bar and "
++                   "sells at square-off. A strategy that can't beat this isn't adding anything.")
++    benchmark = True
++    max_trades_per_symbol_per_day = 1
++
++    def entry(self, row, prev):
++        if row["bar_no"] == 0:
++            price = row["Close"]
++            # Wide catastrophe stop only; the point is to hold the day.
++            return {"stop": price * 0.9, "target": price * 1.5, "reason": "day open"}
++        return None
++
++
++STRATEGIES: dict[str, Strategy] = {s.id: s for s in [
++    OpeningRangeBreakout(), VwapReclaim(), EmaCrossover(), RsiReversion(),
++    BollingerBreakout(), LegacyScore(), BuyAtOpenBenchmark(),
++]}
++
++
++def catalog() -> list[dict]:
++    return [{"id": s.id, "name": s.name, "description": s.description, "benchmark": s.benchmark}
++            for s in STRATEGIES.values()]
+diff --git a/backend/main.py b/backend/main.py
+index 6b5482e..db571ed 100644
+--- a/backend/main.py
++++ b/backend/main.py
+@@ -518,6 +518,70 @@ def api_intraday_detail(symbol: str, request: Request):
+     return {"symbol": symbol, "live_price": live_price, "timeframes": timeframes}
+ 
+ 
++# ---------- Strategy Arena (several strategies, simulated money, side by side) ----------
++
++from arena import service as arena_service
++
++
++class ArenaConfigRequest(BaseModel):
++    enabled: bool | None = None
++    daily_capital: float | None = None
++    capital_mode: str | None = None
++    symbols: list[str] | None = None
++    strategies: list[str] | None = None
++    risk: dict | None = None
++    costs: dict | None = None
++
++
++class ArenaBacktestRequest(BaseModel):
++    days: int = 30
++
++
++@app.get("/api/arena")
++def api_arena(request: Request):
++    return arena_service.view(get_client_ip(request))
++
++
++@app.put("/api/arena/config")
++def api_arena_config(req: ArenaConfigRequest, request: Request):
++    raw = {k: v for k, v in req.model_dump().items() if v is not None}
++    return {"config": arena_service.update_config(get_client_ip(request), raw)}
++
++
++@app.post("/api/arena/reset")
++def api_arena_reset(request: Request):
++    arena_service.reset(get_client_ip(request))
++    return {"reset": True}
++
++
++@app.post("/api/arena/strategies/{strategy_id}/{action}")
++def api_arena_strategy_status(strategy_id: str, action: str, request: Request):
++    status = {"bench": "benched", "reinstate": "active"}.get(action)
++    if not status:
++        raise HTTPException(400, "action must be 'bench' or 'reinstate'")
++    if not arena_service.set_status(get_client_ip(request), strategy_id, status):
++        raise HTTPException(404, "strategy not found in this arena yet")
++    return {"id": strategy_id, "status": status}
++
++
++@app.get("/api/arena/trades")
++def api_arena_trades(request: Request, strategy: str | None = None, limit: int = 100):
++    return {"trades": arena_service.trades(get_client_ip(request), strategy, limit)}
++
++
++@app.post("/api/arena/backtest")
++def api_arena_backtest(req: ArenaBacktestRequest, request: Request):
++    result = arena_service.run_backtest(get_client_ip(request), req.days)
++    if not result.get("ok"):
++        raise HTTPException(502, result.get("reason", "backtest failed"))
++    return result
++
++
++@app.get("/api/arena/backtest")
++def api_arena_last_backtest(request: Request):
++    return {"backtest": arena_service.last_backtest(get_client_ip(request))}
++
++
+ # ---------- Serve the PWA frontend ----------
+ frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+ if os.path.isdir(frontend_dir):
+diff --git a/backend/scheduler.py b/backend/scheduler.py
+index f26e881..8efcde6 100644
+--- a/backend/scheduler.py
++++ b/backend/scheduler.py
+@@ -18,6 +18,7 @@ from data_sources import (
+ )
+ from predictor import predict_price, nudge_weights
+ import intraday
++from arena import service as arena_service
+ 
+ IST = pytz.timezone("Asia/Kolkata")
+ 
+@@ -119,6 +120,13 @@ def intraday_tick():
+                 print(f"[warn] intraday tick failed for {symbol} {tf}: {e}")
+ 
+ 
++def arena_tick():
++    """Advances every Strategy Arena. Runs every tick, not just in market
++    hours: it also opens the day at 09:15 and settles it after the close, and
++    catches up a session the server slept through."""
++    arena_service.tick_all()
++
++
+ scheduler = BackgroundScheduler(timezone=str(IST))
+ 
+ 
+@@ -136,5 +144,7 @@ def start_scheduler(interval_minutes: int = 5):
+ 
+     scheduler.add_job(tick, "interval", minutes=interval_minutes, id="watchlist_tick", replace_existing=True)
+     scheduler.add_job(intraday_tick, "interval", minutes=interval_minutes, id="intraday_tick", replace_existing=True)
++    scheduler.add_job(arena_tick, "interval", minutes=interval_minutes, id="arena_tick", replace_existing=True,
++                      max_instances=1, coalesce=True)
+     scheduler.start()
+     return scheduler
+diff --git a/backend/tests/conftest.py b/backend/tests/conftest.py
+index 4fb6eea..ae4254f 100644
+--- a/backend/tests/conftest.py
++++ b/backend/tests/conftest.py
+@@ -138,6 +138,8 @@ def isolated_storage(monkeypatch, tmp_path):
+     monkeypatch.setattr(storage, "STORE_PATH", str(tmp_path / "watchlists.json"))
+     monkeypatch.setattr(storage, "INTRADAY_STORE_PATH", str(tmp_path / "intraday.json"))
+     monkeypatch.setattr(storage, "_pg_pool", None)
++    from arena import store as arena_store
++    monkeypatch.setattr(arena_store, "ARENA_PATH", str(tmp_path / "arena.json"))
+     return tmp_path
+ 
+ 
+diff --git a/backend/tests/test_arena.py b/backend/tests/test_arena.py
+new file mode 100644
+index 0000000..2b9ee2b
+--- /dev/null
++++ b/backend/tests/test_arena.py
+@@ -0,0 +1,234 @@
++"""Strategy Arena: costs, fills, survival rules, no-lookahead, API.
++
++Synthetic bars only (see conftest). The point of most of these tests is to
++prove the simulator does NOT flatter strategies: costs are charged, stops
++win ties, nothing is held overnight, and a losing strategy gets benched.
++"""
++import datetime as dt
++
++import numpy as np
++import pandas as pd
++import pytest
++
++from arena import costs, engine
++from arena.strategies import enrich, STRATEGIES
++
++IST = "Asia/Kolkata"
++
++
++def session(date: str, closes, open_=None, high=None, low=None, volume=1000.0):
++    closes = np.asarray(closes, dtype=float)
++    n = len(closes)
++    idx = pd.date_range(f"{date} 09:15", periods=n, freq="5min", tz=IST)
++    o = np.asarray(open_ if open_ is not None else np.r_[closes[0], closes[:-1]], dtype=float)
++    h = np.asarray(high if high is not None else np.maximum(o, closes) + 0.2, dtype=float)
++    lo = np.asarray(low if low is not None else np.minimum(o, closes) - 0.2, dtype=float)
++    return pd.DataFrame({"Open": o, "High": h, "Low": lo, "Close": closes,
++                         "Volume": np.full(n, volume)}, index=idx)
++
++
++def only(strategy_ids, **cfg):
++    return {"strategies": strategy_ids, "symbols": ["TEST.NS"], "daily_capital": 10_000, **cfg}
++
++
++def run_day(state, df, date):
++    engine.start_day(state, date)
++    engine.process_bars(state, {"TEST.NS": enrich(df)}, now=None)
++    engine.settle_day(state)
++
++
++# ---------------------------------------------------------------- costs
++
++def test_costs_charge_both_legs_and_cap_brokerage():
++    cfg = costs.merged(None)
++    buy = costs.leg_charges("BUY", 10_000, cfg)
++    sell = costs.leg_charges("SELL", 10_000, cfg)
++    assert buy["stt"] == 0 and sell["stt"] == pytest.approx(2.5)
++    assert buy["stamp"] == pytest.approx(0.3) and sell["stamp"] == 0
++    assert buy["brokerage"] == pytest.approx(3.0)
++    assert costs.leg_charges("BUY", 1_000_000, cfg)["brokerage"] == 20.0   # capped
++    assert costs.round_trip_cost_estimate(1000, 10, cfg) > 10   # slippage + charges
++
++
++def test_net_pnl_is_gross_minus_all_charges():
++    closes = [100] * 3 + list(np.linspace(100, 110, 72))
++    state = engine.new_state(only(["benchmark"]))
++    run_day(state, session("2026-09-01", closes), "2026-09-01")
++    t = state["books"]["benchmark"]["trades"][0]
++    assert t["charges"] > 0
++    assert t["net"] == pytest.approx(t["gross"] - t["charges"], abs=0.02)
++
++
++# ---------------------------------------------------------------- fills & rules
++
++def test_stop_wins_when_bar_touches_stop_and_target():
++    st = engine.new_state(only(["benchmark"]))
++    engine.start_day(st, "2026-09-01")
++    book = st["books"]["benchmark"]
++    book["positions"]["TEST.NS"] = {"symbol": "TEST.NS", "qty": 10, "entry_price": 100.0,
++                                    "entry_at": "x", "stop": 99.0, "target": 101.0, "buy_charges": 0.5}
++    row = pd.Series({"Open": 100.0, "High": 102.0, "Low": 98.0, "Close": 100.5, "minute": 600})
++    price, reason = engine._exit_decision(STRATEGIES["benchmark"], row, row, book["positions"]["TEST.NS"], 600)
++    assert reason == "stop_loss" and price == 99.0
++
++
++def test_gap_through_stop_fills_at_open_not_stop():
++    row = pd.Series({"Open": 97.0, "High": 97.5, "Low": 96.0, "Close": 97.2, "minute": 600})
++    pos = {"stop": 99.0, "target": 105.0}
++    price, reason = engine._exit_decision(STRATEGIES["orb"], row, row, pos, 600)
++    assert (price, reason) == (97.0, "stop_loss_gap")
++
++
++def test_nothing_held_overnight_and_no_late_entries():
++    closes = list(np.linspace(100, 120, 75))
++    state = engine.new_state(only(list(STRATEGIES)))
++    run_day(state, session("2026-09-01", closes), "2026-09-01")
++    for book in state["books"].values():
++        assert book["positions"] == {}
++        for t in book["trades"]:
++            entry = dt.datetime.fromisoformat(t["entry_at"])
++            assert entry.hour * 60 + entry.minute <= 14 * 60 + 45
++
++
++def test_daily_loss_limit_stops_the_book_for_the_day():
++    st = engine.new_state(only(["orb"]))      # limit 2% of 10,000 = 200
++    engine.start_day(st, "2026-09-01")
++    book = st["books"]["orb"]
++    book["cash"] -= 4000
++    book["positions"]["TEST.NS"] = {"symbol": "TEST.NS", "qty": 40, "entry_price": 100.0,
++                                    "entry_at": "x", "stop": 80.0, "target": 120.0, "buy_charges": 1.0}
++    ts = pd.Timestamp("2026-09-01 11:00", tz=IST)
++    row = pd.Series({"Open": 95.0, "High": 95.0, "Low": 94.0, "Close": 94.0, "minute": 660, "bar_no": 21})
++    engine.process_bar(st, "TEST.NS", ts, row, row, 1)      # -6% on 4,000 = -240
++    assert book["day"]["stopped"]
++    assert book["positions"] == {}
++    assert book["trades"][-1]["exit_reason"] == "daily_loss_limit"
++
++    # Stopped books take no new entries for the rest of the day.
++    df = enrich(session("2026-09-01", np.linspace(94, 110, 30)))
++    st["last_bar"] = {}
++    engine.process_bars(st, {"TEST.NS": df})
++    assert book["day"]["trades"] == 0 and book["positions"] == {}
++
++
++def test_trending_day_makes_money_and_random_walk_does_not_flatter():
++    rng = np.random.default_rng(7)
++    # Strong steady uptrend: trend strategies should be able to profit.
++    trend = engine.new_state(only(["orb", "ema_cross", "benchmark"], risk={"min_reward_to_cost": 0.5}))
++    for i, d in enumerate(pd.bdate_range("2026-08-03", periods=10)):
++        base = 100 + i
++        closes = base + np.r_[np.zeros(4), np.linspace(0, 4, 71)] + rng.normal(0, 0.02, 75)
++        run_day(trend, session(d.date().isoformat(), closes), d.date().isoformat())
++    assert trend["books"]["benchmark"]["stats"]["net"] > 0
++    assert max(trend["books"][s]["stats"]["net"] for s in ("orb", "ema_cross")) > 0
++
++
++def test_losing_strategy_is_benched_then_reinstated_on_shadow_recovery():
++    st = engine.new_state(only(["ema_cross"], risk={"min_trades_to_judge": 5, "judge_window": 5}))
++    engine.start_day(st, "2026-09-01")
++    book = st["books"]["ema_cross"]
++    loss = {"net": -50.0}
++    book["trades"] = [dict(loss) for _ in range(6)]
++    book["stats"].update(trades=6, net=-300.0, gross_loss=300.0)
++    engine._judge(book, st["config"]["risk"], 10_000, "2026-09-01")
++    assert book["status"] == "benched"
++
++    book["trades"] += [{"net": 80.0} for _ in range(5)]
++    book["stats"].update(trades=11, net=100.0, peak_net=100.0)
++    engine._judge(book, st["config"]["risk"], 10_000, "2026-09-02")
++    assert book["status"] == "active" and "reinstated" in book["status_reason"]
++
++
++def test_benchmark_is_never_benched():
++    st = engine.new_state(only(["benchmark"], risk={"min_trades_to_judge": 1}))
++    engine.start_day(st, "2026-09-01")
++    book = st["books"]["benchmark"]
++    book["trades"] = [{"net": -100.0}] * 5
++    book["stats"].update(trades=5, net=-500.0)
++    engine._judge(book, st["config"]["risk"], 10_000, "2026-09-01")
++    assert book["status"] == "active"
++
++
++def test_all_benched_verdict_says_sit_in_cash():
++    st = engine.new_state(only(["orb", "benchmark"]))
++    engine.start_day(st, "2026-09-01")
++    st["books"]["orb"].update(status="benched")
++    st["books"]["orb"]["stats"]["trades"] = 3
++    assert st and engine.verdict(st)["level"] == "halted"
++
++
++# ---------------------------------------------------------------- no lookahead
++
++def test_opening_range_unknown_until_its_last_bar_closes():
++    df = enrich(session("2026-09-01", np.linspace(100, 101, 10)))
++    assert df["or_high"].iloc[:2].isna().all()
++    assert df["or_high"].iloc[2:].notna().all()
++
++
++def test_in_progress_bar_is_not_processed():
++    df = session("2026-09-01", np.linspace(100, 101, 10))
++    st = engine.new_state(only(["benchmark"]))
++    engine.start_day(st, "2026-09-01")
++    last_start = df.index[-1].to_pydatetime()
++    n = engine.process_bars(st, {"TEST.NS": enrich(df)}, now=last_start + dt.timedelta(minutes=2))
++    assert n == len(df) - 1
++
++
++def test_bars_are_not_processed_twice():
++    df = enrich(session("2026-09-01", np.linspace(100, 101, 10)))
++    st = engine.new_state(only(["benchmark"]))
++    engine.start_day(st, "2026-09-01")
++    assert engine.process_bars(st, {"TEST.NS": df}) == 10
++    assert engine.process_bars(st, {"TEST.NS": df}) == 0
++
++
++# ---------------------------------------------------------------- service + API
++
++def test_tick_catches_up_and_settles_a_slept_through_day(fake_yf, isolated_storage, monkeypatch):
++    from arena import service, store
++    import market_calendar
++    monkeypatch.setattr(market_calendar, "is_trading_day", lambda d: d.weekday() < 5)
++    df = session("2026-09-01", np.linspace(100, 105, 75))
++    fake_yf.set("TEST.NS", "5d", "5m", df)
++    store.save("me", engine.new_state(only(["benchmark"])))
++
++    open_ = dt.datetime(2026, 9, 1, 10, 0, tzinfo=dt.timezone(dt.timedelta(hours=5, minutes=30)))
++    service.tick_client("me", open_)
++    st = store.load("me")
++    assert st["day"] == "2026-09-01" and not st["day_settled"]
++    assert st["books"]["benchmark"]["positions"]          # bought on bar 0
++
++    next_morning = dt.datetime(2026, 9, 2, 8, 0, tzinfo=open_.tzinfo)
++    service.tick_client("me", next_morning)
++    st = store.load("me")
++    assert st["day_settled"] and st["books"]["benchmark"]["positions"] == {}
++    assert st["books"]["benchmark"]["day_history"][-1]["date"] == "2026-09-01"
++
++
++def test_arena_api_roundtrip(client, fake_yf):
++    r = client.get("/api/arena", headers={"X-Client-Id": "a1"})
++    assert r.status_code == 200
++    body = r.json()
++    assert {s["id"] for s in body["strategies"]} >= {"orb", "benchmark"}
++
++    r = client.put("/api/arena/config", headers={"X-Client-Id": "a1"},
++                   json={"daily_capital": 5000, "symbols": ["sbin", "ITC.NS"], "strategies": ["orb"]})
++    cfg = r.json()["config"]
++    assert cfg["daily_capital"] == 5000
++    assert cfg["symbols"] == ["SBIN.NS", "ITC.NS"]
++    assert cfg["strategies"] == ["orb", "benchmark"]    # benchmark always kept
++
++    fake_yf.set_default(pd.concat([session(d.date().isoformat(), np.linspace(100, 103, 75))
++                                   for d in pd.bdate_range("2026-08-03", periods=5)]))
++    r = client.post("/api/arena/backtest", headers={"X-Client-Id": "a1"}, json={"days": 5})
++    assert r.status_code == 200, r.text
++    bt = r.json()
++    assert len(bt["replay"]["sessions"]) == 5 and bt["leaderboard"]
++    assert client.get("/api/arena/backtest", headers={"X-Client-Id": "a1"}).json()["backtest"]
++
++    # Backtest must not touch the live arena.
++    live = client.get("/api/arena", headers={"X-Client-Id": "a1"}).json()
++    assert all(r["trades"] == 0 for r in live["leaderboard"])
++
++    assert client.post("/api/arena/strategies/orb/dance", headers={"X-Client-Id": "a1"}).status_code == 400
++    assert client.post("/api/arena/reset", headers={"X-Client-Id": "a1"}).json() == {"reset": True}
+diff --git a/backend/tests/test_hygiene_and_endpoints.py b/backend/tests/test_hygiene_and_endpoints.py
+index ef28eb3..b278a4d 100644
+--- a/backend/tests/test_hygiene_and_endpoints.py
++++ b/backend/tests/test_hygiene_and_endpoints.py
+@@ -125,7 +125,9 @@ def test_service_worker_does_not_cache_api_responses():
+ 
+ 
+ def test_service_worker_cache_name_was_bumped():
+-    assert "tickerboard-shell-v3" in _sw_source()
++    import re
++    m = re.search(r"tickerboard-shell-v(\d+)", _sw_source())
++    assert m and int(m.group(1)) >= 3   # bumped past the v2 that cached POSTs
+ 
+ 
+ # --- the endpoint sweep -----------------------------------------------------
+diff --git a/frontend/app.js b/frontend/app.js
+index 45f4427..fc73a6f 100644
+--- a/frontend/app.js
++++ b/frontend/app.js
+@@ -268,6 +268,11 @@ function renderView(viewId, state = {}) {
+   } else if (viewId === "view-intraday") {
+     loadIntradayList();
+     startViewPolling(() => loadIntradayList(true), 20000);
++  } else if (viewId === "view-arena") {
++    if (typeof loadArena === "function") {
++      loadArena();
++      startViewPolling(() => loadArena(true), 60000);
++    }
+   } else if (viewId === "view-intraday-detail") {
+     currentIntradaySymbol = state.symbol ?? currentIntradaySymbol;
+     if (currentIntradaySymbol) {
+diff --git a/frontend/arena.js b/frontend/arena.js
+new file mode 100644
+index 0000000..411631d
+--- /dev/null
++++ b/frontend/arena.js
+@@ -0,0 +1,270 @@
++// ---------- Strategy Arena ----------
++// Several intraday strategies paper-trade the same stocks with the same
++// simulated capital; the leaderboard shows which one actually makes money
++// after costs. Relies on helpers from app.js (apiFetch, escapeHtml,
++// showToast, fmtISTDateTime), which loads first.
++
++const ARENA_LEVEL_CLASS = {
++  good: "arena-verdict-good", halted: "arena-verdict-bad", none: "arena-verdict-bad",
++  early: "arena-verdict-neutral", waiting: "arena-verdict-neutral",
++};
++let arenaData = null;
++document.getElementById("backFromArena").addEventListener("click", () => history.back());
++document.getElementById("openArenaBtn").addEventListener("click", () => navigateTo("view-arena"));
++let arenaOpenStrategy = null;
++
++function inr(n, withSign = true) {
++  if (n == null || Number.isNaN(n)) return "—";
++  const sign = withSign && n > 0 ? "+" : n < 0 ? "−" : "";
++  return `${sign}₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
++}
++function pnlClass(n) { return n > 0 ? "pos" : n < 0 ? "neg" : "neu"; }
++
++async function loadArena(silent = false) {
++  const content = document.getElementById("arenaContent");
++  if (!content) return;
++  if (!silent) content.innerHTML = `<div class="skeleton-block" style="height:140px"></div>
++    <div class="skeleton-block" style="height:220px; margin-top:14px;"></div>`;
++  try {
++    const res = await apiFetch(`${API}/api/arena`);
++    const data = await res.json();
++    if (!res.ok) throw new Error(data.detail || "failed");
++    arenaData = data;
++    // Don't clobber a settings form the user is typing in.
++    const editing = content.querySelector("#arenaSettings[open]");
++    if (silent && editing) { renderArenaLive(data); return; }
++    renderArena(data);
++    loadLastBacktest();
++  } catch (e) {
++    if (!silent) content.innerHTML = `<p class="muted">Could not load the arena.</p>`;
++  }
++}
++
++function renderBoard(rows, { live = true } = {}) {
++  if (!rows.length) return `<p class="muted">No strategies yet.</p>`;
++  return `
++    <div class="table-scroll"><table class="backtest-table arena-board">
++      <thead><tr>
++        <th>#</th><th>strategy</th><th>net (after costs)</th><th>vs bench</th>
++        <th>trades</th><th>win</th><th>PF</th><th>max DD</th>${live ? "<th>today</th>" : ""}
++      </tr></thead>
++      <tbody>
++      ${rows.map((r, i) => `
++        <tr class="arena-row ${r.benchmark ? "arena-bench" : ""}" data-id="${escapeHtml(r.id)}" title="${escapeHtml(r.status_reason || "")}">
++          <td>${r.benchmark ? "—" : i + 1}</td>
++          <td>
++            <div class="arena-name">${escapeHtml(r.name)}</div>
++            <span class="arena-pill ${r.status === "active" ? "arena-pill-on" : "arena-pill-off"}">
++              ${r.benchmark ? "yardstick" : r.status === "active" ? "active" : "benched · shadow"}
++            </span>
++          </td>
++          <td class="${pnlClass(r.net_total)}">${inr(r.net_total)}<div class="arena-sub">₹${Math.round(r.charges_total)} costs</div></td>
++          <td class="${pnlClass(r.vs_benchmark)}">${r.vs_benchmark == null ? "—" : inr(r.vs_benchmark)}</td>
++          <td>${r.trades}</td>
++          <td>${r.win_rate == null ? "—" : r.win_rate + "%"}</td>
++          <td>${r.profit_factor == null ? "—" : r.profit_factor}</td>
++          <td class="neg">${r.max_drawdown ? inr(-r.max_drawdown) : "—"}</td>
++          ${live ? `<td class="${pnlClass(r.today.net)}">${inr(r.today.net)}
++             <div class="arena-sub">${r.today.trades} tr${r.today.open_positions ? ` · ${r.today.open_positions} open` : ""}${r.today.stopped ? " · stopped" : ""}</div></td>` : ""}
++        </tr>
++        ${live && arenaOpenStrategy === r.id ? `<tr class="arena-detail-row"><td colspan="9"><div id="arenaTrades-${escapeHtml(r.id)}"><p class="loading">loading trades…</p></div></td></tr>` : ""}
++      `).join("")}
++      </tbody>
++    </table></div>`;
++}
++
++function renderTrades(trades) {
++  if (!trades.length) return `<p class="muted">No closed trades yet.</p>`;
++  return `<div class="table-scroll"><table class="backtest-table">
++    <thead><tr><th>exit</th><th>stock</th><th>qty</th><th>in → out</th><th>net</th><th>why out</th></tr></thead>
++    <tbody>${trades.map((t) => `
++      <tr>
++        <td>${fmtISTDateTime(t.exit_at)}</td>
++        <td>${escapeHtml(t.symbol.replace(/\.(NS|BO)$/, ""))}${t.shadow ? ' <span class="arena-sub">shadow</span>' : ""}</td>
++        <td>${t.qty}</td>
++        <td>₹${t.entry_price} → ₹${t.exit_price}</td>
++        <td class="${pnlClass(t.net)}">${inr(t.net)}<div class="arena-sub">₹${t.charges} costs</div></td>
++        <td>${escapeHtml(String(t.exit_reason).replace(/_/g, " "))}</td>
++      </tr>`).join("")}
++    </tbody></table></div>`;
++}
++
++function renderArenaLive(data) {
++  const live = document.getElementById("arenaLive");
++  if (live) live.innerHTML = arenaLiveHtml(data);
++  bindBoard();
++}
++
++function arenaLiveHtml(data) {
++  const v = data.verdict;
++  const m = data.market;
++  const day = data.day ? `${data.day}${data.day_settled ? " · settled" : " · in progress"}` : "not started yet";
++  const positions = data.open_positions.length ? `
++    <div class="section-heading"><span class="eyebrow">right now</span><h2 style="font-size:17px;">Open positions</h2></div>
++    <div class="signal-list">${data.open_positions.map((p) => `
++      <div class="signal-row"><span>${escapeHtml(p.strategy)} · ${escapeHtml(p.symbol)} ×${p.qty} @ ₹${p.entry_price}</span>
++      <span class="val ${pnlClass(p.unrealised)}">${inr(p.unrealised)}</span></div>`).join("")}
++    </div>` : "";
++  return `
++    <div class="arena-verdict ${ARENA_LEVEL_CLASS[v.level] || ""}">${escapeHtml(v.text)}</div>
++    <div class="stock-sub">market: ${m.is_open ? "open" : escapeHtml(m.reason.replace(/_/g, " "))} · session: ${escapeHtml(day)}
++      · ${inr(data.config.daily_capital, false)} per strategy · ${data.config.symbols.length} stocks</div>
++    ${renderBoard(data.leaderboard)}
++    <p class="arena-hint">Tap a strategy to see its trades. Benched strategies keep trading in shadow and come back automatically if they start earning.</p>
++    ${positions}`;
++}
++
++function renderArena(data) {
++  const c = data.config;
++  const strategyChecks = data.strategies.map((s) => `
++    <label class="arena-check">
++      <input type="checkbox" name="strategy" value="${escapeHtml(s.id)}" ${c.strategies.includes(s.id) ? "checked" : ""} ${s.benchmark ? "checked disabled" : ""}>
++      <span><b>${escapeHtml(s.name)}</b><br><span class="arena-sub">${escapeHtml(s.description)}</span></span>
++    </label>`).join("");
++  const r = c.risk;
++  document.getElementById("arenaContent").innerHTML = `
++    <h2 class="stock-title">Strategy Arena</h2>
++    <div class="disclaimer">Simulated money only. Every strategy gets its own ${inr(c.daily_capital, false)} and trades the same stocks on the same 5-minute bars,
++      paying brokerage, STT, exchange fees, stamp duty, GST and slippage. No strategy can guarantee a profit - the arena's job is to show which ones
++      actually earn, and to bench the ones that don't.</div>
++
++    <div id="arenaLive">${arenaLiveHtml(data)}</div>
++
++    <div class="section-heading"><span class="eyebrow">replay the past</span><h2 style="font-size:17px;">Backtest these strategies</h2></div>
++    <div class="arena-row-inline">
++      <select id="arenaBtDays">${[10, 20, 30, 60].map((d) => `<option value="${d}" ${d === 30 ? "selected" : ""}>last ${d} sessions</option>`).join("")}</select>
++      <button class="add-watchlist-btn arena-btn" id="arenaRunBt">Run backtest</button>
++    </div>
++    <div id="arenaBacktest"><p class="muted">Replays real past 5-minute bars (Yahoo keeps ~60 days) through the same engine, so you get results today instead of after weeks of live paper trading.</p></div>
++
++    <details id="arenaSettings" class="arena-settings">
++      <summary>Settings</summary>
++      <label class="arena-field">Capital per strategy (₹)
++        <input type="number" id="arenaCapital" min="500" step="500" value="${c.daily_capital}"></label>
++      <label class="arena-field">Each morning
++        <select id="arenaMode">
++          <option value="reset" ${c.capital_mode === "reset" ? "selected" : ""}>start fresh with this amount</option>
++          <option value="compound" ${c.capital_mode === "compound" ? "selected" : ""}>carry over yesterday's balance</option>
++        </select></label>
++      <label class="arena-field">Stocks (comma separated, NSE symbols)
++        <textarea id="arenaSymbols" rows="2">${escapeHtml(c.symbols.map((s) => s.replace(/\.NS$/, "")).join(", "))}</textarea></label>
++      <button class="arena-link" id="arenaPreset">use 10 liquid Nifty stocks</button>
++      <div class="arena-field">Strategies${strategyChecks}</div>
++      <div class="arena-grid">
++        <label class="arena-field">Daily loss limit %<input type="number" step="0.5" id="arenaDayLoss" value="${r.daily_loss_limit_pct}"></label>
++        <label class="arena-field">Bench at drawdown %<input type="number" step="1" id="arenaMaxDD" value="${r.max_drawdown_pct}"></label>
++        <label class="arena-field">Risk per trade %<input type="number" step="0.25" id="arenaRisk" value="${r.risk_per_trade_pct}"></label>
++        <label class="arena-field">Max open positions<input type="number" step="1" id="arenaMaxPos" value="${r.max_open_positions}"></label>
++        <label class="arena-field">Trades before judging<input type="number" step="1" id="arenaJudge" value="${r.min_trades_to_judge}"></label>
++      </div>
++      <p class="arena-hint">Capital changes apply from the next session. Removing a stock or strategy mid-session closes its positions at the last price.</p>
++      <button class="add-watchlist-btn arena-btn" id="arenaSave">Save settings</button>
++      <button class="watch-remove arena-reset" id="arenaReset">reset all results</button>
++    </details>`;
++
++  bindBoard();
++  document.getElementById("arenaRunBt").addEventListener("click", runArenaBacktest);
++  document.getElementById("arenaSave").addEventListener("click", saveArenaSettings);
++  document.getElementById("arenaPreset").addEventListener("click", () => {
++    document.getElementById("arenaSymbols").value = data.presets.liquid_nifty.map((s) => s.replace(/\.NS$/, "")).join(", ");
++  });
++  const reset = document.getElementById("arenaReset");
++  reset.addEventListener("click", async () => {
++    if (reset.dataset.confirming !== "1") {
++      reset.dataset.confirming = "1"; reset.textContent = "tap again to wipe all arena results";
++      setTimeout(() => { reset.dataset.confirming = "0"; reset.textContent = "reset all results"; }, 3000);
++      return;
++    }
++    await apiFetch(`${API}/api/arena/reset`, { method: "POST" });
++    showToast("Arena results reset");
++    loadArena();
++  });
++}
++
++function bindBoard() {
++  document.querySelectorAll("#arenaLive .arena-row").forEach((row) => {
++    row.addEventListener("click", () => {
++      arenaOpenStrategy = arenaOpenStrategy === row.dataset.id ? null : row.dataset.id;
++      renderArenaLive(arenaData);
++      if (arenaOpenStrategy) loadArenaTrades(arenaOpenStrategy);
++    });
++  });
++  if (arenaOpenStrategy) loadArenaTrades(arenaOpenStrategy);
++}
++
++async function loadArenaTrades(id) {
++  const box = document.getElementById(`arenaTrades-${id}`);
++  if (!box) return;
++  try {
++    const res = await apiFetch(`${API}/api/arena/trades?strategy=${encodeURIComponent(id)}&limit=40`);
++    const data = await res.json();
++    const reason = (arenaData.leaderboard.find((r) => r.id === id) || {}).status_reason;
++    box.innerHTML = (reason ? `<p class="arena-hint">${escapeHtml(reason)}</p>` : "") + renderTrades(data.trades || []);
++  } catch (e) {
++    box.innerHTML = `<p class="muted">Could not load trades.</p>`;
++  }
++}
++
++function renderBacktestResult(bt) {
++  const box = document.getElementById("arenaBacktest");
++  if (!box || !bt) return;
++  const sessions = bt.replay ? bt.replay.sessions : [];
++  const span = sessions.length ? `${sessions[0]} → ${sessions[sessions.length - 1]}` : "";
++  box.innerHTML = `
++    <div class="arena-verdict ${ARENA_LEVEL_CLASS[bt.verdict.level] || ""}">${escapeHtml(bt.verdict.text)}</div>
++    <div class="stock-sub">${sessions.length} sessions ${escapeHtml(span)} · ${bt.replay ? bt.replay.symbols.length : 0} stocks
++      · ran ${bt.replay ? fmtISTDateTime(bt.replay.ran_at) : ""}</div>
++    ${renderBoard(bt.leaderboard, { live: false })}
++    <p class="arena-hint">Past results on ${sessions.length} sessions are a small sample - a strategy that wins here still has to prove itself live.</p>`;
++}
++
++async function loadLastBacktest() {
++  try {
++    const res = await apiFetch(`${API}/api/arena/backtest`);
++    const data = await res.json();
++    if (data.backtest) renderBacktestResult(data.backtest);
++  } catch (e) { /* optional */ }
++}
++
++async function runArenaBacktest() {
++  const btn = document.getElementById("arenaRunBt");
++  const days = parseInt(document.getElementById("arenaBtDays").value, 10);
++  btn.disabled = true; btn.textContent = "Replaying…";
++  try {
++    const res = await apiFetch(`${API}/api/arena/backtest`, {
++      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ days }),
++    });
++    const data = await res.json();
++    if (!res.ok) { showToast(data.detail || "Backtest failed", "error"); return; }
++    renderBacktestResult(data);
++  } catch (e) {
++    showToast("Network error running backtest", "error");
++  } finally {
++    btn.disabled = false; btn.textContent = "Run backtest";
++  }
++}
++
++async function saveArenaSettings() {
++  const num = (id) => parseFloat(document.getElementById(id).value);
++  const body = {
++    daily_capital: num("arenaCapital"),
++    capital_mode: document.getElementById("arenaMode").value,
++    symbols: document.getElementById("arenaSymbols").value.split(/[,\s]+/).filter(Boolean),
++    strategies: [...document.querySelectorAll('#arenaSettings input[name="strategy"]:checked')].map((el) => el.value),
++    risk: {
++      daily_loss_limit_pct: num("arenaDayLoss"), max_drawdown_pct: num("arenaMaxDD"),
++      risk_per_trade_pct: num("arenaRisk"), max_open_positions: num("arenaMaxPos"),
++      min_trades_to_judge: num("arenaJudge"),
++    },
++  };
++  try {
++    const res = await apiFetch(`${API}/api/arena/config`, {
++      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
++    });
++    if (!res.ok) { showToast("Could not save settings", "error"); return; }
++    showToast("Arena settings saved", "success");
++    loadArena();
++  } catch (e) {
++    showToast("Network error saving settings", "error");
++  }
++}
+diff --git a/frontend/index.html b/frontend/index.html
+index b24568c..8f1380a 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -24,6 +24,7 @@
+     <div class="app-header-top">
+       <h1>Tickerboard</h1>
+       <span class="market-status-pill" id="marketStatusPill">…</span>
++      <button class="arena-open-btn" id="openArenaBtn" aria-label="Open Strategy Arena">⚔ Arena</button>
+     </div>
+     <p class="eyebrow">nse &middot; bse &middot; personal terminal</p>
+   </header>
+@@ -81,6 +82,13 @@
+     </div>
+   </main>
+ 
++  <main id="view-arena" class="view">
++    <div class="modal-card">
++      <button class="back-btn arena-close" id="backFromArena">&larr; close</button>
++      <div id="arenaContent"><p class="muted">Loading…</p></div>
++    </div>
++  </main>
++
+   </div>
+ 
+   <nav class="tab-bar">
+@@ -96,10 +104,14 @@
+     <button class="tab-btn" data-view="view-intraday">
+       <span class="tab-icon">⚡</span><span>Intraday</span>
+     </button>
++    <button class="tab-btn" data-view="view-arena">
++      <span class="tab-icon">⚔</span><span>Arena</span>
++    </button>
+   </nav>
+ 
+   <div class="toast-host" id="toastHost"></div>
+ 
+ <script src="app.js"></script>
++<script src="arena.js"></script>
+ </body>
+ </html>
+diff --git a/frontend/style.css b/frontend/style.css
+index fa70c18..59ea5a5 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -586,3 +586,77 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
+ @media (max-width: 1023px) {
+   .modal-card { all: unset; display: block; }
+ }
++
++/* ---------- Strategy Arena ---------- */
++.arena-open-btn {
++  display: none;
++  margin-left: auto;
++  background: var(--paper-raised); color: var(--brass);
++  border: 1px solid var(--brass-dim); border-radius: 999px;
++  padding: 5px 14px; font-family: var(--font-body); font-size: 13px; cursor: pointer;
++}
++.arena-verdict {
++  border-radius: 10px; padding: 12px 14px; margin: 12px 0 8px;
++  font-size: 14px; line-height: 1.45; border: 1px solid var(--hairline);
++}
++.arena-verdict-good { background: rgba(60, 154, 92, 0.12); border-color: rgba(60, 154, 92, 0.45); }
++.arena-verdict-bad { background: rgba(193, 68, 60, 0.12); border-color: rgba(193, 68, 60, 0.45); }
++.arena-verdict-neutral { background: var(--paper-raised); }
++.table-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
++.arena-board td, .arena-board th { white-space: nowrap; vertical-align: top; }
++.arena-row { cursor: pointer; }
++.arena-row:hover { background: rgba(255, 255, 255, 0.03); }
++.arena-bench td { color: var(--mist); }
++.arena-name { font-weight: 600; white-space: normal; min-width: 130px; }
++.arena-sub { font-size: 11px; color: var(--mist); font-family: var(--font-body); }
++.arena-pill {
++  display: inline-block; margin-top: 3px; padding: 1px 8px; border-radius: 999px;
++  font-size: 10.5px; letter-spacing: 0.02em; border: 1px solid var(--hairline);
++}
++.arena-pill-on { color: #7fd19b; border-color: rgba(60, 154, 92, 0.5); }
++.arena-pill-off { color: var(--mist); }
++.arena-detail-row td { background: var(--paper-raised); white-space: normal; }
++.arena-hint { font-size: 12px; color: var(--mist); margin: 8px 0; line-height: 1.45; }
++.arena-row-inline { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
++.arena-row-inline select, .arena-field input, .arena-field select, .arena-field textarea {
++  background: var(--paper-raised); color: var(--bone); border: 1px solid var(--hairline);
++  border-radius: 8px; padding: 8px 10px; font-family: var(--font-body); font-size: 14px;
++}
++.arena-btn { width: auto; margin: 0; padding-left: 18px; padding-right: 18px; }
++.arena-settings { margin-top: 22px; border-top: 1px solid var(--hairline); padding-top: 12px; }
++.arena-settings summary { cursor: pointer; font-weight: 600; padding: 6px 0; }
++.arena-field { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--mist); margin: 12px 0; }
++.arena-field textarea { resize: vertical; width: 100%; }
++.arena-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0 12px; }
++.arena-check { display: flex; gap: 10px; align-items: flex-start; color: var(--bone); font-size: 13px; padding: 6px 0; line-height: 1.35; }
++.arena-check input { margin-top: 3px; }
++.arena-link { background: none; border: none; color: var(--brass); padding: 0; font-size: 12px; cursor: pointer; text-decoration: underline; }
++.arena-reset { display: block; margin-top: 14px; }
++
++@media (max-width: 1023px) {
++  #backFromArena { display: none; }
++  .tab-btn { font-size: 10.5px; }
++}
++
++@media (min-width: 1024px) {
++  .arena-open-btn { display: inline-block; }
++  #view-arena {
++    display: none;
++    position: fixed; inset: 0;
++    background: rgba(0, 0, 0, 0.55);
++    z-index: 50;
++    padding: 40px;
++    align-items: flex-start;
++    justify-content: center;
++    overflow-y: auto;
++  }
++  #view-arena.active { display: flex; animation: view-in 180ms ease; }
++  #view-arena .modal-card {
++    background: var(--paper);
++    border: 1px solid var(--hairline);
++    border-radius: 14px;
++    padding: 20px 24px 32px;
++    max-width: 980px;
++    width: 100%;
++  }
++}
+diff --git a/frontend/sw.js b/frontend/sw.js
+index 969289e..e3f9c39 100644
+--- a/frontend/sw.js
++++ b/frontend/sw.js
+@@ -1,5 +1,5 @@
+-const CACHE_NAME = "tickerboard-shell-v3";
+-const SHELL_FILES = ["/", "/style.css", "/app.js", "/manifest.json"];
++const CACHE_NAME = "tickerboard-shell-v4";
++const SHELL_FILES = ["/", "/style.css", "/app.js", "/arena.js", "/manifest.json"];
+ 
+ // Same-origin GETs for the app shell and static assets. Anything else -
+ // POST/DELETE, /api/*, cross-origin CDN requests - is passed straight to the
+-- 
+2.43.0
+
