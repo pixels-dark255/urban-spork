@@ -80,7 +80,7 @@ Run the tests with:
 
 ```bash
 pip install pytest pyflakes httpx
-python -m pytest tests/ -q          # 103 backend tests
+python -m pytest tests/ -q          # 167 backend tests
 python -m pyflakes .
 cd ../frontend && node --test app.helpers.test.js   # 11 frontend tests
 ```
@@ -131,7 +131,7 @@ Postgres from [supabase.com](https://supabase.com) or
 [neon.tech](https://neon.tech) and all three persist (tables
 `watchlist_store`, `intraday_store`, `arena_store`). See `.env.example`.
 
-### Free tier sleeps, and the Arena notices
+### Free tier sleeps — what that costs, feature by feature
 
 Free web services spin down after ~15 minutes without traffic and take
 30-60s to wake. The scheduler is asleep for that whole time, which affects
@@ -140,16 +140,50 @@ the three features differently:
 - **Watchlist predictions** resolve against the price *at* their target
   time, so a nap costs nothing — they are graded correctly whenever the
   service next wakes.
-- **Intraday paper trading** and the **Strategy Arena** read live 5-minute
-  bars. Bars printed while the service slept are never seen, so trades that
-  would have triggered during the nap simply do not happen. The Arena
-  settles a slept-through day correctly, but it cannot trade a session it
-  was not awake for.
+- **Intraday paper trading** reads live 5-minute bars and keeps no
+  historical catch-up, so trades that would have triggered during a nap
+  simply do not happen.
+- **The Strategy Arena** replays what it slept through. On the first
+  request after a wake it refetches Yahoo's 5-minute bars and runs every
+  missed session through the same engine, in order, before touching today
+  — see the next section.
 
-So if you want the Arena to mean anything, keep the service awake during
-market hours: a free uptime-pinger (e.g. UptimeRobot hitting `/api/health`
-every 10 minutes, 09:00-15:45 IST, Mon-Fri) is enough, or use a paid
-instance.
+### Running the Arena live on Render free tier
+
+The Arena is built to survive the free tier rather than fight it. You need
+one thing, and one more is nice to have:
+
+1. **Set `DATABASE_URL`** (free Postgres from [neon.tech](https://neon.tech)
+   or [supabase.com](https://supabase.com)). This is not optional for the
+   Arena: without it the state is a JSON file on a disk Render wipes on
+   every spin-down, so each wake starts a brand-new arena with no history
+   to catch up to. The Arena tab says so in a banner when it is running on
+   ephemeral storage.
+
+2. **Optional, to watch trades appear during the day:** point a free cron
+   pinger (e.g. [cron-job.org](https://cron-job.org)) at
+   `https://your-app.onrender.com/api/health` every 10 minutes, Mon-Fri,
+   09:00-15:45 IST. The service then stays awake through the session and
+   the Arena trades bar by bar as they print, exactly like a paid instance.
+
+3. **Minimum:** one ping after 15:40 IST on trading days is enough. The
+   catch-up fills in the entire day from Yahoo's 5-minute bars and settles
+   it. Opening the Arena tab in a browser does the same thing — any request
+   that wakes the service starts a tick in the background.
+
+What the catch-up does and does not promise:
+
+- It replays up to **60 sessions** — as far back as Yahoo serves 5-minute
+  bars. A gap longer than that loses the sessions beyond it, permanently.
+- Trades filled from a replay are tagged **"caught up"** in the trade list,
+  and the day's summary records it, so a replayed day is never silently
+  passed off as a live one. The fills are identical either way (the engine
+  only ever reads completed bars), but the tag is there to be audited.
+- It is idempotent. Pinging ten times on the same evening settles each
+  session once.
+- The Arena tab shows when the last tick ran, and warns if the market is
+  open but nothing has ticked for 30 minutes — i.e. the service is asleep
+  and nobody is pinging it.
 
 ---
 
