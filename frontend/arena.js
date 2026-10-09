@@ -40,13 +40,24 @@ async function loadArena(silent = false) {
   }
 }
 
+// "2 tr" used to mean entries here and closed trades in the TRADES column.
+// Spelling both out, plus any unrealised P&L, stops the two reading as the
+// same number disagreeing with itself.
+function todaySub(today) {
+  const bits = [`${today.entries ?? today.trades ?? 0} entries`];
+  if (today.open_positions) bits.push(`${today.open_positions} open`);
+  if (today.unrealised) bits.push(`${inr(today.unrealised)} open P&L`);
+  if (today.stopped) bits.push("stopped");
+  return escapeHtml(bits.join(" · "));
+}
+
 function renderBoard(rows, { live = true } = {}) {
   if (!rows.length) return `<p class="muted">No strategies yet.</p>`;
   return `
     <div class="table-scroll"><table class="backtest-table arena-board">
       <thead><tr>
         <th>#</th><th>strategy</th><th>net (after costs)</th><th>vs bench</th>
-        <th>trades</th><th>win</th><th>PF</th><th>max DD</th>${live ? "<th>today</th>" : ""}
+        <th>closed</th><th>win</th><th>PF</th><th>max DD</th>${live ? "<th>today</th>" : ""}
       </tr></thead>
       <tbody>
       ${rows.map((r, i) => `
@@ -62,10 +73,11 @@ function renderBoard(rows, { live = true } = {}) {
           <td class="${pnlClass(r.vs_benchmark)}">${r.vs_benchmark == null ? "—" : inr(r.vs_benchmark)}</td>
           <td>${r.trades}</td>
           <td>${r.win_rate == null ? "—" : r.win_rate + "%"}</td>
-          <td>${r.profit_factor == null ? "—" : r.profit_factor}</td>
+          <td title="${r.profit_factor == null && r.no_losses ? "no losing trades yet" : ""}">${
+            r.profit_factor == null ? "—" : r.profit_factor}</td>
           <td class="neg">${r.max_drawdown ? inr(-r.max_drawdown) : "—"}</td>
           ${live ? `<td class="${pnlClass(r.today.net)}">${inr(r.today.net)}
-             <div class="arena-sub">${r.today.trades} tr${r.today.open_positions ? ` · ${r.today.open_positions} open` : ""}${r.today.stopped ? " · stopped" : ""}</div></td>` : ""}
+             <div class="arena-sub">${todaySub(r.today)}</div></td>` : ""}
         </tr>
         ${live && arenaOpenStrategy === r.id ? `<tr class="arena-detail-row"><td colspan="9"><div id="arenaTrades-${escapeHtml(r.id)}"><p class="loading">loading trades…</p></div></td></tr>` : ""}
       `).join("")}
@@ -84,7 +96,8 @@ function renderTrades(trades) {
         <td>${t.qty}</td>
         <td>₹${t.entry_price} → ₹${t.exit_price}</td>
         <td class="${pnlClass(t.net)}">${inr(t.net)}<div class="arena-sub">₹${t.charges} costs</div></td>
-        <td>${escapeHtml(String(t.exit_reason).replace(/_/g, " "))}</td>
+        <td>${escapeHtml(String(t.exit_reason).replace(/_/g, " "))}${
+          t.caught_up ? ' <span class="arena-tag">caught up</span>' : ""}</td>
       </tr>`).join("")}
     </tbody></table></div>`;
 }
@@ -93,6 +106,42 @@ function renderArenaLive(data) {
   const live = document.getElementById("arenaLive");
   if (live) live.innerHTML = arenaLiveHtml(data);
   bindBoard();
+}
+
+// On Render's free tier a JSON file is wiped every time the server sleeps.
+// Someone who comes back to an empty arena deserves to know why before they
+// conclude the thing is broken.
+function storageWarning(storage) {
+  if (!storage || !storage.ephemeral) return "";
+  return `<div class="arena-warn">Results are stored in a file that Render wipes whenever the
+    server sleeps or redeploys. Set <code>DATABASE_URL</code> to a free Postgres (Neon or
+    Supabase) to keep them.</div>`;
+}
+
+// Tells three look-alike situations apart: the server was asleep, the data
+// source failed, or the market is simply shut.
+function freshnessLine(f) {
+  if (!f) return "";
+  const bits = [];
+  if (f.last_tick_at) bits.push(`last updated ${escapeHtml(fmtIST(f.last_tick_at, {
+    hour: "2-digit", minute: "2-digit", hour12: false }))} IST`);
+  else bits.push("no update yet");
+
+  if (f.caught_up_last > 0) {
+    bits.push(`${f.caught_up_last} ${f.caught_up_last === 1 ? "day" : "days"} caught up on waking`);
+  }
+  if (f.latest_bar_at) bits.push(`latest bar ${escapeHtml(fmtIST(f.latest_bar_at, {
+    hour: "2-digit", minute: "2-digit", hour12: false }))}`);
+  if ((f.symbols_failed || []).length) {
+    bits.push(`<span class="neg">data for ${escapeHtml(f.symbols_failed
+      .map((s) => s.replace(/\.(NS|BO)$/, "")).join(", "))} failed</span>`);
+  }
+
+  const stale = f.stale
+    ? `<div class="arena-stale">The server was asleep. Missed bars are filled in automatically
+       when it wakes.</div>`
+    : "";
+  return `<div class="stock-sub arena-freshness">${bits.join(" · ")}</div>${stale}`;
 }
 
 function arenaLiveHtml(data) {
@@ -106,9 +155,11 @@ function arenaLiveHtml(data) {
       <span class="val ${pnlClass(p.unrealised)}">${inr(p.unrealised)}</span></div>`).join("")}
     </div>` : "";
   return `
+    ${storageWarning(data.storage)}
     <div class="arena-verdict ${ARENA_LEVEL_CLASS[v.level] || ""}">${escapeHtml(v.text)}</div>
     <div class="stock-sub">market: ${m.is_open ? "open" : escapeHtml(m.reason.replace(/_/g, " "))} · session: ${escapeHtml(day)}
       · ${inr(data.config.daily_capital, false)} per strategy · ${data.config.symbols.length} stocks</div>
+    ${freshnessLine(data.freshness)}
     ${renderBoard(data.leaderboard)}
     <p class="arena-hint">Tap a strategy to see its trades. Benched strategies keep trading in shadow and come back automatically if they start earning.</p>
     ${positions}`;
@@ -205,6 +256,30 @@ async function loadArenaTrades(id) {
   }
 }
 
+// Slippage is assumed, not measured, and at 0.05% a side it is a large part
+// of a small intraday target. Seeing the same sessions at 0% / 0.02% / 0.05%
+// separates "has an edge" from "has an edge only if fills are free".
+function renderSlippageSweep(sweep) {
+  if (!sweep || !sweep.rows || !sweep.rows.length) return "";
+  const levels = sweep.levels || [];
+  return `
+    <div class="section-heading"><span class="eyebrow">how much do fills matter</span>
+      <h2 style="font-size:17px;">Net P&L by assumed slippage</h2></div>
+    <div class="table-scroll"><table class="backtest-table">
+      <thead><tr><th>strategy</th>${levels.map((l) =>
+        `<th>${escapeHtml(l.label)}</th>`).join("")}</tr></thead>
+      <tbody>${sweep.rows.map((r) => `
+        <tr class="${r.benchmark ? "arena-bench" : ""}">
+          <td>${escapeHtml(r.name)}</td>
+          ${levels.map((l) => {
+            const cell = r.by_slippage[l.label];
+            return `<td class="${cell ? pnlClass(cell.net) : ""}">${cell ? inr(cell.net) : "—"}</td>`;
+          }).join("")}
+        </tr>`).join("")}
+      </tbody></table></div>
+    <p class="arena-hint">${escapeHtml(sweep.note || "")}</p>`;
+}
+
 function renderBacktestResult(bt) {
   const box = document.getElementById("arenaBacktest");
   if (!box || !bt) return;
@@ -215,6 +290,7 @@ function renderBacktestResult(bt) {
     <div class="stock-sub">${sessions.length} sessions ${escapeHtml(span)} · ${bt.replay ? bt.replay.symbols.length : 0} stocks
       · ran ${bt.replay ? fmtISTDateTime(bt.replay.ran_at) : ""}</div>
     ${renderBoard(bt.leaderboard, { live: false })}
+    ${renderSlippageSweep(bt.slippage_sweep)}
     <p class="arena-hint">Past results on ${sessions.length} sessions are a small sample - a strategy that wins here still has to prove itself live.</p>`;
 }
 
@@ -232,7 +308,8 @@ async function runArenaBacktest() {
   btn.disabled = true; btn.textContent = "Replaying…";
   try {
     const res = await apiFetch(`${API}/api/arena/backtest`, {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ days }),
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ days, slippage_sweep: true }),
     });
     const data = await res.json();
     if (!res.ok) { showToast(data.detail || "Backtest failed", "error"); return; }
