@@ -535,11 +535,20 @@ class ArenaConfigRequest(BaseModel):
 
 class ArenaBacktestRequest(BaseModel):
     days: int = 30
+    # Replay the same sessions at 0% / 0.02% / 0.05% assumed slippage, so an
+    # edge that only exists with free fills is visible as such.
+    slippage_sweep: bool = False
 
 
 @app.get("/api/arena")
 def api_arena(request: Request):
-    return arena_service.view(get_client_ip(request))
+    ip = get_client_ip(request)
+    # On Render's free tier this request is often what woke the server. Start
+    # the catch-up here rather than waiting up to five minutes for the
+    # scheduler - but in the background, so the page still renders now. The
+    # 60-second poll shows the result.
+    started = arena_service.tick_in_background(ip)
+    return {**arena_service.view(ip), "tick_started": started}
 
 
 @app.put("/api/arena/config")
@@ -571,7 +580,8 @@ def api_arena_trades(request: Request, strategy: str | None = None, limit: int =
 
 @app.post("/api/arena/backtest")
 def api_arena_backtest(req: ArenaBacktestRequest, request: Request):
-    result = arena_service.run_backtest(get_client_ip(request), req.days)
+    result = arena_service.run_backtest(get_client_ip(request), req.days,
+                                        slippage_sweep=req.slippage_sweep)
     if not result.get("ok"):
         raise HTTPException(502, result.get("reason", "backtest failed"))
     return result

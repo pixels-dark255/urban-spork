@@ -144,7 +144,13 @@ def start_scheduler(interval_minutes: int = 5):
 
     scheduler.add_job(tick, "interval", minutes=interval_minutes, id="watchlist_tick", replace_existing=True)
     scheduler.add_job(intraday_tick, "interval", minutes=interval_minutes, id="intraday_tick", replace_existing=True)
-    scheduler.add_job(arena_tick, "interval", minutes=interval_minutes, id="arena_tick", replace_existing=True,
-                      max_instances=1, coalesce=True)
+    # next_run_time=now: on a free Render instance the process is started by
+    # the first visitor after a sleep, and the default first run would be a
+    # whole interval later - by which time the visitor has already seen an
+    # empty arena and gone. Running on startup is what makes a cold wake
+    # produce data.
+    scheduler.add_job(arena_tick, "interval", minutes=interval_minutes, id="arena_tick",
+                      replace_existing=True, max_instances=1, coalesce=True,
+                      next_run_time=timeutil.utc_now())
     scheduler.start()
     return scheduler
