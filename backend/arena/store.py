@@ -34,6 +34,12 @@ if storage._pg_pool:
         storage._pg_pool.putconn(_conn)
 
 
+def backend_name() -> str:
+    """Which backend is actually in use. Surfaced in the API so the UI can
+    warn that a JSON file on Render's free tier is wiped on every sleep."""
+    return "postgres" if storage._pg_pool else "json_file"
+
+
 def _file_load() -> dict:
     if not os.path.exists(ARENA_PATH):
         return {}

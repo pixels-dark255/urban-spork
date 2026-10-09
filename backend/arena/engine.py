@@ -134,6 +134,16 @@ def new_state(config: dict | None = None) -> dict:
         "last_bar": {},       # symbol -> ISO time of last processed bar
         "marks": {},          # symbol -> {"price", "at"}
         "history": [],        # one arena-level summary per settled day
+        # How far the arena has been settled. The catch-up walks forward from
+        # here, so a server that slept for days still replays every session
+        # it missed instead of skipping straight to today.
+        "last_settled_day": None,
+        "last_tick_at": None,
+        # What the last tick actually saw: which symbols returned bars and
+        # which failed. Without this, a Yahoo outage and a sleeping server
+        # look identical from the UI - both just stop updating.
+        "last_tick": None,
+        "caught_up_last": 0,
         "created_at": timeutil.iso_now(),
     }
 
@@ -144,6 +154,9 @@ def _new_book(sid: str, capital: float) -> dict:
         "status": "active",
         "status_reason": None,
         "status_changed": None,
+        # stats.net at the moment of benching. Further drawdown is measured
+        # from here, not from the all-time peak - see _judge.
+        "bench_net": None,
         "cash": capital,
         "day_start_equity": capital,
         "positions": {},
@@ -165,9 +178,9 @@ def _blank_day() -> dict:
 # Day lifecycle
 # ---------------------------------------------------------------------------
 
-def start_day(state: dict, date: str) -> None:
+def start_day(state: dict, date: str, caught_up: bool = False) -> None:
     if state["day"] and not state["day_settled"]:
-        settle_day(state)
+        settle_day(state, caught_up=caught_up)
     cfg = state["config"]
     capital = cfg["daily_capital"]
     for sid in cfg["strategies"]:
@@ -183,12 +196,18 @@ def start_day(state: dict, date: str) -> None:
     state["day_settled"] = False
 
 
-def settle_day(state: dict) -> dict | None:
-    """Close leftovers at their last mark, record the day, judge every book."""
+def settle_day(state: dict, caught_up: bool = False) -> dict | None:
+    """Close leftovers at their last mark, record the day, judge every book.
+
+    `caught_up` marks a session the server slept through and replayed after
+    the fact. The engine and the bars are identical either way, so the
+    numbers are the same - but the UI says so rather than implying someone
+    watched it happen.
+    """
     if not state["day"] or state["day_settled"]:
         return None
     cfg, risk = state["config"], state["config"]["risk"]
-    summary = {"date": state["day"], "books": {}}
+    summary = {"date": state["day"], "books": {}, "caught_up": bool(caught_up)}
     for sid, book in state["books"].items():
         if sid not in cfg["strategies"]:
             continue
@@ -205,11 +224,13 @@ def settle_day(state: dict) -> dict | None:
             "date": state["day"], "net": day_net, "trades": book["day"]["trades"],
             "equity_end": round(book["cash"], 2), "status": book["status"],
             "stopped": book["day"]["stop_reason"], "skipped": book["day"]["skipped"],
+            "caught_up": bool(caught_up),
         })
         book["day_history"] = book["day_history"][-MAX_DAYS_KEPT:]
         _judge(book, risk, cfg["daily_capital"], state["day"])
         summary["books"][sid] = {"net": day_net, "trades": book["day"]["trades"], "status": book["status"]}
     state["day_settled"] = True
+    state["last_settled_day"] = state["day"]
     state["history"].append(summary)
     state["history"] = state["history"][-MAX_DAYS_KEPT:]
     return summary
@@ -233,16 +254,31 @@ def _judge(book: dict, risk: dict, capital: float, date: str) -> None:
             reason = (f"last {m['trades']} trades lose money after costs "
                       f"(₹{m['expectancy']:.2f}/trade, PF {m['profit_factor']})")
         if reason:
-            book.update(status="benched", status_reason=reason, status_changed=date)
+            # Remember where the book stood when it was benched. Reinstatement
+            # measures further decline from HERE, not from the all-time peak:
+            # a book benched for drawdown is by definition still near its
+            # trough, so requiring peak - net < limit would have demanded it
+            # win back most of the loss while confined to shadow trading.
+            # That is a bench it could essentially never return from.
+            book.update(status="benched", status_reason=reason, status_changed=date,
+                        bench_net=book["stats"]["net"])
     elif book["status"] == "benched":
         pf = m["profit_factor"]
+        bench_net = book.get("bench_net")
+        dd_since_bench = ((bench_net - book["stats"]["net"]) if bench_net is not None
+                          else current_dd)
+        # A window with no losses has an undefined profit factor (None), not
+        # a bad one. Requiring `pf >= threshold` would then refuse to
+        # reinstate the best possible recovery - every shadow trade a winner.
+        pf_ok = m.get("no_losses") or (pf is not None and pf >= risk["reinstate_profit_factor"])
         recovered = (m["trades"] >= min(risk["min_trades_to_judge"], risk["judge_window"])
-                     and m["expectancy"] > 0 and pf is not None and pf >= risk["reinstate_profit_factor"]
-                     and current_dd < dd_limit)
+                     and m["expectancy"] > 0 and pf_ok
+                     and dd_since_bench < dd_limit)
         if recovered:
             book.update(status="active",
-                        status_reason=f"reinstated: shadow trades earning again (PF {pf})",
-                        status_changed=date)
+                        status_reason=("reinstated: shadow trades earning again "
+                                       f"(PF {pf if pf is not None else 'no losses'})"),
+                        status_changed=date, bench_net=None)
 
 
 # ---------------------------------------------------------------------------
@@ -436,18 +472,41 @@ def window_metrics(trades: list[dict]) -> dict:
     n = len(trades)
     if not n:
         return {"trades": 0, "net": 0.0, "win_rate": None, "expectancy": 0.0,
-                "profit_factor": None, "avg_win": None, "avg_loss": None}
+                "profit_factor": None, "no_losses": False,
+                "avg_win": None, "avg_loss": None}
     wins = [t["net"] for t in trades if t["net"] > 0]
     losses = [-t["net"] for t in trades if t["net"] <= 0]
     gw, gl = sum(wins), sum(losses)
+    # Profit factor is gross win / gross loss. With no losses that is a
+    # division by zero, not a very large number: the old code returned 99.0
+    # and the UI printed "99", which reads like a measured result rather
+    # than "undefined". None plus a flag lets the UI show "-" honestly.
     return {
         "trades": n,
         "net": round(sum(t["net"] for t in trades), 2),
         "win_rate": round(100 * len(wins) / n, 1),
         "expectancy": round(sum(t["net"] for t in trades) / n, 2),
-        "profit_factor": round(gw / gl, 2) if gl > 0 else (None if gw == 0 else 99.0),
+        "profit_factor": round(gw / gl, 2) if gl > 0 else None,
+        "no_losses": gl == 0 and gw > 0,
         "avg_win": round(gw / len(wins), 2) if wins else None,
         "avg_loss": round(gl / len(losses), 2) if losses else None,
+    }
+
+
+def _today_row(state: dict, book: dict) -> dict:
+    """Today's figures, with open positions marked to market."""
+    equity = _equity(state, book)
+    realised = book["day"]["net"]
+    net = round(equity - book["day_start_equity"], 2)
+    return {
+        "net": net,                       # realised + unrealised
+        "realised": round(realised, 2),
+        "unrealised": round(net - realised, 2),
+        "entries": book["day"]["trades"],  # positions OPENED today
+        "trades": book["day"]["trades"],   # kept for older frontends
+        "open_positions": len(book["positions"]),
+        "equity": round(equity, 2),
+        "stopped": book["day"]["stop_reason"],
     }
 
 
@@ -473,13 +532,18 @@ def leaderboard(state: dict) -> list[dict]:
             "expectancy": round(st["net"] / st["trades"], 2) if st["trades"] else None,
             "profit_factor": allm["profit_factor"] if st["trades"] <= MAX_TRADES_KEPT else (
                 round(st["gross_win"] / st["gross_loss"], 2) if st["gross_loss"] else None),
+            "no_losses": allm.get("no_losses", False) if st["trades"] <= MAX_TRADES_KEPT else (
+                st["gross_loss"] == 0 and st["gross_win"] > 0),
             "max_drawdown": st["max_drawdown"],
             "days": st["days"], "green_days": st["green_days"],
             "recent": recent,
-            "today": {"net": book["day"]["net"], "trades": book["day"]["trades"],
-                      "open_positions": len(book["positions"]),
-                      "equity": round(_equity(state, book), 2),
-                      "stopped": book["day"]["stop_reason"]},
+            # today.net marks open positions to market. Using realised P&L
+            # alone reported the benchmark - which holds all day by design -
+            # as flat ₹0 with five positions open, which is simply not what
+            # the book is worth. `entries` counts positions opened today;
+            # `trades` at the top level counts CLOSED trades, and the two
+            # were previously both labelled "trades" in the UI.
+            "today": _today_row(state, book),
             "vs_benchmark": (round(st["net"] - bench_net, 2)
                              if bench_net is not None and not strat.benchmark else None),
         })
@@ -543,3 +607,35 @@ def replay(config: dict, enriched: dict[str, pd.DataFrame], days: int = 30) -> d
     state["replay"] = {"sessions": sessions, "symbols": sorted(enriched.keys()),
                        "ran_at": timeutil.iso_now()}
     return state
+
+
+# Slippage is assumed, not measured, and at 0.05% a side it eats a large
+# share of a small intraday target. Running the same replay at several
+# assumptions separates "has an edge" from "has an edge only if fills are
+# free". A strategy that loses at 0% has no edge at all.
+SLIPPAGE_LEVELS = [0.0, 0.0002, 0.0005]
+
+
+def replay_slippage_sweep(config: dict, enriched: dict[str, pd.DataFrame],
+                          days: int = 30,
+                          levels: list[float] | None = None) -> dict:
+    """The same sessions replayed at each slippage assumption."""
+    levels = levels if levels is not None else SLIPPAGE_LEVELS
+    rows: dict[str, dict] = {}
+    order: list[dict] = []
+    for level in levels:
+        cfg = {**config, "costs": {**(config.get("costs") or {}), "slippage_pct": level}}
+        result = replay(cfg, enriched, days=days)
+        label = f"{level * 100:g}%"
+        order.append({"slippage_pct": level, "label": label})
+        for row in leaderboard(result):
+            entry = rows.setdefault(row["id"], {"id": row["id"], "name": row["name"],
+                                                "benchmark": row["benchmark"], "by_slippage": {}})
+            entry["by_slippage"][label] = {"net": row["net_total"], "trades": row["trades"]}
+    return {
+        "levels": order,
+        "rows": sorted(rows.values(), key=lambda r: (r["benchmark"], r["name"])),
+        "note": ("Same bars and the same engine at each level - only the assumed "
+                 "fill penalty changes. A strategy that loses at 0% has no edge; "
+                 "one that wins only at 0% cannot survive real fills."),
+    }
