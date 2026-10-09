@@ -243,3 +243,126 @@ def test_arena_api_roundtrip(client, fake_yf):
 
     assert client.post("/api/arena/strategies/orb/dance", headers={"X-Client-Id": "a1"}).status_code == 400
     assert client.post("/api/arena/reset", headers={"X-Client-Id": "a1"}).json() == {"reset": True}
+
+
+# ------------------------------------------------- review fixes (spec 6.1-6.5)
+
+def test_today_marks_open_positions_to_market():
+    """6.1 - the leaderboard used realised P&L only, so the benchmark (which
+    holds all day by design) reported flat zero with positions open."""
+    st = engine.new_state(only(["benchmark"]))
+    engine.start_day(st, "2026-09-01")
+    engine.process_bars(st, {"TEST.NS": enrich(session("2026-09-01", np.linspace(100, 110, 40)))},
+                        now=None)
+    row = next(r for r in engine.leaderboard(st) if r["id"] == "benchmark")
+
+    assert row["today"]["open_positions"] >= 1
+    assert row["today"]["realised"] == 0.0        # nothing closed yet
+    assert row["today"]["unrealised"] > 0         # but the position is up
+    assert row["today"]["net"] == pytest.approx(
+        row["today"]["realised"] + row["today"]["unrealised"], abs=0.01)
+    assert row["today"]["net"] > 0, "a rising open position must not read as zero"
+
+
+def test_today_separates_entries_from_closed_trades():
+    """6.3 - 'trades' meant entries in TODAY and closed trades at the top
+    level, under the same label."""
+    st = engine.new_state(only(["benchmark"]))
+    engine.start_day(st, "2026-09-01")
+    engine.process_bars(st, {"TEST.NS": enrich(session("2026-09-01", np.linspace(100, 110, 40)))},
+                        now=None)
+    row = next(r for r in engine.leaderboard(st) if r["id"] == "benchmark")
+    assert row["today"]["entries"] == 1       # opened today
+    assert row["trades"] == 0                 # closed so far
+    assert row["today"]["open_positions"] == 1
+
+
+def test_profit_factor_is_none_not_99_when_there_are_no_losses():
+    """6.2 - 99.0 is a placeholder for 'undefined' that the UI printed as a
+    measured result."""
+    m = engine.window_metrics([{"net": 10.0}, {"net": 5.0}])
+    assert m["profit_factor"] is None
+    assert m["no_losses"] is True
+
+    mixed = engine.window_metrics([{"net": 10.0}, {"net": -5.0}])
+    assert mixed["profit_factor"] == pytest.approx(2.0)
+    assert mixed["no_losses"] is False
+
+    assert engine.window_metrics([])["no_losses"] is False
+
+
+def test_drawdown_benched_strategy_can_come_back():
+    """6.4 - reinstatement measured drawdown from the all-time peak, so a
+    book benched for drawdown had to win most of the loss back while
+    restricted to shadow trading. It is now measured from the bench point."""
+    st = engine.new_state(only(["ema_cross"], risk={"min_trades_to_judge": 5, "judge_window": 5}))
+    book = st["books"].setdefault("ema_cross", engine._new_book("ema_cross", 10_000))
+    risk = st["config"]["risk"]
+
+    # Deep drawdown: peak 500, now -1200. dd = 1700 > the 1000 limit.
+    book["trades"] = [{"net": -100.0} for _ in range(6)]
+    book["stats"].update(trades=6, net=-1200.0, peak_net=500.0, gross_loss=1200.0)
+    engine._judge(book, risk, 10_000, "2026-09-01")
+    assert book["status"] == "benched"
+    assert book["bench_net"] == -1200.0
+
+    # Shadow trades recover modestly: still far below the old peak, so the
+    # old rule (peak - net < limit) would refuse to reinstate forever.
+    book["trades"] += [{"net": 40.0, } for _ in range(5)]
+    book["stats"].update(trades=11, net=-1000.0)
+    assert book["stats"]["peak_net"] - book["stats"]["net"] > 10_000 * 0.10
+    engine._judge(book, risk, 10_000, "2026-09-02")
+    assert book["status"] == "active", "a recovered book must be able to return"
+    assert book["bench_net"] is None
+
+
+def test_a_book_that_keeps_falling_after_benching_stays_benched():
+    st = engine.new_state(only(["ema_cross"], risk={"min_trades_to_judge": 5, "judge_window": 5}))
+    book = st["books"].setdefault("ema_cross", engine._new_book("ema_cross", 10_000))
+    risk = st["config"]["risk"]
+
+    book["trades"] = [{"net": -100.0} for _ in range(6)]
+    book["stats"].update(trades=6, net=-600.0, peak_net=500.0, gross_loss=600.0)
+    engine._judge(book, risk, 10_000, "2026-09-01")
+    assert book["status"] == "benched"
+
+    # Wins, but it has shed another 1,100 since benching - past the limit.
+    book["trades"] += [{"net": 10.0} for _ in range(5)]
+    book["stats"].update(trades=11, net=-1700.0)
+    engine._judge(book, risk, 10_000, "2026-09-02")
+    assert book["status"] == "benched"
+
+
+def test_settled_days_record_whether_they_were_caught_up():
+    st = engine.new_state(only(["benchmark"]))
+    df = {"TEST.NS": enrich(session("2026-09-01", np.linspace(100, 103, 40)))}
+
+    engine.start_day(st, "2026-09-01")
+    engine.process_bars(st, df, now=None)
+    engine.settle_day(st, caught_up=True)
+    assert st["history"][-1]["caught_up"] is True
+    assert st["books"]["benchmark"]["day_history"][-1]["caught_up"] is True
+    assert st["last_settled_day"] == "2026-09-01"
+
+    engine.start_day(st, "2026-09-02")
+    engine.process_bars(st, {"TEST.NS": enrich(session("2026-09-02", np.linspace(100, 103, 40)))},
+                        now=None)
+    engine.settle_day(st)
+    assert st["history"][-1]["caught_up"] is False
+
+
+def test_slippage_sweep_runs_the_same_sessions_at_each_assumption():
+    """6.6 - a strategy that only wins with free fills has no real edge."""
+    cfg = only(["benchmark", "orb"])
+    bars = {"TEST.NS": enrich(pd.concat([
+        session("2026-09-01", np.linspace(100, 104, 75)),
+        session("2026-09-02", np.linspace(104, 108, 75)),
+    ]))}
+    sweep = engine.replay_slippage_sweep(cfg, bars, days=2)
+
+    labels = [lv["label"] for lv in sweep["levels"]]
+    assert labels == ["0%", "0.02%", "0.05%"]
+    bench = next(r for r in sweep["rows"] if r["id"] == "benchmark")
+    assert set(bench["by_slippage"]) == set(labels)
+    # More assumed slippage can only cost money, never make it.
+    assert bench["by_slippage"]["0%"]["net"] >= bench["by_slippage"]["0.05%"]["net"]
