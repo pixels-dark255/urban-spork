@@ -56,7 +56,7 @@ function renderBoard(rows, { live = true } = {}) {
   return `
     <div class="table-scroll"><table class="backtest-table arena-board">
       <thead><tr>
-        <th>#</th><th>strategy</th><th>net (after costs)</th><th>vs bench</th>
+        <th>#</th><th>strategy</th><th title="closed trades only, after costs">net (closed)</th><th>vs bench</th>
         <th>closed</th><th>win</th><th>PF</th><th>max DD</th>${live ? "<th>today</th>" : ""}
       </tr></thead>
       <tbody>
@@ -100,6 +100,50 @@ function renderTrades(trades) {
           t.caught_up ? ' <span class="arena-tag">caught up</span>' : ""}</td>
       </tr>`).join("")}
     </tbody></table></div>`;
+}
+
+// A trading date, formatted without going near a timezone: these are already
+// IST session dates, and parsing them as instants is how they drift a day.
+function fmtDayLabel(iso) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ""));
+  if (!m) return String(iso || "");
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  return `${m[3]} ${MON[Number(m[2]) - 1] || m[2]}`;
+}
+
+// The freshness line says how many days were caught up; this says which ones.
+// Without it the per-day caught_up flag ships in the payload and is never
+// seen, and a replayed week is indistinguishable from a watched one.
+function renderDayHistory(history, strategies) {
+  const days = (history || []).slice(-10).reverse();
+  if (!days.length) return "";
+  const names = {}, isBench = {};
+  (strategies || []).forEach((s) => { names[s.id] = s.name; isBench[s.id] = !!s.benchmark; });
+  const rows = days.map((h) => {
+    const books = Object.entries(h.books || {});
+    const real = books.filter(([id]) => !isBench[id]);
+    const benchEntry = books.find(([id]) => isBench[id]);
+    const best = real.length ? real.reduce((a, b) => (b[1].net > a[1].net ? b : a)) : null;
+    const trades = books.reduce((n, [, b]) => n + (b.trades || 0), 0);
+    return `<tr>
+      <td>${escapeHtml(fmtDayLabel(h.date))}${
+        h.caught_up ? ' <span class="arena-tag">caught up</span>' : ""}</td>
+      <td>${trades}</td>
+      <td>${best ? `${escapeHtml(names[best[0]] || best[0])}
+        <span class="${pnlClass(best[1].net)}">${inr(best[1].net)}</span>` : "—"}</td>
+      <td class="${benchEntry ? pnlClass(benchEntry[1].net) : ""}">${
+        benchEntry ? inr(benchEntry[1].net) : "—"}</td>
+    </tr>`;
+  }).join("");
+  return `
+    <div class="section-heading"><span class="eyebrow">settled sessions</span>
+      <h2 style="font-size:17px;">Day by day</h2></div>
+    <div class="table-scroll"><table class="backtest-table">
+      <thead><tr><th>day</th><th>trades</th><th>best strategy</th><th>benchmark</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <p class="arena-hint">A day tagged <span class="arena-tag">caught up</span> was replayed from
+      Yahoo's 5-minute bars after the server woke, not watched live. Same engine, same bars, same
+      fills - but it is marked rather than implied.</p>`;
 }
 
 function renderArenaLive(data) {
@@ -162,7 +206,8 @@ function arenaLiveHtml(data) {
     ${freshnessLine(data.freshness)}
     ${renderBoard(data.leaderboard)}
     <p class="arena-hint">Tap a strategy to see its trades. Benched strategies keep trading in shadow and come back automatically if they start earning.</p>
-    ${positions}`;
+    ${positions}
+    ${renderDayHistory(data.history, data.strategies)}`;
 }
 
 function renderArena(data) {

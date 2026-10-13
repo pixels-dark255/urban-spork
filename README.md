@@ -82,7 +82,7 @@ Run the tests with:
 pip install pytest pyflakes httpx
 python -m pytest tests/ -q          # 167 backend tests
 python -m pyflakes .
-cd ../frontend && node --test app.helpers.test.js   # 11 frontend tests
+cd ../frontend && node --test app.helpers.test.js arena.helpers.test.js   # 29 frontend tests
 ```
 
 The suite stubs the market data source, so it needs no network and passes

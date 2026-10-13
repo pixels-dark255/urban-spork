@@ -1,5 +1,6 @@
 /**
- * Tests for app.js's time helpers, run with: node --test frontend/
+ * Tests for app.js's time helpers, run with:
+ * node --test app.helpers.test.js arena.helpers.test.js
  *
  * These cover item 3's frontend half. They exist because the Lightweight
  * Charts library loads from a CDN, so in an environment without CDN access
