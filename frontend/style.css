@@ -722,3 +722,95 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
   body[data-tab="intraday"] .app-body { grid-template-columns: 420px minmax(0, 1fr); }
 }
 .arena-tag.arena-short { color: var(--signal-red); border-color: rgba(193, 68, 60, 0.5); }
+
+/* ---------- Arena: market tabs and global-market extras ---------- */
+
+.arena-markets {
+  display: flex;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+  margin-bottom: 12px;
+  -webkit-overflow-scrolling: touch;
+}
+.arena-market-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 7px 13px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--mist);
+  font-family: var(--font-body);
+  font-size: 13px;
+  cursor: pointer;
+}
+.arena-market-tab:active { transform: scale(0.97); }
+.arena-market-tab.on {
+  background: var(--paper-raised);
+  border-color: var(--brass-dim);
+  color: var(--brass);
+  font-weight: 600;
+}
+/* Open/shut at a glance. The dot is decorative: the session line below
+   says the same thing in words, for anyone who cannot see the colour. */
+.arena-market-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--hairline);
+}
+.arena-market-dot.open { background: var(--brass); }
+.arena-market-dot.shut { background: var(--mist); opacity: 0.4; }
+
+.arena-session { margin-top: 2px; }
+
+/* Leverage is the one setting here that can lose money faster than the
+   user expects, so its warning is louder than the storage one. */
+.arena-warn-hard {
+  background: rgba(193, 68, 60, 0.18);
+  font-weight: 600;
+}
+
+/* The regulatory note sits under every leaderboard, on every market. */
+.arena-legal {
+  margin: 14px 0 4px;
+  padding: 10px 12px;
+  border-left: 3px solid var(--brass-dim);
+  background: var(--paper);
+  border-radius: 0 8px 8px 0;
+  color: var(--mist);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.arena-days {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.arena-day {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 4px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--paper);
+  font-size: 12px;
+  color: var(--bone);
+  cursor: pointer;
+}
+.arena-day input { margin: 0; }
+.arena-field input[type="time"] {
+  padding: 7px 9px;
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+  background: var(--paper-raised);
+  color: var(--bone);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}

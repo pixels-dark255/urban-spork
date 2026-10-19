@@ -9,6 +9,54 @@ const ARENA_LEVEL_CLASS = {
   early: "arena-verdict-neutral", waiting: "arena-verdict-neutral",
 };
 let arenaData = null;
+let arenaMarkets = null;
+
+// Which market's arena is on screen. One arena per market, so every call
+// carries it; the server keys storage by it and defaults to India.
+let arenaMarket = (() => {
+  try {
+    return localStorage.getItem("arenaMarket") || "nse";
+  } catch (e) {
+    return "nse";       // private window, or site data blocked
+  }
+})();
+
+function setArenaMarket(id) {
+  arenaMarket = id;
+  try {
+    localStorage.setItem("arenaMarket", id);
+  } catch (e) { /* remembering the tab is a convenience, not a requirement */ }
+}
+
+// Every arena endpoint is per market.
+function mq(path, extra = "") {
+  const sep = path.includes("?") ? "&" : "?";
+  return `${API}${path}${sep}market=${encodeURIComponent(arenaMarket)}${extra}`;
+}
+
+// Money in the book's own currency. Rupees print whole; dollars and the
+// like keep their cents, because a forex session's whole profit can be a
+// few of them.
+function money(amount, cur, withSign = true) {
+  if (amount == null || Number.isNaN(amount)) return "—";
+  const code = (cur && cur.code) || "INR";
+  const symbol = (cur && cur.symbol) || "₹";
+  const digits = code === "INR" ? 0 : 2;
+  const sign = withSign && amount > 0 ? "+" : amount < 0 ? "−" : "";
+  return `${sign}${symbol}${Math.abs(amount).toLocaleString("en-IN", {
+    minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+}
+
+// The native amount with its rupee equivalent underneath. On the India
+// arena the two are the same number, so only one is shown.
+function moneyWithInr(amount, inrAmount, cur) {
+  const native = money(amount, cur);
+  if (!cur || cur.code === "INR") return native;
+  if (inrAmount == null) {
+    return `${native}<div class="arena-sub">₹ rate unavailable</div>`;
+  }
+  return `${native}<div class="arena-sub">${inr(inrAmount)}</div>`;
+}
 let arenaOpenStrategy = null;
 
 function inr(n, withSign = true) {
@@ -25,9 +73,17 @@ async function loadArena(silent = false) {
   if (!silent) content.innerHTML = `<div class="skeleton-block" style="height:140px"></div>
     <div class="skeleton-block" style="height:220px; margin-top:14px;"></div>`;
   try {
-    const res = await apiFetch(`${API}/api/arena`);
+    // The market strip needs every market's open/shut state, not just this
+    // one's. Fetched alongside, and a failure there only costs the dots.
+    const [res, marketsRes] = await Promise.all([
+      apiFetch(mq("/api/arena")),
+      apiFetch(`${API}/api/arena/markets`).catch(() => null),
+    ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
+    if (marketsRes && marketsRes.ok) {
+      arenaMarkets = await marketsRes.json().catch(() => null);
+    }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
     const editing = content.querySelector("#arenaSettings[open]");
@@ -42,15 +98,20 @@ async function loadArena(silent = false) {
 // "2 tr" used to mean entries here and closed trades in the TRADES column.
 // Spelling both out, plus any unrealised P&L, stops the two reading as the
 // same number disagreeing with itself.
-function todaySub(today) {
+function todaySub(today, cur = null) {
   const bits = [`${today.entries ?? today.trades ?? 0} entries`];
   if (today.open_positions) bits.push(`${today.open_positions} open`);
-  if (today.unrealised) bits.push(`${inr(today.unrealised)} open P&L`);
   if (today.stopped) bits.push("stopped");
-  return escapeHtml(bits.join(" · "));
+  const text = escapeHtml(bits.join(" · "));
+  // money() already produces markup-safe output and may carry a currency
+  // symbol, so it is appended rather than escaped with the rest.
+  return today.unrealised
+    ? `${text} · ${money(today.unrealised, cur)} open P&amp;L`
+    : text;
 }
 
-function renderBoard(rows, { live = true } = {}) {
+function renderBoard(rows, { live = true, currency = null } = {}) {
+  const cur = currency || (rows[0] && { code: rows[0].currency, symbol: rows[0].currency_symbol });
   if (!rows.length) return `<p class="muted">No strategies yet.</p>`;
   return `
     <div class="table-scroll"><table class="backtest-table arena-board">
@@ -68,15 +129,16 @@ function renderBoard(rows, { live = true } = {}) {
               ${r.benchmark ? "yardstick" : r.status === "active" ? "active" : "benched · shadow"}
             </span>
           </td>
-          <td class="${pnlClass(r.net_total)}">${inr(r.net_total)}<div class="arena-sub">₹${Math.round(r.charges_total)} costs</div></td>
-          <td class="${pnlClass(r.vs_benchmark)}">${r.vs_benchmark == null ? "—" : inr(r.vs_benchmark)}</td>
+          <td class="${pnlClass(r.net_total)}">${moneyWithInr(r.net_total, r.net_total_inr, cur)}
+            <div class="arena-sub">${money(r.charges_total, cur, false)} costs</div></td>
+          <td class="${pnlClass(r.vs_benchmark)}">${r.vs_benchmark == null ? "—" : money(r.vs_benchmark, cur)}</td>
           <td>${r.trades}</td>
           <td>${r.win_rate == null ? "—" : r.win_rate + "%"}</td>
           <td title="${r.profit_factor == null && r.no_losses ? "no losing trades yet" : ""}">${
             r.profit_factor == null ? "—" : r.profit_factor}</td>
-          <td class="neg">${r.max_drawdown ? inr(-r.max_drawdown) : "—"}</td>
-          ${live ? `<td class="${pnlClass(r.today.net)}">${inr(r.today.net)}
-             <div class="arena-sub">${todaySub(r.today)}</div></td>` : ""}
+          <td class="neg">${r.max_drawdown ? money(-r.max_drawdown, cur) : "—"}</td>
+          ${live ? `<td class="${pnlClass(r.today.net)}">${moneyWithInr(r.today.net, r.today.net_inr, cur)}
+             <div class="arena-sub">${todaySub(r.today, cur)}</div></td>` : ""}
         </tr>
         ${live && arenaOpenStrategy === r.id ? `<tr class="arena-detail-row"><td colspan="9"><div id="arenaTrades-${escapeHtml(r.id)}"><p class="loading">loading trades…</p></div></td></tr>` : ""}
       `).join("")}
@@ -84,7 +146,7 @@ function renderBoard(rows, { live = true } = {}) {
     </table></div>`;
 }
 
-function renderTrades(trades) {
+function renderTrades(trades, cur = null) {
   if (!trades.length) return `<p class="muted">No closed trades yet.</p>`;
   return `<div class="table-scroll"><table class="backtest-table">
     <thead><tr><th>exit</th><th>stock</th><th>qty</th><th>in → out</th><th>net</th><th>why out</th></tr></thead>
@@ -93,8 +155,9 @@ function renderTrades(trades) {
         <td>${fmtISTDateTime(t.exit_at)}</td>
         <td>${t.side === "SHORT" ? '<span class="arena-tag arena-short">short</span> ' : ""}${escapeHtml(t.symbol.replace(/\.(NS|BO)$/, ""))}${t.shadow ? ' <span class="arena-sub">shadow</span>' : ""}</td>
         <td>${t.qty}</td>
-        <td>₹${t.entry_price} → ₹${t.exit_price}</td>
-        <td class="${pnlClass(t.net)}">${inr(t.net)}<div class="arena-sub">₹${t.charges} costs</div></td>
+        <td>${escapeHtml(`${(cur && cur.symbol) || "₹"}${t.entry_price} → ${(cur && cur.symbol) || "₹"}${t.exit_price}`)}</td>
+        <td class="${pnlClass(t.net)}">${moneyWithInr(t.net, t.net_inr, cur)}
+          <div class="arena-sub">${money(t.charges, cur, false)} costs</div></td>
         <td>${escapeHtml(String(t.exit_reason).replace(/_/g, " "))}${
           t.caught_up ? ' <span class="arena-tag">caught up</span>' : ""}</td>
       </tr>`).join("")}
@@ -113,7 +176,7 @@ function fmtDayLabel(iso) {
 // The freshness line says how many days were caught up; this says which ones.
 // Without it the per-day caught_up flag ships in the payload and is never
 // seen, and a replayed week is indistinguishable from a watched one.
-function renderDayHistory(history, strategies) {
+function renderDayHistory(history, strategies, cur = null) {
   const days = (history || []).slice(-10).reverse();
   if (!days.length) return "";
   const names = {}, isBench = {};
@@ -129,9 +192,9 @@ function renderDayHistory(history, strategies) {
         h.caught_up ? ' <span class="arena-tag">caught up</span>' : ""}</td>
       <td>${trades}</td>
       <td>${best ? `${escapeHtml(names[best[0]] || best[0])}
-        <span class="${pnlClass(best[1].net)}">${inr(best[1].net)}</span>` : "—"}</td>
+        <span class="${pnlClass(best[1].net)}">${money(best[1].net, cur)}</span>` : "—"}</td>
       <td class="${benchEntry ? pnlClass(benchEntry[1].net) : ""}">${
-        benchEntry ? inr(benchEntry[1].net) : "—"}</td>
+        benchEntry ? money(benchEntry[1].net, cur) : "—"}</td>
     </tr>`;
   }).join("");
   return `
@@ -149,6 +212,7 @@ function renderArenaLive(data) {
   const live = document.getElementById("arenaLive");
   if (live) live.innerHTML = arenaLiveHtml(data);
   bindBoard();
+  bindMarketTabs();
 }
 
 // On Render's free tier a JSON file is wiped every time the server sleeps.
@@ -187,6 +251,62 @@ function freshnessLine(f) {
   return `<div class="stock-sub arena-freshness">${bits.join(" · ")}</div>${stale}`;
 }
 
+const MARKET_LABELS = { nse: "India", us: "US", forex: "Forex", crypto: "Crypto" };
+
+// The tab strip. Each market has its own arena, its own hours and its own
+// currency, so switching is a reload rather than a filter.
+function renderMarketTabs(data) {
+  const rows = (arenaMarkets && arenaMarkets.markets) || [];
+  const ids = rows.length ? rows.map((m) => m.id) : Object.keys(MARKET_LABELS);
+  return `<div class="arena-markets" role="tablist">${ids.map((id) => {
+    const row = rows.find((m) => m.id === id);
+    const open = row && row.is_open;
+    const label = (row && MARKET_LABELS[id]) || MARKET_LABELS[id] || id;
+    return `<button class="arena-market-tab ${id === arenaMarket ? "on" : ""}"
+       role="tab" aria-selected="${id === arenaMarket}" data-market="${escapeHtml(id)}">
+      <span class="arena-market-dot ${open ? "open" : "shut"}"
+            title="${open ? "market open" : "market closed"}"></span>${escapeHtml(label)}</button>`;
+  }).join("")}</div>`;
+}
+
+// "US session 19:00-01:30 IST (09:30-16:00 New York)" - both clocks,
+// because the IST half shifts by an hour when US daylight time ends and
+// only the local half stays put.
+function sessionLine(data) {
+  const s = data.session;
+  if (!s) return "";
+  // The market's own clock, except on the India arena where it is the
+  // user's clock too and printing both says the same thing twice.
+  const tzShort = s.same_clock_as_ist ? "" : (s.market_timezone_label || "");
+  const name = (data.market_profile && data.market_profile.name) || "";
+  const bits = [];
+  if (s.today) {
+    bits.push(`${escapeHtml(name)} session ${escapeHtml(s.today.start_ist)}–${escapeHtml(s.today.end_ist)} IST`
+      + (tzShort ? ` <span class="arena-sub">(${escapeHtml(s.today.start_local)}–${escapeHtml(s.today.end_local)} ${escapeHtml(tzShort)})</span>` : ""));
+  } else {
+    bits.push(`${escapeHtml(name)}: no session in your window today`);
+  }
+  if (!s.active_now && s.next && s.next_date) {
+    bits.push(`next ${escapeHtml(fmtDayLabel(s.next_date))} at ${escapeHtml(s.next.start_ist)} IST`);
+  } else if (s.active_now) {
+    bits.push("<b>trading now</b>");
+  }
+  return `<div class="stock-sub arena-session">${bits.join(" · ")}</div>`;
+}
+
+function leverageWarning(data) {
+  const lev = Number(data.config.leverage || 1);
+  if (!(lev > 1)) return "";
+  return `<div class="arena-warn arena-warn-hard">Leverage ${lev}× is on. A ${lev}× position
+    loses ${lev}× as fast, and the daily loss limit is hit ${lev} times sooner. Simulated money
+    only - but the losses it simulates are real ones.</div>`;
+}
+
+function regulatoryNote(data) {
+  if (!data.regulatory_note) return "";
+  return `<p class="arena-legal">${escapeHtml(data.regulatory_note)}</p>`;
+}
+
 function arenaLiveHtml(data) {
   const v = data.verdict;
   const m = data.market;
@@ -194,19 +314,29 @@ function arenaLiveHtml(data) {
   const positions = data.open_positions.length ? `
     <div class="section-heading"><span class="eyebrow">right now</span><h2 style="font-size:17px;">Open positions</h2></div>
     <div class="signal-list">${data.open_positions.map((p) => `
-      <div class="signal-row"><span>${escapeHtml(p.strategy)} · ${escapeHtml(p.symbol)} ×${p.qty} @ ₹${p.entry_price}</span>
-      <span class="val ${pnlClass(p.unrealised)}">${inr(p.unrealised)}</span></div>`).join("")}
+      <div class="signal-row"><span>${escapeHtml(p.strategy)} · ${escapeHtml(p.symbol)} ×${p.qty} @ ${
+        escapeHtml(((data.currency && data.currency.symbol) || "₹") + p.entry_price)}</span>
+      <span class="val ${pnlClass(p.unrealised)}">${money(p.unrealised, data.currency)}</span></div>`).join("")}
     </div>` : "";
+  const profile = data.market_profile || {};
+  const status = data.config.market === "nse"
+    ? (m.is_open ? "open" : escapeHtml(m.reason.replace(/_/g, " ")))
+    : (profile.is_open ? "open" : "closed");
   return `
+    ${renderMarketTabs(data)}
     ${storageWarning(data.storage)}
+    ${leverageWarning(data)}
     <div class="arena-verdict ${ARENA_LEVEL_CLASS[v.level] || ""}">${escapeHtml(v.text)}</div>
-    <div class="stock-sub">market: ${m.is_open ? "open" : escapeHtml(m.reason.replace(/_/g, " "))} · session: ${escapeHtml(day)}
-      · ${inr(data.config.daily_capital, false)} per strategy · ${data.config.symbols.length} stocks</div>
+    <div class="stock-sub">market: ${status} · session: ${escapeHtml(day)}
+      · ${inr(data.config.daily_capital, false)} per strategy · ${data.config.symbols.length} ${
+        data.config.market === "forex" ? "pairs" : data.config.market === "crypto" ? "coins" : "stocks"}</div>
+    ${sessionLine(data)}
     ${freshnessLine(data.freshness)}
-    ${renderBoard(data.leaderboard)}
+    ${renderBoard(data.leaderboard, { currency: data.currency })}
     <p class="arena-hint">Tap a strategy to see its trades. Benched strategies keep trading in shadow and come back automatically if they start earning.</p>
+    ${regulatoryNote(data)}
     ${positions}
-    ${renderDayHistory(data.history, data.strategies)}`;
+    ${renderDayHistory(data.history, data.strategies, data.currency)}`;
 }
 
 function renderArena(data) {
@@ -217,10 +347,11 @@ function renderArena(data) {
       <span><b>${escapeHtml(s.name)}</b>${s.both_sides ? ' <span class="arena-tag">long + short</span>' : ""}<br><span class="arena-sub">${escapeHtml(s.description)}</span></span>
     </label>`).join("");
   const r = c.risk;
+  const unit = c.market === "forex" ? "pairs" : c.market === "crypto" ? "coins" : "stocks";
   document.getElementById("arenaContent").innerHTML = `
     <h2 class="stock-title">Strategy Arena</h2>
-    <div class="disclaimer">Simulated money only. Every strategy gets its own ${inr(c.daily_capital, false)} and trades the same stocks on the same 5-minute bars,
-      paying brokerage, STT, exchange fees, stamp duty, GST and slippage. No strategy can guarantee a profit - the arena's job is to show which ones
+    <div class="disclaimer">Simulated money only. Every strategy gets its own ${inr(c.daily_capital, false)} and trades the same ${unit} on the same 5-minute bars,
+      paying the market's real costs. No strategy can guarantee a profit - the arena's job is to show which ones
       actually earn, and to bench the ones that don't.</div>
 
     <div id="arenaLive">${arenaLiveHtml(data)}</div>
@@ -241,9 +372,12 @@ function renderArena(data) {
           <option value="reset" ${c.capital_mode === "reset" ? "selected" : ""}>start fresh with this amount</option>
           <option value="compound" ${c.capital_mode === "compound" ? "selected" : ""}>carry over yesterday's balance</option>
         </select></label>
-      <label class="arena-field">Stocks (comma separated, NSE symbols)
-        <textarea id="arenaSymbols" rows="2">${escapeHtml(c.symbols.map((s) => s.replace(/\.NS$/, "")).join(", "))}</textarea></label>
-      <button class="arena-link" id="arenaPreset">use 10 liquid Nifty stocks</button>
+      ${windowFields(data)}
+      ${leverageField(data)}
+      <label class="arena-field">Symbols (comma separated)
+        <span class="arena-sub">${escapeHtml(data.symbol_hint || "")}</span>
+        <textarea id="arenaSymbols" rows="2">${escapeHtml(c.symbols.map(shortSymbol).join(", "))}</textarea></label>
+      ${presetButtons(data)}
       <div class="arena-field">Strategies${strategyChecks}</div>
       <div class="arena-grid">
         <label class="arena-field">Daily loss limit %<input type="number" step="0.5" id="arenaDayLoss" value="${r.daily_loss_limit_pct}"></label>
@@ -260,9 +394,13 @@ function renderArena(data) {
   bindBoard();
   document.getElementById("arenaRunBt").addEventListener("click", runArenaBacktest);
   document.getElementById("arenaSave").addEventListener("click", saveArenaSettings);
-  document.getElementById("arenaPreset").addEventListener("click", () => {
-    document.getElementById("arenaSymbols").value = data.presets.liquid_nifty.map((s) => s.replace(/\.NS$/, "")).join(", ");
+  document.querySelectorAll("#arenaContent .arena-preset").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const list = (data.presets || {})[btn.dataset.preset] || [];
+      document.getElementById("arenaSymbols").value = list.map(shortSymbol).join(", ");
+    });
   });
+  bindMarketTabs();
   const reset = document.getElementById("arenaReset");
   reset.addEventListener("click", async () => {
     if (reset.dataset.confirming !== "1") {
@@ -270,9 +408,79 @@ function renderArena(data) {
       setTimeout(() => { reset.dataset.confirming = "0"; reset.textContent = "reset all results"; }, 3000);
       return;
     }
-    await apiFetch(`${API}/api/arena/reset`, { method: "POST" });
+    await apiFetch(mq("/api/arena/reset"), { method: "POST" });
     showToast("Arena results reset");
     loadArena();
+  });
+}
+
+// A symbol as the user types it: the suffix is how Yahoo names the feed,
+// not something anyone wants to retype. The server puts it back.
+function shortSymbol(sym) {
+  return String(sym).replace(/\.(NS|BO)$/, "").replace(/=X$/, "");
+}
+
+const DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
+
+// The window is set in IST whatever the market, because that is the clock
+// the person is actually living on. A market whose own session is the
+// default shows that session's local hours beside it for context.
+function windowFields(data) {
+  const w = data.config.window || {};
+  const inIst = w.tz === "Asia/Kolkata";
+  const sess = data.session && data.session.today;
+  const hint = inIst
+    ? "The hours you want to trade, in IST."
+    : `Currently following the market's own session (${escapeHtml(w.start)}–${escapeHtml(w.end)} ${
+        escapeHtml((data.session && data.session.market_timezone_label) || "local")}`
+      + (sess ? `, i.e. ${escapeHtml(sess.start_ist)}–${escapeHtml(sess.end_ist)} IST today` : "")
+      + "). Set a start and end below to pick your own hours in IST.";
+  const start = inIst ? w.start : (sess ? sess.start_ist : "19:00");
+  const end = inIst ? w.end : (sess ? sess.end_ist : "23:30");
+  const days = w.days || [0, 1, 2, 3, 4];
+  return `
+    <div class="arena-field">Your trading window
+      <span class="arena-sub">${hint}</span>
+      <div class="arena-row-inline">
+        <input type="time" id="arenaWinStart" value="${escapeHtml(start)}">
+        <span class="arena-sub">to</span>
+        <input type="time" id="arenaWinEnd" value="${escapeHtml(end)}">
+        <span class="arena-sub">IST</span>
+      </div>
+      <div class="arena-days">${DAY_NAMES.map((name, i) => `
+        <label class="arena-day"><input type="checkbox" name="arenaDay" value="${i}"
+          ${days.includes(i) ? "checked" : ""}><span>${name}</span></label>`).join("")}</div>
+      <span class="arena-sub">A window that ends before it starts runs past midnight and
+        counts as one session, filed under the day it began.</span>
+    </div>`;
+}
+
+function leverageField(data) {
+  const max = Number(data.max_leverage || 1);
+  if (!(max > 1)) return "";
+  return `
+    <label class="arena-field">Leverage
+      <span class="arena-sub">1× means no borrowing. Above 1× the book holds a bigger
+        position for the same money - and loses just as much faster.</span>
+      <input type="number" id="arenaLeverage" min="1" max="${max}" step="0.5"
+             value="${Number(data.config.leverage || 1)}"></label>`;
+}
+
+function presetButtons(data) {
+  const presets = data.presets || {};
+  return Object.keys(presets).map((key) => `
+    <button class="arena-link arena-preset" data-preset="${escapeHtml(key)}">use ${
+      presets[key].length} ${escapeHtml(key.replace(/_/g, " "))}</button>`).join(" ");
+}
+
+function bindMarketTabs() {
+  document.querySelectorAll("#arenaContent .arena-market-tab").forEach((tab) => {
+    tab.addEventListener("click", () => {
+      if (tab.dataset.market === arenaMarket) return;
+      setArenaMarket(tab.dataset.market);
+      arenaOpenStrategy = null;
+      loadArena();
+    });
   });
 }
 
@@ -291,10 +499,11 @@ async function loadArenaTrades(id) {
   const box = document.getElementById(`arenaTrades-${id}`);
   if (!box) return;
   try {
-    const res = await apiFetch(`${API}/api/arena/trades?strategy=${encodeURIComponent(id)}&limit=40`);
+    const res = await apiFetch(mq(`/api/arena/trades?strategy=${encodeURIComponent(id)}&limit=40`));
     const data = await res.json();
     const reason = (arenaData.leaderboard.find((r) => r.id === id) || {}).status_reason;
-    box.innerHTML = (reason ? `<p class="arena-hint">${escapeHtml(reason)}</p>` : "") + renderTrades(data.trades || []);
+    box.innerHTML = (reason ? `<p class="arena-hint">${escapeHtml(reason)}</p>` : "")
+      + renderTrades(data.trades || [], arenaData && arenaData.currency);
   } catch (e) {
     box.innerHTML = `<p class="muted">Could not load trades.</p>`;
   }
@@ -303,21 +512,23 @@ async function loadArenaTrades(id) {
 // Slippage is assumed, not measured, and at 0.05% a side it is a large part
 // of a small intraday target. Seeing the same sessions at 0% / 0.02% / 0.05%
 // separates "has an edge" from "has an edge only if fills are free".
-function renderSlippageSweep(sweep) {
+function renderSlippageSweep(sweep, cur = null) {
   if (!sweep || !sweep.rows || !sweep.rows.length) return "";
   const levels = sweep.levels || [];
   return `
     <div class="section-heading"><span class="eyebrow">how much do fills matter</span>
-      <h2 style="font-size:17px;">Net P&L by assumed slippage</h2></div>
+      <h2 style="font-size:17px;">Net P&L by assumed fill cost</h2></div>
     <div class="table-scroll"><table class="backtest-table">
       <thead><tr><th>strategy</th>${levels.map((l) =>
-        `<th>${escapeHtml(l.label)}</th>`).join("")}</tr></thead>
+        `<th title="${escapeHtml(l.describes || "")}">${escapeHtml(l.label)}
+         <div class="arena-sub">${escapeHtml(l.describes || "")}</div></th>`).join("")}</tr></thead>
       <tbody>${sweep.rows.map((r) => `
         <tr class="${r.benchmark ? "arena-bench" : ""}">
           <td>${escapeHtml(r.name)}</td>
           ${levels.map((l) => {
             const cell = r.by_slippage[l.label];
-            return `<td class="${cell ? pnlClass(cell.net) : ""}">${cell ? inr(cell.net) : "—"}</td>`;
+            return `<td class="${cell ? pnlClass(cell.net) : ""}">${
+              cell ? money(cell.net, cur) : "—"}</td>`;
           }).join("")}
         </tr>`).join("")}
       </tbody></table></div>
@@ -331,16 +542,16 @@ function renderBacktestResult(bt) {
   const span = sessions.length ? `${sessions[0]} → ${sessions[sessions.length - 1]}` : "";
   box.innerHTML = `
     <div class="arena-verdict ${ARENA_LEVEL_CLASS[bt.verdict.level] || ""}">${escapeHtml(bt.verdict.text)}</div>
-    <div class="stock-sub">${sessions.length} sessions ${escapeHtml(span)} · ${bt.replay ? bt.replay.symbols.length : 0} stocks
+    <div class="stock-sub">${sessions.length} sessions ${escapeHtml(span)} · ${bt.replay ? bt.replay.symbols.length : 0} symbols
       · ran ${bt.replay ? fmtISTDateTime(bt.replay.ran_at) : ""}</div>
-    ${renderBoard(bt.leaderboard, { live: false })}
-    ${renderSlippageSweep(bt.slippage_sweep)}
+    ${renderBoard(bt.leaderboard, { live: false, currency: bt.currency })}
+    ${renderSlippageSweep(bt.slippage_sweep, bt.currency)}
     <p class="arena-hint">Past results on ${sessions.length} sessions are a small sample - a strategy that wins here still has to prove itself live.</p>`;
 }
 
 async function loadLastBacktest() {
   try {
-    const res = await apiFetch(`${API}/api/arena/backtest`);
+    const res = await apiFetch(mq("/api/arena/backtest"));
     const data = await res.json();
     if (data.backtest) renderBacktestResult(data.backtest);
   } catch (e) { /* optional */ }
@@ -351,7 +562,7 @@ async function runArenaBacktest() {
   const days = parseInt(document.getElementById("arenaBtDays").value, 10);
   btn.disabled = true; btn.textContent = "Replaying…";
   try {
-    const res = await apiFetch(`${API}/api/arena/backtest`, {
+    const res = await apiFetch(mq("/api/arena/backtest"), {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ days, slippage_sweep: true }),
     });
@@ -378,8 +589,19 @@ async function saveArenaSettings() {
       min_trades_to_judge: num("arenaJudge"),
     },
   };
+  const start = document.getElementById("arenaWinStart");
+  const end = document.getElementById("arenaWinEnd");
+  if (start && end && start.value && end.value) {
+    body.window = {
+      start: start.value, end: end.value, tz: "Asia/Kolkata",
+      days: [...document.querySelectorAll('#arenaSettings input[name="arenaDay"]:checked')]
+        .map((el) => Number(el.value)),
+    };
+  }
+  const lev = document.getElementById("arenaLeverage");
+  if (lev && lev.value) body.leverage = parseFloat(lev.value);
   try {
-    const res = await apiFetch(`${API}/api/arena/config`, {
+    const res = await apiFetch(mq("/api/arena/config"), {
       method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
     });
     if (!res.ok) { showToast("Could not save settings", "error"); return; }

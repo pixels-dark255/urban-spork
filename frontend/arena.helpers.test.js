@@ -24,6 +24,14 @@ process.env.TZ = process.env.TZ || "Asia/Kolkata";
 const SOURCE = fs.readFileSync(path.join(__dirname, "arena.js"), "utf8");
 const APP = fs.readFileSync(path.join(__dirname, "app.js"), "utf8");
 
+function extractConst(source, name) {
+  const start = source.indexOf(`const ${name} =`);
+  assert.ok(start >= 0, `${name} not found in arena.js`);
+  const end = source.indexOf(";\n", start);
+  assert.ok(end > start, `could not find the end of ${name}`);
+  return source.slice(start, end + 1);
+}
+
 function extractFunction(source, name, where) {
   const start = source.indexOf(`function ${name}(`);
   assert.ok(start >= 0, `${name} not found in ${where}`);
@@ -37,8 +45,15 @@ function loadArenaHelpers() {
   const context = { Intl, Date, console, Number, Math, Object, String, JSON };
   // renderBoard reads the module-level "which row is expanded" flag.
   context.arenaOpenStrategy = null;
+  context.arenaMarket = "nse";
+  context.arenaMarkets = null;
   context.globalThis = context;
   vm.createContext(context);
+
+  // Literals lifted out of arena.js, so the labels stay in one place
+  // rather than being restated here.
+  vm.runInContext(extractConst(SOURCE, "MARKET_LABELS"), context);
+  vm.runInContext(extractConst(SOURCE, "DAY_NAMES"), context);
 
   // escapeHtml goes through a DOM node in the real app; the arena helpers
   // only care that it is called, so a string version keeps this hermetic.
@@ -49,9 +64,11 @@ function loadArenaHelpers() {
   for (const name of ["parseUTC", "fmtIST"]) {
     vm.runInContext(extractFunction(APP, name, "app.js"), context);
   }
-  for (const name of ["inr", "pnlClass", "todaySub", "fmtDayLabel",
-                      "renderDayHistory", "renderBoard", "storageWarning",
-                      "freshnessLine"]) {
+  for (const name of ["inr", "money", "moneyWithInr", "pnlClass", "todaySub",
+                      "fmtDayLabel", "shortSymbol", "renderDayHistory", "renderBoard",
+                      "storageWarning", "freshnessLine", "sessionLine",
+                      "renderMarketTabs", "leverageWarning", "regulatoryNote",
+                      "renderSlippageSweep", "presetButtons"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -234,4 +251,173 @@ test("an arena that has never ticked says so instead of showing a blank time", (
   const html = arena.freshnessLine({ last_tick_at: null, stale: false,
                                      caught_up_last: 0, symbols_failed: [] });
   assert.ok(html.includes("no update yet"), html);
+});
+
+// ---------------------------------------------------------------------------
+// Global markets: currency, tabs, sessions, the regulatory note
+// ---------------------------------------------------------------------------
+
+const USD = { code: "USD", symbol: "$", fractional: false };
+const RUPEES = { code: "INR", symbol: "₹", fractional: false };
+
+test("rupees print whole and other currencies keep their cents", () => {
+  // A forex session's entire profit can be a few cents, so rounding the
+  // book's own currency to whole units would quantise the result away.
+  assert.strictEqual(arena.money(1234.56, RUPEES), "+₹1,235");
+  assert.strictEqual(arena.money(12.3456, USD), "+$12.35");
+  assert.strictEqual(arena.money(-12.3, USD), "−$12.30");
+  assert.strictEqual(arena.money(0, USD), "$0.00");
+  assert.strictEqual(arena.money(null, USD), "—");
+  assert.strictEqual(arena.money(12.3, USD, false), "$12.30");
+});
+
+test("money defaults to rupees when no currency is given", () => {
+  assert.strictEqual(arena.money(500, null), "+₹500");
+});
+
+test("a foreign amount is shown with its rupee equivalent underneath", () => {
+  const html = arena.moneyWithInr(12.97, 1148.08, USD);
+  assert.ok(html.includes("+$12.97"), html);
+  assert.ok(html.includes("+₹1,148"), html);
+});
+
+test("the India arena shows one figure, not the same number twice", () => {
+  const html = arena.moneyWithInr(1148, 1148, RUPEES);
+  assert.strictEqual(html, "+₹1,148");
+});
+
+test("a missing rate is admitted rather than filled in with the native number", () => {
+  const html = arena.moneyWithInr(12.97, null, USD);
+  assert.ok(html.includes("+$12.97"));
+  assert.ok(html.includes("rate unavailable"), html);
+  assert.ok(!html.includes("₹12"), "the dollar figure must not be passed off as rupees");
+});
+
+test("the market strip marks the selected market and shows open/shut", () => {
+  const html = arena.renderMarketTabs({});
+  for (const label of ["India", "US", "Forex", "Crypto"]) {
+    assert.ok(html.includes(label), `${label} tab missing`);
+  }
+  // arenaMarket is "nse" in this harness.
+  const nseTab = html.split("</button>").find((t) => t.includes("India"));
+  assert.ok(nseTab.includes('class="arena-market-tab on"'), nseTab);
+  assert.ok(nseTab.includes('aria-selected="true"'));
+  const usTab = html.split("</button>").find((t) => t.includes(">US"));
+  assert.ok(usTab.includes('aria-selected="false"'));
+});
+
+test("the open/shut dot is backed by a text title, not colour alone", () => {
+  arena.arenaMarkets = {
+    markets: [{ id: "nse", is_open: false }, { id: "us", is_open: true },
+              { id: "forex", is_open: true }, { id: "crypto", is_open: true }],
+  };
+  const html = arena.renderMarketTabs({});
+  assert.ok(html.includes('title="market open"'));
+  assert.ok(html.includes('title="market closed"'));
+  arena.arenaMarkets = null;
+});
+
+test("the session line gives both clocks, because only one of them moves", () => {
+  const html = arena.sessionLine({
+    market_profile: { name: "US stocks" },
+    session: {
+      today: { start_ist: "19:00", end_ist: "01:30",
+               start_local: "09:30", end_local: "16:00" },
+      next: { start_ist: "19:00" }, next_date: "2026-10-20",
+      market_timezone_label: "New York", same_clock_as_ist: false, active_now: false,
+    },
+  });
+  assert.ok(html.includes("19:00–01:30 IST"), html);
+  assert.ok(html.includes("09:30–16:00 New York"), html);
+  assert.ok(html.includes("next 20 Oct at 19:00 IST"), html);
+});
+
+test("the session line says when there is no session today", () => {
+  const html = arena.sessionLine({
+    market_profile: { name: "Forex" },
+    session: { today: null, next: null, next_date: null,
+               market_timezone_label: "New York", same_clock_as_ist: false,
+               active_now: false },
+  });
+  assert.ok(html.includes("no session in your window today"), html);
+});
+
+test("a live session says so rather than pointing at the next one", () => {
+  const html = arena.sessionLine({
+    market_profile: { name: "Crypto" },
+    session: { today: { start_ist: "19:00", end_ist: "23:30",
+                        start_local: "13:30", end_local: "18:00" },
+               next: { start_ist: "19:00" }, next_date: "2026-10-20",
+               market_timezone_label: "UTC", same_clock_as_ist: false,
+               active_now: true },
+  });
+  assert.ok(html.includes("trading now"), html);
+  assert.ok(!html.includes("next 20 Oct"), html);
+});
+
+test("leverage above 1x is warned about, and 1x is not", () => {
+  assert.strictEqual(arena.leverageWarning({ config: { leverage: 1 } }), "");
+  assert.strictEqual(arena.leverageWarning({ config: {} }), "");
+  const warn = arena.leverageWarning({ config: { leverage: 3 } });
+  assert.ok(warn.includes("3×"), warn);
+  assert.ok(warn.includes("arena-warn-hard"), "the leverage warning is the loud one");
+});
+
+test("the regulatory note is rendered whenever the server sends it", () => {
+  const note = "Simulation only. For real money in India: forex is legal only in INR pairs.";
+  assert.ok(arena.regulatoryNote({ regulatory_note: note }).includes("INR pairs"));
+  assert.strictEqual(arena.regulatoryNote({}), "");
+});
+
+test("symbols are shown without the feed suffix the user never typed", () => {
+  assert.strictEqual(arena.shortSymbol("RELIANCE.NS"), "RELIANCE");
+  assert.strictEqual(arena.shortSymbol("TATASTEEL.BO"), "TATASTEEL");
+  assert.strictEqual(arena.shortSymbol("EURUSD=X"), "EURUSD");
+  assert.strictEqual(arena.shortSymbol("AAPL"), "AAPL");
+  assert.strictEqual(arena.shortSymbol("BTC-USD"), "BTC-USD");
+});
+
+test("preset buttons are built from whatever the market offers", () => {
+  const html = arena.presetButtons({ presets: { majors: ["A", "B"], inr_pairs: ["C"] } });
+  assert.ok(html.includes("use 2 majors"), html);
+  assert.ok(html.includes("use 1 inr pairs"), html);
+  assert.strictEqual(arena.presetButtons({}), "");
+});
+
+test("the leaderboard prints a foreign book in both currencies", () => {
+  const html = arena.renderBoard([{
+    id: "ema_cross", name: "EMA 9/21 crossover", benchmark: false, status: "active",
+    net_total: 12.97, net_total_inr: 1148.08, charges_total: 0.42, vs_benchmark: 3.1,
+    trades: 4, win_rate: 75, profit_factor: 1.8, no_losses: false, max_drawdown: 0,
+    currency: "USD", currency_symbol: "$",
+    today: { net: 1.5, net_inr: 132.75, entries: 1, trades: 1, open_positions: 0, unrealised: 0 },
+  }], { currency: USD });
+  assert.ok(html.includes("+$12.97"), html);
+  assert.ok(html.includes("+₹1,148"), html);
+  assert.ok(html.includes("$0.42 costs"), html);
+});
+
+test("the slippage sweep labels each column with what it assumes", () => {
+  const html = arena.renderSlippageSweep({
+    levels: [{ label: "0×", describes: "perfect fills, no cost" },
+             { label: "1×", describes: "1.5 pips typical spread" }],
+    rows: [{ id: "benchmark", name: "Benchmark", benchmark: true,
+             by_slippage: { "0×": { net: 5.5 }, "1×": { net: -2.25 } } }],
+    note: "Same bars at each level.",
+  }, USD);
+  assert.ok(html.includes("1.5 pips typical spread"), html);
+  assert.ok(html.includes("+$5.50") && html.includes("−$2.25"), html);
+});
+
+test("the India arena is not told its own session twice", () => {
+  const html = arena.sessionLine({
+    market_profile: { name: "India (NSE)" },
+    session: { today: { start_ist: "09:15", end_ist: "15:30",
+                        start_local: "09:15", end_local: "15:30" },
+               next: null, next_date: null, market_timezone_label: "India",
+               same_clock_as_ist: true, active_now: true },
+  });
+  assert.ok(html.includes("09:15–15:30 IST"), html);
+  assert.ok(!html.includes("arena-sub"),
+            "no redundant second clock on the India arena");
 });

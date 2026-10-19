@@ -306,6 +306,9 @@ class Market:
     id = "base"
     name = "Base"
     tz = IST
+    # What to call the market's clock on screen. str(tz) would print
+    # "UTC+05:30" for the fixed-offset IST the rest of the app uses.
+    tz_label = "India"
     quote_currency = "INR"      # the currency the BOOK is kept in
     currency_symbol = "₹"
     has_volume = True
@@ -353,7 +356,8 @@ class Market:
                 break
         return {
             "id": self.id, "name": self.name, "is_open": is_open,
-            "timezone": str(self.tz), "currency": self.quote_currency,
+            "timezone": str(self.tz), "timezone_label": self.tz_label,
+            "currency": self.quote_currency,
             "currency_symbol": self.currency_symbol,
             "now_local": now.astimezone(self.tz).isoformat(),
             "next_open": timeutil.to_iso(nxt) if nxt else None,
@@ -408,6 +412,7 @@ class UsMarket(Market):
     id = "us"
     name = "US stocks"
     tz = NY
+    tz_label = "New York"
     quote_currency = "USD"
     currency_symbol = "$"
     cost_model_id = "us"
@@ -443,6 +448,7 @@ class ForexMarket(Market):
     id = "forex"
     name = "Forex"
     tz = NY
+    tz_label = "New York"
     quote_currency = "USD"      # the book is kept in USD; see symbol_currency
     currency_symbol = "$"
     has_volume = False          # Yahoo reports 0 volume on FX pairs
@@ -499,6 +505,7 @@ class CryptoMarket(Market):
     id = "crypto"
     name = "Crypto"
     tz = timeutil.UTC if hasattr(timeutil, "UTC") else dt.timezone.utc
+    tz_label = "UTC"
     quote_currency = "USD"
     currency_symbol = "$"
     fractional = True
@@ -692,6 +699,10 @@ def session_info(market: Market, window: dict, date: dt.date | None = None,
         "next": pair(upcoming),
         "next_date": upcoming_date.isoformat() if upcoming_date else None,
         "market_timezone": str(market.tz),
+        "market_timezone_label": market.tz_label,
+        # True when the market's own clock is the user's, so printing both
+        # would just be the same two times twice.
+        "same_clock_as_ist": market.tz_label == "India",
         "active_now": bool(sess and sess[0] <= now <= sess[1]),
     }
 
