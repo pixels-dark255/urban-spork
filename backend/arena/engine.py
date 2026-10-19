@@ -151,6 +151,11 @@ def normalise_config(raw: dict | None, base: dict | None = None,
     market = markets_mod.get(cfg["market"])
     if not (base or {}).get("symbols") and not raw.get("symbols"):
         cfg["symbols"] = list(market.default_symbols)
+    # Same rule for the stake: a market's own default applies only when the
+    # arena is being created. Once the user has set a figure it is theirs,
+    # and a later change to the default must not overwrite it.
+    if not (base or {}).get("daily_capital") and raw.get("daily_capital") is None:
+        cfg["daily_capital"] = float(market.default_capital_inr)
     cfg["window"] = markets_mod.normalise_window(
         raw.get("window"), market, base=(base or {}).get("window"))
     lev = raw.get("leverage", cfg.get("leverage", 1.0))

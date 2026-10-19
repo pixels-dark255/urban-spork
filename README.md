@@ -82,7 +82,7 @@ Run the tests with:
 
 ```bash
 pip install pytest pyflakes httpx
-python -m pytest tests/ -q          # 223 backend tests
+python -m pytest tests/ -q          # 226 backend tests
 python -m pyflakes .
 cd ../frontend && node --test app.helpers.test.js arena.helpers.test.js   # 46 frontend tests
 ```
@@ -356,19 +356,29 @@ market is open **and** your window is active; that overlap is one
 
 ### Money
 
-Capital is always set in **rupees** (default ₹10,000). At each session's
-start it is converted to the market's currency at a Yahoo FX rate, and that
-rate is **recorded in the session's own record**, so a settled session is
-never restated when the rupee moves. P&L is shown in the market's currency
-with the rupee figure underneath.
+Capital is always set in **rupees**, per arena. At each session's start it
+is converted to the market's currency at a Yahoo FX rate, and that rate is
+**recorded in the session's own record**, so a settled session is never
+restated when the rupee moves. P&L is shown in the market's currency with
+the rupee figure underneath.
 
-> **₹10,000 is about $113, which will not buy one share of most US
-> mega-caps.** US and Indian arenas trade whole shares, so at the default
-> capital a US arena skips most entries and the leaderboard stays empty —
-> the arena says exactly that instead of looking broken. Raise the capital
-> for that arena (₹50,000+ is a reasonable start) or pick lower-priced
-> symbols. Forex and crypto trade fractional units, so they are fine at
-> ₹10,000.
+Defaults differ by market, because what counts as a workable stake does:
+
+| Market | Default | Why |
+|---|---|---|
+| India, forex, crypto | **₹10,000** | forex and crypto size fractional positions; NSE shares are cheap enough |
+| **US stocks** | **₹50,000** | ₹10,000 is about $113, and US equities trade in **whole shares** |
+
+> One share of most US mega-caps costs more than $113, so at ₹10,000 a US
+> arena skipped most of its entries and showed an empty leaderboard. On
+> five sessions of $250 bars that is 50 skipped entries and nothing traded;
+> at ₹50,000 (about $565), eight strategies trade and nothing is skipped.
+> If you do set a US arena low, the arena says exactly why it is idle
+> instead of looking broken.
+
+Changing this later is a settings change, not a code one: **Arena → the
+market's tab → Settings → Capital per strategy**. A figure you have set is
+never overwritten by a change to the defaults.
 
 Leverage is available on forex and crypto only, capped at 5×, and off by
 default. It multiplies the position a book may hold, never the money it

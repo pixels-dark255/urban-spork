@@ -657,3 +657,49 @@ def test_bars_outside_the_window_are_dropped(tmp_path):
     for ts in kept.index:
         assert "19:00" <= ts.tz_convert(IST).strftime("%H:%M") <= "21:00"
     assert set(kept["session"]) == {"2026-10-19"}
+
+
+def test_each_market_starts_with_a_workable_stake():
+    """₹10,000 is about $113, and US equities trade in whole shares, so a
+    new US arena at the shared default skipped most entries and showed an
+    empty leaderboard. Its default is its own."""
+    defaults = {m: engine.new_state({"market": m})["config"]["daily_capital"]
+                for m in ("nse", "us", "forex", "crypto")}
+    assert defaults["us"] == 50_000.0
+    # The fractional markets size any position, so they need no more.
+    assert defaults["nse"] == defaults["forex"] == defaults["crypto"] == 10_000.0
+
+
+def test_a_capital_the_user_chose_is_never_overwritten_by_the_default():
+    chosen = engine.normalise_config({"daily_capital": 10_000}, market_id="us")
+    assert chosen["daily_capital"] == 10_000.0
+    later = engine.normalise_config({"symbols": ["AAPL"]}, base=chosen, market_id="us")
+    assert later["daily_capital"] == 10_000.0, "editing symbols must not reset the stake"
+
+
+def test_the_us_default_actually_affords_a_mega_cap_position():
+    """The point of the larger default: at mega-cap prices the old one
+    could not buy a single share, and nothing traded at all."""
+    market = markets.get("us")
+    window = market.default_window()
+    fx = markets.fx_for_session(market, ["AAPL"], {"USDINR=X": 88.5})
+    dates = markets.sessions_in_range(market, window, dt.date(2026, 10, 5), dt.date(2026, 10, 9))
+    frame = enrich(bars_for("us", dates, window, lo=250.0, hi=256.0, volume=9e6),
+                   market=market, window=window)
+
+    def run(capital):
+        state = engine.new_state({"market": "us", "symbols": ["AAPL"],
+                                  "daily_capital": capital})
+        for date in dates:
+            engine.start_day(state, date, fx=fx)
+            engine.process_bars(state, {"AAPL": frame}, now=None)
+            engine.settle_day(state)
+        return state
+
+    poor, funded = run(10_000.0), run(50_000.0)
+    assert engine.skipped_unaffordable(poor) > 0
+    assert not any(r["trades"] for r in engine.leaderboard(poor))
+    assert "will not buy a whole share" in engine.verdict(poor)["text"]
+
+    assert engine.skipped_unaffordable(funded) == 0
+    assert any(r["trades"] for r in engine.leaderboard(funded))

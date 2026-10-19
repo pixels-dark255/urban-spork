@@ -316,6 +316,10 @@ class Market:
     qty_step = 1.0
     default_symbols: list[str] = []
     presets: dict[str, list[str]] = {}
+    # Starting capital for a NEW arena on this market, always in rupees.
+    # Per market because what counts as a workable stake is not the same
+    # everywhere: see UsMarket.
+    default_capital_inr = 10_000.0
     cost_model_id = "nse"
     # Minutes before the session end: no new entries, then square everything off.
     entry_cutoff_before_end = 30
@@ -417,6 +421,12 @@ class UsMarket(Market):
     currency_symbol = "$"
     cost_model_id = "us"
     symbol_hint = "US tickers, e.g. AAPL, SPY"
+    # ₹10,000 is about $113, and US equities trade in whole shares - one
+    # share of most of the symbols below costs more than that, so a default
+    # of ₹10,000 produced an arena that skipped four entries in five and
+    # showed an empty leaderboard. ₹50,000 is roughly $565, enough to size
+    # a position in a mega-cap and still respect the risk limits.
+    default_capital_inr = 50_000.0
     default_symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "SPY", "QQQ"]
     presets = {
         "mega_cap": ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META"],
