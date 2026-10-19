@@ -1,0 +1,1424 @@
+From ffa8c69855d57a9769b620b738a0a2b69d5b1480 Mon Sep 17 00:00:00 2001
+From: Yashika <yashika@fedev.org>
+Date: Mon, 19 Oct 2026 10:09:19 +0000
+Subject: [PATCH 1/2] Desktop layout: top tab bar, full-width tabs, Arena as a
+ real tab
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+- Tabs (Analyse · Watchlist · Intraday · Arena) sit under the header on
+  screens >= 1024px; one tab at a time, max width 1440px, centred.
+- Analyse: search list beside the analysis; chart left (440px tall,
+  auto-sizing), prediction + signals right.
+- Watchlist / Intraday: list on the left, selected stock's detail on the
+  right (no pop-up); the whole card is clickable and the selection is
+  highlighted.
+- Arena is a normal tab - the corner button and pop-up overlay are gone.
+- Bookmarkable tabs (#arena, #view-watchlist ...), back/forward work,
+  arrow keys move between tabs, "/" jumps to search.
+- Polling only for the visible tab; pauses when the browser tab is hidden.
+- Removed the old 3-column grid, overlay CSS and always-on desktop polling.
+- Phone layout unchanged. Fix "−₹0" for sub-rupee losses.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KNQ65mKa3xPauNKDFd7oij
+---
+ frontend/app.js     | 184 ++++++++++++++++++++++++++++-------
+ frontend/arena.js   |   7 +-
+ frontend/index.html |  28 +++---
+ frontend/style.css  | 231 ++++++++++++++++++++++++--------------------
+ 4 files changed, 289 insertions(+), 161 deletions(-)
+
+diff --git a/frontend/app.js b/frontend/app.js
+index fc73a6f..afc5344 100644
+--- a/frontend/app.js
++++ b/frontend/app.js
+@@ -196,56 +196,103 @@ function stopViewPolling() {
+ }
+ 
+ document.querySelectorAll(".tab-btn").forEach((btn) => {
+-  btn.addEventListener("click", () => navigateTo(btn.dataset.view));
++  btn.addEventListener("click", () => {
++    // On desktop the Analyse tab also holds search, so open whichever of the
++    // two the user was last on rather than always dumping them on search.
++    const view = isDesktop() && btn.dataset.group === "analyse" ? lastAnalyseView : btn.dataset.view;
++    navigateTo(view);
++  });
+ });
+ document.getElementById("backFromAnalysis").addEventListener("click", () => history.back());
+ document.getElementById("backFromWatchDetail").addEventListener("click", () => history.back());
+ document.getElementById("backFromIntradayDetail").addEventListener("click", () => history.back());
+ 
++// Keyboard: arrow keys move between visible tabs (desktop tab bar).
++document.querySelector(".tab-bar").addEventListener("keydown", (e) => {
++  if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
++  const tabs = [...document.querySelectorAll(".tab-btn")].filter((b) => b.offsetParent !== null);
++  const i = tabs.indexOf(document.activeElement);
++  if (i < 0) return;
++  const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
++  next.focus();
++  next.click();
++  e.preventDefault();
++});
++
++// "/" focuses stock search from anywhere (unless typing in a field).
++document.addEventListener("keydown", (e) => {
++  if (e.key !== "/" || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
++  e.preventDefault();
++  if (isDesktop()) navigateTo(lastAnalyseView); else navigateTo("view-search");
++  setTimeout(() => document.getElementById("searchInput").focus(), 0);
++});
++
++// Desktop shows a whole tab at a time: some tabs are two views side by side
++// (list + detail). Mobile still shows exactly one view.
++const VIEW_GROUP = {
++  "view-search": "analyse", "view-analysis": "analyse",
++  "view-watchlist": "watchlist", "view-watch-detail": "watchlist",
++  "view-intraday": "intraday", "view-intraday-detail": "intraday",
++  "view-arena": "arena",
++};
++const HASH_ALIASES = { analyse: "view-analysis", search: "view-search", watchlist: "view-watchlist",
++  intraday: "view-intraday", arena: "view-arena" };
++let lastAnalyseView = "view-search";
++
+ function navigateTo(viewId, extraState = {}) {
+   history.pushState({ view: viewId, ...extraState }, "", `#${viewId}`);
+   renderView(viewId, extraState);
+ }
+ 
+ window.addEventListener("popstate", (e) => {
+-  const state = e.state || { view: "view-search" };
++  // A typed/bookmarked hash (e.g. #arena) arrives with no state.
++  const state = e.state || { view: viewFromHash() };
+   renderView(state.view, state);
+ });
+ 
+-// First load: establish the base history entry so back() from Search exits
+-// cleanly instead of landing on an undefined state.
+-history.replaceState({ view: "view-search" }, "", "#view-search");
+-
+-// ---------- Desktop always-on side panels ----------
+-// On mobile this whole app is a single-view SPA (one .view visible at a
+-// time, driven by the tab bar + browser history). On desktop, watchlist
+-// and intraday become permanent side columns (see the >=1024px grid in
+-// style.css) instead of tabs you navigate to - so they need to load and
+-// keep polling independently of whatever's currently in the center
+-// analysis panel, not wait for a navigateTo() that will never come once
+-// the tab bar is hidden.
+ const isDesktop = () => window.matchMedia("(min-width: 1024px)").matches;
+-let desktopPanelsInitialized = false;
+-function initDesktopPanelsIfNeeded() {
+-  if (!isDesktop() || desktopPanelsInitialized) return;
+-  desktopPanelsInitialized = true;
+-  loadWatchlist();
+-  loadIntradayList();
+-  setInterval(() => loadWatchlist(true), 30000);
+-  setInterval(() => loadIntradayList(true), 20000);
++
++function viewFromHash() {
++  const h = (location.hash || "").replace(/^#/, "");
++  if (VIEW_GROUP[h]) return h;
++  return HASH_ALIASES[h] || "view-search";
++}
++
++function markSelected() {
++  document.querySelectorAll("#watchlistContent .watch-card").forEach((c) => {
++    const link = c.querySelector(".watch-symbol-link");
++    c.classList.toggle("selected", !!link && String(link.dataset.id) === String(currentWatchItemId));
++  });
++  document.querySelectorAll("#intradayContent .watch-card").forEach((c) => {
++    const link = c.querySelector(".intraday-card-link");
++    c.classList.toggle("selected", !!link && link.dataset.symbol === currentIntradaySymbol);
++  });
+ }
+-initDesktopPanelsIfNeeded();
+-window.addEventListener("resize", initDesktopPanelsIfNeeded);
+ 
+ function renderView(viewId, state = {}) {
++  if (!VIEW_GROUP[viewId]) viewId = "view-search";
++  const group = VIEW_GROUP[viewId];
++  if (group === "analyse") lastAnalyseView = viewId;
++  document.body.dataset.tab = group;
+   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
+   document.getElementById(viewId).classList.add("active");
+-  document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === viewId));
++  document.querySelectorAll(".tab-btn").forEach((b) => {
++    const on = isDesktop() ? b.dataset.group === group : b.dataset.view === viewId;
++    b.classList.toggle("active", on);
++    b.setAttribute("aria-selected", on ? "true" : "false");
++  });
+   stopViewPolling();
++  const desktop = isDesktop();
+ 
+-  if (viewId === "view-watchlist") {
++  if (viewId === "view-watchlist" || (desktop && viewId === "view-watch-detail")) {
++    if (viewId === "view-watch-detail") currentWatchItemId = state.itemId ?? currentWatchItemId;
+     loadWatchlist();
+-    startViewPolling(() => loadWatchlist(true), 30000);
++    const showDetail = viewId === "view-watch-detail" || (desktop && currentWatchItemId != null);
++    if (showDetail && currentWatchItemId != null) loadWatchDetail(currentWatchItemId);
++    startViewPolling(() => {
++      loadWatchlist(true);
++      if (showDetail && currentWatchItemId != null) loadWatchDetail(currentWatchItemId, true);
++    }, 30000);
+   } else if (viewId === "view-analysis") {
+     const backBtn = document.getElementById("backFromAnalysis");
+     if (state.fromWatchlist && state.itemId != null) {
+@@ -265,9 +312,15 @@ function renderView(viewId, state = {}) {
+       loadWatchDetail(currentWatchItemId);
+       startViewPolling(() => loadWatchDetail(currentWatchItemId, true), 120000);
+     }
+-  } else if (viewId === "view-intraday") {
++  } else if (viewId === "view-intraday" || (desktop && viewId === "view-intraday-detail")) {
++    if (viewId === "view-intraday-detail") currentIntradaySymbol = state.symbol ?? currentIntradaySymbol;
+     loadIntradayList();
+-    startViewPolling(() => loadIntradayList(true), 20000);
++    const showDetail = desktop && currentIntradaySymbol;
++    if (showDetail) loadIntradayDetail(currentIntradaySymbol);
++    startViewPolling(() => {
++      loadIntradayList(true);
++      if (showDetail) loadIntradayDetail(currentIntradaySymbol, true);
++    }, 20000);
+   } else if (viewId === "view-arena") {
+     if (typeof loadArena === "function") {
+       loadArena();
+@@ -280,6 +333,31 @@ function renderView(viewId, state = {}) {
+       startViewPolling(() => loadIntradayDetail(currentIntradaySymbol, true), 20000);
+     }
+   }
++  markSelected();
++}
++
++// Polling pauses while the browser tab is hidden and resumes on return.
++document.addEventListener("visibilitychange", () => {
++  if (document.hidden) stopViewPolling();
++  else renderView(history.state?.view || viewFromHash(), history.state || {});
++});
++
++// Re-evaluate the layout when crossing the desktop breakpoint.
++let wasDesktop = isDesktop();
++window.addEventListener("resize", () => {
++  if (isDesktop() !== wasDesktop) {
++    wasDesktop = isDesktop();
++    renderView(history.state?.view || viewFromHash(), history.state || {});
++  }
++});
++
++// First load: honour a bookmarked tab (#arena, #view-watchlist, ...).
++{
++  const initial = viewFromHash();
++  history.replaceState({ view: initial }, "", `#${initial}`);
++  // Deferred so the rest of app.js (and arena.js) has defined its loaders.
++  window.addEventListener("DOMContentLoaded", () => renderView(initial, {}));
++  if (document.readyState !== "loading") setTimeout(() => renderView(initial, {}), 0);
+ }
+ 
+ // Kept for compatibility with existing calls below - pushes new history.
+@@ -388,11 +466,19 @@ async function loadIntradayList(silent = false) {
+       return;
+     }
+     content.innerHTML = data.stocks.map(renderIntradayCard).join("");
+-    content.querySelectorAll(".intraday-card-link").forEach((el) => {
+-      el.addEventListener("click", () => {
+-        navigateTo("view-intraday-detail", { symbol: el.dataset.symbol });
++    // Whole card opens the detail (on desktop it appears beside the list).
++    content.querySelectorAll(".watch-card").forEach((card) => {
++      const link = card.querySelector(".intraday-card-link");
++      if (!link) return;
++      card.classList.add("clickable-card");
++      card.addEventListener("click", (e) => {
++        if (e.target.closest("button")) return;
++        // On phones the timeframe columns toggle their verdict instead.
++        if (!isDesktop() && e.target.closest(".tf-col-clickable")) return;
++        navigateTo("view-intraday-detail", { symbol: link.dataset.symbol });
+       });
+     });
++    markSelected();
+     content.querySelectorAll(".tf-col-clickable").forEach((el) => {
+       el.addEventListener("click", () => {
+         el.querySelector(".verdict-pill").classList.toggle("hidden");
+@@ -542,7 +628,7 @@ function renderIntradayChart(tf, t) {
+     try { intradayChartInstances[tf].remove(); } catch (e) { /* already gone */ }
+   }
+   const chart = LightweightCharts.createChart(container, {
+-    height: 220,
++    autoSize: true,
+     layout: { background: { color: "transparent" }, textColor: "#8FA39A" },
+     grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
+     rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
+@@ -754,9 +840,13 @@ function renderAnalysis(data) {
+       <span class="price-current">₹${data.current_price.toFixed(2)}</span>
+     </div>
+ 
++    <div class="analysis-grid">
++    <div class="analysis-main">
+     <div id="priceChart" class="price-chart-container"></div>
+ 
+     <div class="horizon-row" id="horizonRow">${horizonPills}</div>
++    </div>
++    <div class="analysis-side">
+ 
+     <div class="prediction-card">
+       <div class="label">predicted price · ${data.horizon_label} from now</div>
+@@ -775,6 +865,8 @@ function renderAnalysis(data) {
+     <div class="disclaimer">${data.disclaimer}</div>
+ 
+     <button class="add-watchlist-btn" id="addWatchlistBtn">Add to watchlist &amp; track live</button>
++    </div>
++    </div>
+ 
+     <div class="section-heading"><span class="eyebrow">context</span><h2 style="font-size:17px;">Recent news</h2></div>
+     ${newsHtml}
+@@ -851,7 +943,11 @@ function renderWatchAnalysis(data, itemId, silent = false) {
+       <span class="price-current">₹${data.current_price.toFixed(2)}</span>
+     </div>
+ 
++    <div class="analysis-grid">
++    <div class="analysis-main">
+     <div id="priceChart" class="price-chart-container"></div>
++    </div>
++    <div class="analysis-side">
+ 
+     <div class="prediction-card">
+       <div class="label">predicted price right now, using this stock's refined weights</div>
+@@ -872,6 +968,8 @@ function renderWatchAnalysis(data, itemId, silent = false) {
+     <div class="disclaimer">${data.disclaimer} Raw daily error naturally stays noisy - directional accuracy above and the weight trend on the next screen are the honest signs of whether refinement is working.</div>
+ 
+     <button class="add-watchlist-btn" id="viewBacktestBtn">View 90-day backtest &amp; refinement log ›</button>
++    </div>
++    </div>
+   `;
+ 
+   document.getElementById("viewBacktestBtn").addEventListener("click", () => openWatchDetail(itemId));
+@@ -923,7 +1021,7 @@ function renderPriceChart(container, historical, forecast) {
+     priceChartInstance = null;
+   }
+   const chart = LightweightCharts.createChart(container, {
+-    height: 260,
++    autoSize: true,
+     layout: { background: { color: "transparent" }, textColor: "#8FA39A" },
+     grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
+     rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
+@@ -988,6 +1086,13 @@ async function addCurrentToWatchlist() {
+ }
+ 
+ // ---------- Watch analysis (live, right now, using this stock's refined weights) ----------
++// Watchlist row: on desktop, show its detail beside the list; on a phone,
++// open its live analysis (the original flow).
++function openWatchItem(itemId) {
++  if (isDesktop()) navigateTo("view-watch-detail", { itemId });
++  else openWatchAnalysis(itemId);
++}
++
+ function openWatchAnalysis(itemId) {
+   navigateTo("view-analysis", { itemId, fromWatchlist: true });
+ }
+@@ -1181,9 +1286,16 @@ async function loadWatchlist(silent = false) {
+         refreshTicker();
+       });
+     });
+-    content.querySelectorAll(".watch-symbol-link").forEach((el) => {
+-      el.addEventListener("click", () => openWatchAnalysis(el.dataset.id));
++    content.querySelectorAll(".watch-card").forEach((card) => {
++      const link = card.querySelector(".watch-symbol-link");
++      if (!link) return;
++      card.classList.add("clickable-card");
++      card.addEventListener("click", (e) => {
++        if (e.target.closest("button")) return;
++        openWatchItem(link.dataset.id);
++      });
+     });
++    markSelected();
+   } catch (e) {
+     if (!silent) content.innerHTML = `<p class="muted">Could not load watchlist.</p>`;
+   }
+diff --git a/frontend/arena.js b/frontend/arena.js
+index 53102a9..1402f10 100644
+--- a/frontend/arena.js
++++ b/frontend/arena.js
+@@ -9,12 +9,11 @@ const ARENA_LEVEL_CLASS = {
+   early: "arena-verdict-neutral", waiting: "arena-verdict-neutral",
+ };
+ let arenaData = null;
+-document.getElementById("backFromArena").addEventListener("click", () => history.back());
+-document.getElementById("openArenaBtn").addEventListener("click", () => navigateTo("view-arena"));
+ let arenaOpenStrategy = null;
+ 
+ function inr(n, withSign = true) {
+   if (n == null || Number.isNaN(n)) return "—";
++  n = Math.round(n);            // so -0.4 shows as ₹0, not "−₹0"
+   const sign = withSign && n > 0 ? "+" : n < 0 ? "−" : "";
+   return `${sign}₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
+ }
+@@ -92,7 +91,7 @@ function renderTrades(trades) {
+     <tbody>${trades.map((t) => `
+       <tr>
+         <td>${fmtISTDateTime(t.exit_at)}</td>
+-        <td>${escapeHtml(t.symbol.replace(/\.(NS|BO)$/, ""))}${t.shadow ? ' <span class="arena-sub">shadow</span>' : ""}</td>
++        <td>${t.side === "SHORT" ? '<span class="arena-tag arena-short">short</span> ' : ""}${escapeHtml(t.symbol.replace(/\.(NS|BO)$/, ""))}${t.shadow ? ' <span class="arena-sub">shadow</span>' : ""}</td>
+         <td>${t.qty}</td>
+         <td>₹${t.entry_price} → ₹${t.exit_price}</td>
+         <td class="${pnlClass(t.net)}">${inr(t.net)}<div class="arena-sub">₹${t.charges} costs</div></td>
+@@ -215,7 +214,7 @@ function renderArena(data) {
+   const strategyChecks = data.strategies.map((s) => `
+     <label class="arena-check">
+       <input type="checkbox" name="strategy" value="${escapeHtml(s.id)}" ${c.strategies.includes(s.id) ? "checked" : ""} ${s.benchmark ? "checked disabled" : ""}>
+-      <span><b>${escapeHtml(s.name)}</b><br><span class="arena-sub">${escapeHtml(s.description)}</span></span>
++      <span><b>${escapeHtml(s.name)}</b>${s.both_sides ? ' <span class="arena-tag">long + short</span>' : ""}<br><span class="arena-sub">${escapeHtml(s.description)}</span></span>
+     </label>`).join("");
+   const r = c.risk;
+   document.getElementById("arenaContent").innerHTML = `
+diff --git a/frontend/index.html b/frontend/index.html
+index 8f1380a..125d4a7 100644
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -24,7 +24,6 @@
+     <div class="app-header-top">
+       <h1>Tickerboard</h1>
+       <span class="market-status-pill" id="marketStatusPill">…</span>
+-      <button class="arena-open-btn" id="openArenaBtn" aria-label="Open Strategy Arena">⚔ Arena</button>
+     </div>
+     <p class="eyebrow">nse &middot; bse &middot; personal terminal</p>
+   </header>
+@@ -41,7 +40,7 @@
+ 
+   <main id="view-analysis" class="view">
+     <button class="back-btn" id="backFromAnalysis">&larr; back to search</button>
+-    <div id="analysisContent"><p class="muted">Pick a stock to analyse.</p></div>
++    <div id="analysisContent"><p class="muted empty-state">Search a stock to see its chart, prediction and signals.</p></div>
+   </main>
+ 
+   <main id="view-watchlist" class="view">
+@@ -57,7 +56,7 @@
+ 
+   <main id="view-watch-detail" class="view">
+     <button class="back-btn" id="backFromWatchDetail">&larr; back to watchlist</button>
+-    <div id="watchDetailContent"><p class="muted">Select a watchlist stock to see its 90-day backtest.</p></div>
++    <div id="watchDetailContent"><p class="muted empty-state">Select a stock on the left to see its live track record and 90-day backtest.</p></div>
+   </main>
+ 
+   <main id="view-intraday" class="view">
+@@ -76,35 +75,30 @@
+   </main>
+ 
+   <main id="view-intraday-detail" class="view">
+-    <div class="modal-card">
+-      <button class="back-btn" id="backFromIntradayDetail">&larr; back to intraday</button>
+-      <div id="intradayDetailContent"><p class="muted">Loading…</p></div>
+-    </div>
++    <button class="back-btn" id="backFromIntradayDetail">&larr; back to intraday</button>
++    <div id="intradayDetailContent"><p class="muted empty-state">Select a stock on the left to see its 5m / 15m / 30m paper trades.</p></div>
+   </main>
+ 
+   <main id="view-arena" class="view">
+-    <div class="modal-card">
+-      <button class="back-btn arena-close" id="backFromArena">&larr; close</button>
+-      <div id="arenaContent"><p class="muted">Loading…</p></div>
+-    </div>
++    <div id="arenaContent"><p class="muted">Loading…</p></div>
+   </main>
+ 
+   </div>
+ 
+-  <nav class="tab-bar">
+-    <button class="tab-btn active" data-view="view-search">
++  <nav class="tab-bar" role="tablist" aria-label="Sections">
++    <button class="tab-btn active" role="tab" data-view="view-search" data-group="analyse">
+       <span class="tab-icon">◎</span><span>Search</span>
+     </button>
+-    <button class="tab-btn" data-view="view-analysis">
++    <button class="tab-btn" role="tab" data-view="view-analysis" data-group="analyse">
+       <span class="tab-icon">◈</span><span>Analyse</span>
+     </button>
+-    <button class="tab-btn" data-view="view-watchlist">
++    <button class="tab-btn" role="tab" data-view="view-watchlist" data-group="watchlist">
+       <span class="tab-icon">◐</span><span>Watchlist</span>
+     </button>
+-    <button class="tab-btn" data-view="view-intraday">
++    <button class="tab-btn" role="tab" data-view="view-intraday" data-group="intraday">
+       <span class="tab-icon">⚡</span><span>Intraday</span>
+     </button>
+-    <button class="tab-btn" data-view="view-arena">
++    <button class="tab-btn" role="tab" data-view="view-arena" data-group="arena">
+       <span class="tab-icon">⚔</span><span>Arena</span>
+     </button>
+   </nav>
+diff --git a/frontend/style.css b/frontend/style.css
+index 106f362..71fb6e7 100644
+--- a/frontend/style.css
++++ b/frontend/style.css
+@@ -392,6 +392,7 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
+   overflow: hidden;
+   background: var(--paper-raised);
+ }
++.price-chart-container { height: 280px; }
+ .intraday-chart { height: 220px; }
+ 
+ /* ---- Watchlist ---- */
+@@ -514,87 +515,7 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
+   .skeleton-line, .skeleton-block { animation: none; opacity: 0.6; }
+ }
+ 
+-/* ---- Desktop 3-column dashboard (>=1024px) ---- */
+-@media (min-width: 1024px) {
+-  .ticker-strip, .app-header { padding-left: 24px; padding-right: 24px; }
+-
+-  .app-body {
+-    display: grid;
+-    grid-template-columns: 340px 1fr 400px;
+-    grid-template-rows: auto 1fr;
+-    gap: 18px;
+-    align-items: start;
+-    padding: 8px 24px 32px;
+-    max-width: 1600px;
+-    margin: 0 auto;
+-  }
+-
+-  /* Left column: quick search on top, watchlist below - both always on */
+-  #view-search { grid-column: 1; grid-row: 1; }
+-  #view-watchlist { grid-column: 1; grid-row: 2; }
+-
+-  /* Center column: analysis + chart, spans full height */
+-  #view-analysis { grid-column: 2; grid-row: 1 / span 2; }
+-
+-  /* Right column: intraday on top, that stock's 90-day backtest below */
+-  #view-intraday { grid-column: 3; grid-row: 1; }
+-  #view-watch-detail { grid-column: 3; grid-row: 2; }
+-
+-  /* These five are always visible on desktop, not toggled by .active -
+-     the single-view mobile SPA model doesn't apply once there's room for
+-     a real dashboard. */
+-  #view-search, #view-watchlist, #view-analysis, #view-intraday, #view-watch-detail {
+-    display: block !important;
+-    animation: none;
+-    max-height: calc(100vh - 140px);
+-    overflow-y: auto;
+-  }
+-
+-  /* Detail drill-downs that don't have a natural static column (intraday's
+-     per-stock trade log/chart) become a centered overlay instead of trying
+-     to force a 6th destination into a 3-column grid. */
+-  #view-intraday-detail {
+-    display: none;
+-    position: fixed; inset: 0;
+-    background: rgba(0, 0, 0, 0.55);
+-    z-index: 50;
+-    padding: 40px;
+-    align-items: flex-start;
+-    justify-content: center;
+-    overflow-y: auto;
+-  }
+-  #view-intraday-detail.active { display: flex; animation: view-in 180ms ease; }
+-  #view-intraday-detail .modal-card {
+-    background: var(--paper);
+-    border: 1px solid var(--hairline);
+-    border-radius: 14px;
+-    padding: 20px 24px 32px;
+-    max-width: 720px;
+-    width: 100%;
+-  }
+-
+-  /* No "back" needed when the destination is already visible in another
+-     column - back-buttons only still make sense for the overlay. */
+-  #backFromAnalysis, #backFromWatchDetail { display: none; }
+-
+-  .tab-bar { display: none; }
+-  body { padding-bottom: 0; }
+-
+-  #view-search .search-row input { font-size: 15px; }
+-}
+-
+-@media (max-width: 1023px) {
+-  .modal-card { all: unset; display: block; }
+-}
+-
+ /* ---------- Strategy Arena ---------- */
+-.arena-open-btn {
+-  display: none;
+-  margin-left: auto;
+-  background: var(--paper-raised); color: var(--brass);
+-  border: 1px solid var(--brass-dim); border-radius: 999px;
+-  padding: 5px 14px; font-family: var(--font-body); font-size: 13px; cursor: pointer;
+-}
+ .arena-verdict {
+   border-radius: 10px; padding: 12px 14px; margin: 12px 0 8px;
+   font-size: 14px; line-height: 1.45; border: 1px solid var(--hairline);
+@@ -634,33 +555,9 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
+ .arena-reset { display: block; margin-top: 14px; }
+ 
+ @media (max-width: 1023px) {
+-  #backFromArena { display: none; }
+   .tab-btn { font-size: 10.5px; }
+ }
+ 
+-@media (min-width: 1024px) {
+-  .arena-open-btn { display: inline-block; }
+-  #view-arena {
+-    display: none;
+-    position: fixed; inset: 0;
+-    background: rgba(0, 0, 0, 0.55);
+-    z-index: 50;
+-    padding: 40px;
+-    align-items: flex-start;
+-    justify-content: center;
+-    overflow-y: auto;
+-  }
+-  #view-arena.active { display: flex; animation: view-in 180ms ease; }
+-  #view-arena .modal-card {
+-    background: var(--paper);
+-    border: 1px solid var(--hairline);
+-    border-radius: 14px;
+-    padding: 20px 24px 32px;
+-    max-width: 980px;
+-    width: 100%;
+-  }
+-}
+-
+ /* ---- Arena: wake-up / data-health status ---- */
+ .arena-warn {
+   background: rgba(193, 68, 60, 0.12);
+@@ -699,3 +596,129 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
+   color: var(--mist);
+   white-space: nowrap;
+ }
++
++
++/* ======================================================================
++   Desktop layout (>= 1024px): a top tab bar, one tab at a time, using the
++   full width. Watchlist and Intraday are list + detail side by side; the
++   Analyse tab holds search beside the analysis. Phones keep the bottom
++   tab bar and single-view behaviour above.
++   ====================================================================== */
++.clickable-card { cursor: pointer; }
++.empty-state { padding: 28px 0; }
++
++@media (min-width: 1024px) {
++  body { padding-bottom: 0; }
++  .ticker-strip { order: 0; }
++  .app-header { order: 1; padding: 14px 32px 10px; }
++  .tab-bar { order: 2; }
++  .app-body { order: 3; }
++  .toast-host { order: 4; }
++
++  .app-header-top { justify-content: flex-start; gap: 14px; }
++  .app-header .eyebrow { margin-top: 2px; }
++
++  /* Top tab bar */
++  .tab-bar {
++    position: sticky; top: 0; z-index: 20;
++    justify-content: flex-start; gap: 4px;
++    padding: 0 32px;
++    border-top: none; border-bottom: 1px solid var(--hairline);
++    background: var(--ink);
++  }
++  .tab-btn {
++    flex: 0 0 auto;
++    flex-direction: row; gap: 8px;
++    font-size: 14px; font-weight: 500;
++    padding: 14px 18px 12px;
++    border-bottom: 2px solid transparent;
++    border-radius: 0;
++    color: var(--mist);
++  }
++  .tab-btn:hover { color: var(--bone); background: rgba(255, 255, 255, 0.03); }
++  .tab-btn.active { color: var(--brass); border-bottom-color: var(--brass); }
++  .tab-btn:active { transform: none; }
++  .tab-icon { font-size: 15px; }
++  .tab-btn[data-view="view-search"] { display: none; }   /* search lives in Analyse */
++
++  .app-body {
++    width: 100%;
++    max-width: 1440px;
++    margin: 0 auto;
++    padding: 20px 32px 40px;
++    display: grid;
++    gap: 24px;
++    align-items: start;
++  }
++  .view { padding: 0; }
++  .view.active { animation: none; }
++
++  /* Which views each tab shows */
++  body[data-tab="analyse"] .app-body { grid-template-columns: 340px minmax(0, 1fr); }
++  body[data-tab="watchlist"] .app-body,
++  body[data-tab="intraday"] .app-body { grid-template-columns: 380px minmax(0, 1fr); }
++  body[data-tab="arena"] .app-body { grid-template-columns: minmax(0, 1fr); }
++
++  body[data-tab="analyse"] #view-search,
++  body[data-tab="analyse"] #view-analysis,
++  body[data-tab="watchlist"] #view-watchlist,
++  body[data-tab="watchlist"] #view-watch-detail,
++  body[data-tab="intraday"] #view-intraday,
++  body[data-tab="intraday"] #view-intraday-detail,
++  body[data-tab="arena"] #view-arena { display: block; }
++
++  /* List columns scroll on their own; the detail column is the page */
++  #view-search, #view-watchlist, #view-intraday {
++    position: sticky; top: 64px;
++    max-height: calc(100vh - 84px);
++    overflow-y: auto;
++    padding-right: 6px;
++  }
++  #view-analysis, #view-watch-detail, #view-intraday-detail {
++    background: var(--paper);
++    border: 1px solid var(--hairline);
++    border-radius: 14px;
++    padding: 22px 26px 30px;
++    min-height: 60vh;
++  }
++
++  /* Side-by-side views don't need "back" buttons */
++  #backFromAnalysis, #backFromWatchDetail, #backFromIntradayDetail { display: none; }
++
++  /* Selected row in a list */
++  .watch-card.selected { border-color: var(--brass); box-shadow: 0 0 0 1px var(--brass-dim) inset; }
++  .clickable-card:hover { border-color: var(--brass-dim); }
++
++  /* Analysis: chart left, prediction + signals right */
++  .analysis-grid {
++    display: grid;
++    grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
++    gap: 24px;
++    align-items: start;
++  }
++  .analysis-side .prediction-card:first-child { margin-top: 12px; }
++  .price-chart-container { height: 440px; }
++  .intraday-chart { height: 260px; }
++
++  /* Arena tab: full width, readable table */
++  #view-arena {
++    background: var(--paper);
++    border: 1px solid var(--hairline);
++    border-radius: 14px;
++    padding: 22px 28px 32px;
++  }
++  .arena-board { width: 100%; }
++  .arena-board th { position: sticky; top: 0; background: var(--paper); z-index: 1; }
++  .arena-board td, .arena-board th { padding-top: 10px; padding-bottom: 10px; }
++  .arena-board td:not(:nth-child(2)), .arena-board th:not(:nth-child(2)) { text-align: right; }
++  .arena-board td { font-variant-numeric: tabular-nums; }
++  .arena-detail-row td { text-align: left !important; }
++  .arena-name { min-width: 220px; }
++}
++
++@media (min-width: 1440px) {
++  body[data-tab="analyse"] .app-body { grid-template-columns: 380px minmax(0, 1fr); }
++  body[data-tab="watchlist"] .app-body,
++  body[data-tab="intraday"] .app-body { grid-template-columns: 420px minmax(0, 1fr); }
++}
++.arena-tag.arena-short { color: var(--signal-red); border-color: rgba(193, 68, 60, 0.5); }
+-- 
+2.43.0
+
+
+From 3b51f43e5c86ac7980a096d5afcd589366df4186 Mon Sep 17 00:00:00 2001
+From: Yashika <yashika@fedev.org>
+Date: Mon, 19 Oct 2026 10:09:19 +0000
+Subject: [PATCH 2/2] Arena: short selling + six new long/short strategies
+
+- Engine: strategies can SHORT (intraday MIS). Mirrored stop/target/gap
+  rules, correct legs (STT on the short entry, stamp duty on the cover),
+  1x margin so shorts never size bigger than longs, shorts marked to market.
+- New strategies (both directions): opening-range breakout long+short,
+  SuperTrend (10,3) flip, VWAP 2-sigma band mean-reversion, trend pullback
+  to EMA 21, gap fade, intraday momentum (first 30 min -> last hour).
+- New causal indicators: EMA 50, session VWAP spread, swing levels,
+  previous-session close, session open, day high/low, 09:45 close,
+  SuperTrend.
+- Existing arenas get the new strategies switched on once
+  (known_strategies); unticking one later sticks.
+- UI: "short" tag on trades, "long + short" tag in settings.
+- 11 new tests, incl. a no-lookahead check over every indicator column.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KNQ65mKa3xPauNKDFd7oij
+---
+ backend/arena/engine.py                 | 125 ++++++++++---
+ backend/arena/service.py                |   5 +
+ backend/arena/strategies.py             | 223 +++++++++++++++++++++++-
+ backend/tests/test_arena_strategies2.py | 181 +++++++++++++++++++
+ 4 files changed, 502 insertions(+), 32 deletions(-)
+ create mode 100644 backend/tests/test_arena_strategies2.py
+
+diff --git a/backend/arena/engine.py b/backend/arena/engine.py
+index b0c31af..c814bdf 100644
+--- a/backend/arena/engine.py
++++ b/backend/arena/engine.py
+@@ -43,7 +43,7 @@ import pandas as pd
+ 
+ import timeutil
+ from arena import costs as costs_mod
+-from arena.strategies import STRATEGIES, LAST_ENTRY_MINUTE
++from arena.strategies import STRATEGIES, LAST_ENTRY_MINUTE, ORIGINAL_STRATEGY_IDS
+ 
+ SQUARE_OFF_MINUTE = 15 * 60 + 15   # 15:15 IST
+ SESSION_END_MINUTE = 15 * 60 + 30
+@@ -126,6 +126,12 @@ def normalise_config(raw: dict | None, base: dict | None = None) -> dict:
+ 
+ 
+ def new_state(config: dict | None = None) -> dict:
++    state = _new_state(config)
++    state["config"].setdefault("known_strategies", list(STRATEGIES))
++    return state
++
++
++def _new_state(config: dict | None = None) -> dict:
+     return {
+         "config": normalise_config(config),
+         "books": {},
+@@ -178,9 +184,36 @@ def _blank_day() -> dict:
+ # Day lifecycle
+ # ---------------------------------------------------------------------------
+ 
++def adopt_new_strategies(state: dict) -> list[str]:
++    """Switch on strategies added to the app since this arena was created -
++    once. `known_strategies` remembers what the user has already been
++    offered, so unticking one later sticks. Returns the ids switched on."""
++    cfg = state["config"]
++    known = cfg.get("known_strategies")
++    if known is None:
++        known = list(ORIGINAL_STRATEGY_IDS)
++    added = []
++    for sid in STRATEGIES:
++        if sid not in known:
++            known.append(sid)
++            if sid not in cfg["strategies"]:
++                cfg["strategies"].append(sid)
++                added.append(sid)
++    cfg["known_strategies"] = known
++    # Keep the yardstick last so it reads as the last row everywhere.
++    if "benchmark" in cfg["strategies"]:
++        cfg["strategies"] = [x for x in cfg["strategies"] if x != "benchmark"] + ["benchmark"]
++    if added and state.get("day") and not state.get("day_settled"):
++        # Mid-session: new strategies join with today's capital.
++        for sid in added:
++            state["books"].setdefault(sid, _new_book(sid, cfg["daily_capital"]))
++    return added
++
++
+ def start_day(state: dict, date: str, caught_up: bool = False) -> None:
+     if state["day"] and not state["day_settled"]:
+         settle_day(state, caught_up=caught_up)
++    adopt_new_strategies(state)
+     cfg = state["config"]
+     capital = cfg["daily_capital"]
+     for sid in cfg["strategies"]:
+@@ -347,14 +380,25 @@ def process_bar(state: dict, sym: str, ts, row, prev, n_symbols: int) -> None:
+ def _exit_decision(strat, row, prev, pos, minute):
+     o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
+     stop, target = pos["stop"], pos["target"]
+-    if o <= stop:
+-        return o, "stop_loss_gap"
+-    if l <= stop:
+-        return stop, "stop_loss"          # checked before target: pessimistic
+-    if o >= target:
+-        return o, "target"
+-    if h >= target:
+-        return target, "target"
++    if pos.get("side", "LONG") == "SHORT":
++        # Mirror image: the stop sits ABOVE the entry, the target below.
++        if o >= stop:
++            return o, "stop_loss_gap"
++        if h >= stop:
++            return stop, "stop_loss"      # checked before target: pessimistic
++        if o <= target:
++            return o, "target"
++        if l <= target:
++            return target, "target"
++    else:
++        if o <= stop:
++            return o, "stop_loss_gap"
++        if l <= stop:
++            return stop, "stop_loss"      # checked before target: pessimistic
++        if o >= target:
++            return o, "target"
++        if h >= target:
++            return target, "target"
+     if minute >= SQUARE_OFF_MINUTE:
+         return c, "eod_square_off"
+     why = strat.exit(row, prev, pos)
+@@ -375,33 +419,44 @@ def _maybe_enter(book, strat, sym, row, prev, minute, at, risk, ccfg, n_symbols)
+     if not sig:
+         return
+ 
+-    fill = costs_mod.fill_price("BUY", float(row["Close"]), ccfg)
++    # Shorts (intraday MIS) sell first and buy back later. Margin is kept at
++    # 1x - the full notional is set aside - so a short can't size bigger
++    # than a long would, and leverage never flatters the comparison.
++    side = "SHORT" if sig.get("side") == "SHORT" else "LONG"
++    entry_leg = "SELL" if side == "SHORT" else "BUY"
++    fill = costs_mod.fill_price(entry_leg, float(row["Close"]), ccfg)
+     stop, target = float(sig["stop"]), float(sig["target"])
+-    if not (math.isfinite(stop) and math.isfinite(target)) or stop >= fill or target <= fill:
++    if not (math.isfinite(stop) and math.isfinite(target)):
+         return
++    if side == "LONG" and (stop >= fill or target <= fill):
++        return
++    if side == "SHORT" and (stop <= fill or target >= fill):
++        return
++    risk_per_share = abs(fill - stop)
+     equity = book["day_start_equity"]
+     if strat.benchmark:
+         qty = int((equity / n_symbols) // fill)
+     else:
+-        qty_risk = int((equity * risk["risk_per_trade_pct"] / 100) // (fill - stop))
++        qty_risk = int((equity * risk["risk_per_trade_pct"] / 100) // risk_per_share)
+         qty_cap = int((equity * risk["max_position_pct"] / 100) // fill)
+         qty = min(qty_risk, qty_cap)
+-    est_buy_charges = costs_mod.leg_charges("BUY", fill * max(qty, 1), ccfg)["total"]
+-    qty = min(qty, int((book["cash"] - est_buy_charges) // fill))
++    est_charges = costs_mod.leg_charges(entry_leg, fill * max(qty, 1), ccfg)["total"]
++    qty = min(qty, int((book["cash"] - est_charges) // fill))
+     if qty < 1:
+         day["skipped"]["too_expensive"] += 1
+         return
+     if not strat.benchmark:
+-        reward = (target - fill) * qty
++        reward = abs(target - fill) * qty
+         if reward < risk["min_reward_to_cost"] * costs_mod.round_trip_cost_estimate(fill, qty, ccfg):
+             day["skipped"]["costs_exceed_target"] += 1
+             return
+ 
+-    charges = costs_mod.leg_charges("BUY", fill * qty, ccfg)
+-    book["cash"] -= fill * qty + charges["total"]
++    charges = costs_mod.leg_charges(entry_leg, fill * qty, ccfg)
++    book["cash"] -= fill * qty + charges["total"]     # notional set aside either way
+     book["positions"][sym] = {
+-        "symbol": sym, "qty": qty, "entry_price": round(fill, 4), "entry_at": at,
++        "symbol": sym, "side": side, "qty": qty, "entry_price": round(fill, 4), "entry_at": at,
+         "stop": round(stop, 4), "target": round(target, 4),
++        # name kept for stored state: it means "charges paid on the entry leg"
+         "buy_charges": charges["total"], "entry_reason": sig.get("reason", ""),
+     }
+     day["trades"] += 1
+@@ -413,15 +468,21 @@ def _close(state, book, sym, price, reason, at, ccfg=None):
+     pos = book["positions"].pop(sym, None)
+     if not pos:
+         return None
+-    fill = costs_mod.fill_price("SELL", float(price), ccfg)
+-    proceeds = fill * pos["qty"]
+-    charges = costs_mod.leg_charges("SELL", proceeds, ccfg)
+-    book["cash"] += proceeds - charges["total"]
+-    gross = (fill - pos["entry_price"]) * pos["qty"]
++    side = pos.get("side", "LONG")
++    exit_leg = "BUY" if side == "SHORT" else "SELL"
++    fill = costs_mod.fill_price(exit_leg, float(price), ccfg)
++    charges = costs_mod.leg_charges(exit_leg, fill * pos["qty"], ccfg)
++    if side == "SHORT":
++        gross = (pos["entry_price"] - fill) * pos["qty"]
++        # release the set-aside notional plus the short's profit/loss
++        book["cash"] += pos["entry_price"] * pos["qty"] + gross - charges["total"]
++    else:
++        gross = (fill - pos["entry_price"]) * pos["qty"]
++        book["cash"] += fill * pos["qty"] - charges["total"]
+     total_charges = pos["buy_charges"] + charges["total"]
+     net = gross - charges["total"] - pos["buy_charges"]
+     trade = {
+-        "strategy": book["id"], "symbol": sym, "qty": pos["qty"],
++        "strategy": book["id"], "symbol": sym, "side": side, "qty": pos["qty"],
+         "entry_at": pos["entry_at"], "entry_price": round(pos["entry_price"], 2),
+         "exit_at": at or timeutil.iso_now(), "exit_price": round(fill, 2),
+         "gross": round(gross, 2), "charges": round(total_charges, 2), "net": round(net, 2),
+@@ -445,11 +506,23 @@ def _close(state, book, sym, price, reason, at, ccfg=None):
+     return trade
+ 
+ 
++def _position_value(pos: dict, mark: float) -> float:
++    """What an open position is worth to the book at `mark`."""
++    if pos.get("side", "LONG") == "SHORT":
++        return pos["entry_price"] * pos["qty"] + (pos["entry_price"] - mark) * pos["qty"]
++    return mark * pos["qty"]
++
++
++def _unrealised(pos: dict, mark: float) -> float:
++    sign = -1 if pos.get("side", "LONG") == "SHORT" else 1
++    return sign * (mark - pos["entry_price"]) * pos["qty"]
++
++
+ def _equity(state, book) -> float:
+     eq = book["cash"]
+     for sym, pos in book["positions"].items():
+         mark = state["marks"].get(sym, {}).get("price") or pos["entry_price"]
+-        eq += mark * pos["qty"]
++        eq += _position_value(pos, mark)
+     return eq
+ 
+ 
+@@ -584,7 +657,7 @@ def open_positions(state: dict) -> list[dict]:
+         for sym, pos in book["positions"].items():
+             mark = state["marks"].get(sym, {}).get("price")
+             out.append({**pos, "strategy": sid, "mark": mark,
+-                        "unrealised": round((mark - pos["entry_price"]) * pos["qty"], 2) if mark else None})
++                        "unrealised": round(_unrealised(pos, mark), 2) if mark else None})
+     return out
+ 
+ 
+diff --git a/backend/arena/service.py b/backend/arena/service.py
+index 6274c00..0d9fb5c 100644
+--- a/backend/arena/service.py
++++ b/backend/arena/service.py
+@@ -269,6 +269,11 @@ def freshness(state: dict, now: dt.datetime | None = None) -> dict:
+ 
+ def view(ip: str) -> dict:
+     state = load_or_create(ip)
++    with store.lock:
++        fresh = store.load(ip) or state
++        if engine.adopt_new_strategies(fresh):
++            store.save(ip, fresh)
++        state = fresh
+     return {
+         "config": state["config"],
+         "strategies": catalog(),
+diff --git a/backend/arena/strategies.py b/backend/arena/strategies.py
+index f3c964a..0247d22 100644
+--- a/backend/arena/strategies.py
++++ b/backend/arena/strategies.py
+@@ -3,7 +3,7 @@ The competing intraday strategies.
+ 
+ Each strategy looks at ONE completed 5-minute bar (plus the bar before it)
+ whose indicator columns were precomputed by `enrich()`, and answers:
+-  - flat:      BUY (with a stop and a target) or nothing
++  - flat:      BUY or SHORT (with a stop and a target) or nothing
+   - in a trade: EXIT or nothing
+ Stops, targets, the end-of-day square-off and the daily loss limit are
+ enforced by the engine, not here, so no strategy can skip them.
+@@ -11,9 +11,11 @@ enforced by the engine, not here, so no strategy can skip them.
+ All indicators are causal (they only use bars up to and including the
+ current one), so the historical replay has no lookahead.
+ 
+-Long-only for this first version: shorting intraday is allowed in MIS, but
+-it adds borrow/auction edge cases that would muddy a first comparison.
+-Add short variants once the long-only results are understood.
++Shorting: intraday (MIS) short selling is allowed in India, and a long-only
++book can only lose in a falling market. A strategy shorts by returning
++{"side": "SHORT", "stop": <above entry>, "target": <below entry>}. The
++original six stay long-only so their history remains comparable; the newer
++strategies trade both directions.
+ 
+ Adding a strategy: subclass Strategy, implement entry() (and exit() if it
+ has a signal-based exit), add it to STRATEGIES. Nothing else changes.
+@@ -91,9 +93,61 @@ def enrich(bars: pd.DataFrame) -> pd.DataFrame:
+     known = df["bar_no"] >= OPENING_RANGE_BARS - 1
+     df["or_high"] = or_high.where(known)
+     df["or_low"] = or_low.where(known)
++
++    # --- inputs for the second wave of strategies (all causal) ---
++    df["ema50"] = close.ewm(span=50, adjust=False).mean()
++    # Spread of price around VWAP so far this session (expanding std).
++    dev = close - df["vwap"]
++    df["vwap_sd"] = dev.groupby(df["session"]).transform(lambda x: x.expanding(min_periods=6).std())
++    # Swing levels of the PREVIOUS 5 bars (excludes the current bar).
++    df["swing_low5"] = low.rolling(5, min_periods=3).min().shift(1)
++    df["swing_high5"] = high.rolling(5, min_periods=3).max().shift(1)
++    # Previous session's last close and this session's open.
++    last_close = close.groupby(df["session"], sort=False).last()
++    prev_sess = pd.Series(last_close.shift(1).values, index=last_close.index)
++    df["prev_session_close"] = df["session"].map(prev_sess)
++    df["session_open"] = df["Open"].groupby(df["session"]).transform("first")
++    df["day_high"] = high.groupby(df["session"]).cummax()
++    df["day_low"] = low.groupby(df["session"]).cummin()
++    # Close at 09:45 (end of the first 30 minutes), known from then on.
++    c945 = close.where(df["minute"] == 9 * 60 + 40).groupby(df["session"]).transform("max")
++    df["close_0945"] = c945.where(df["minute"] >= 9 * 60 + 40)
++    st_line, st_dir = _supertrend(high, low, close, df["atr14"], 3.0)
++    df["st_line"], df["st_dir"] = st_line, st_dir
+     return df
+ 
+ 
++def _supertrend(high, low, close, atr, mult):
++    """Classic SuperTrend on the given ATR. Direction +1 = uptrend (line is
++    support below price), -1 = downtrend (line is resistance above)."""
++    n = len(close)
++    line = np.full(n, np.nan)
++    direction = np.zeros(n)
++    hl2 = ((high + low) / 2).to_numpy()
++    a = atr.to_numpy()
++    c = close.to_numpy()
++    upper_prev = lower_prev = np.nan
++    d = 1
++    for i in range(n):
++        if not np.isfinite(a[i]):
++            continue
++        upper = hl2[i] + mult * a[i]
++        lower = hl2[i] - mult * a[i]
++        if np.isfinite(upper_prev) and c[i - 1] <= upper_prev:
++            upper = min(upper, upper_prev)
++        if np.isfinite(lower_prev) and c[i - 1] >= lower_prev:
++            lower = max(lower, lower_prev)
++        if np.isfinite(upper_prev):
++            if d == 1 and c[i] < lower_prev:
++                d = -1
++            elif d == -1 and c[i] > upper_prev:
++                d = 1
++        line[i] = lower if d == 1 else upper
++        direction[i] = d
++        upper_prev, lower_prev = upper, lower
++    return pd.Series(line, index=close.index), pd.Series(direction, index=close.index)
++
++
+ def _ok(*vals) -> bool:
+     return all(v is not None and isinstance(v, (int, float)) and math.isfinite(v) for v in vals)
+ 
+@@ -273,12 +327,169 @@ class BuyAtOpenBenchmark(Strategy):
+         return None
+ 
+ 
++# ---------------------------------------------------------------------------
++# Second wave: both directions, wider stops, fewer trades. The first six
++# lost mostly because a long-only book can't make money in a falling market
++# and because 5-minute noise kept hitting tight stops.
++# ---------------------------------------------------------------------------
++
++class OrbBothWays(Strategy):
++    id = "orb_both"
++    name = "Opening-range breakout (long + short)"
++    description = ("Buys a close above the first-15-minute high, or shorts a close below its low. "
++                   "Stop at the other side of the range (max 1.5%), target 2x the risk.")
++    max_trades_per_symbol_per_day = 1
++
++    def entry(self, row, prev):
++        if row["bar_no"] < OPENING_RANGE_BARS or not _ok(row["or_high"], row["or_low"], prev["Close"]):
++            return None
++        price = row["Close"]
++        if price > row["or_high"] >= prev["Close"]:
++            stop = max(row["or_low"], price * 0.985)
++            return {"stop": stop, "target": price + 2 * (price - stop), "reason": "broke above opening range"}
++        if price < row["or_low"] <= prev["Close"]:
++            stop = min(row["or_high"], price * 1.015)
++            return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
++                    "reason": "broke below opening range"}
++        return None
++
++
++class SuperTrendFlip(Strategy):
++    id = "supertrend"
++    name = "SuperTrend (10, 3) flip"
++    description = ("Trend-following with a 3-ATR trailing line: goes long when the trend flips up, "
++                   "short when it flips down. The line is the stop; exits on the opposite flip.")
++
++    def entry(self, row, prev):
++        if row["bar_no"] < 2 or not _ok(row["st_line"], row["atr14"]) or prev["st_dir"] == row["st_dir"]:
++            return None
++        price = row["Close"]
++        if row["st_dir"] == 1 and row["st_line"] < price:
++            stop = row["st_line"]
++            return {"stop": stop, "target": price + 2 * (price - stop), "reason": "SuperTrend flipped up"}
++        if row["st_dir"] == -1 and row["st_line"] > price:
++            stop = row["st_line"]
++            return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
++                    "reason": "SuperTrend flipped down"}
++        return None
++
++    def exit(self, row, prev, position):
++        want = -1 if position.get("side") == "SHORT" else 1
++        if _ok(row["st_dir"]) and row["st_dir"] == -want:
++            return "SuperTrend flipped against the trade"
++        return None
++
++
++class VwapBandReversion(Strategy):
++    id = "vwap_bands"
++    name = "VWAP band mean-reversion"
++    description = ("Fades stretched moves: buys when price is 2 standard deviations below VWAP and turns up "
++                   "(RSI under 35), shorts the mirror case. Target is VWAP itself.")
++
++    def entry(self, row, prev):
++        if row["bar_no"] < 6 or not _ok(row["vwap"], row["vwap_sd"], row["rsi14"], row["atr14"]) or row["vwap_sd"] <= 0:
++            return None
++        price, vwap, sd = row["Close"], row["vwap"], row["vwap_sd"]
++        if prev["Close"] < vwap - 2 * sd and price > prev["Close"] and row["rsi14"] < 35:
++            stop = min(row["Low"], prev["Low"]) - 0.5 * row["atr14"]
++            if stop < price < vwap:
++                return {"stop": stop, "target": vwap, "reason": "2σ below VWAP, turning up"}
++        if prev["Close"] > vwap + 2 * sd and price < prev["Close"] and row["rsi14"] > 65:
++            stop = max(row["High"], prev["High"]) + 0.5 * row["atr14"]
++            if stop > price > vwap:
++                return {"side": "SHORT", "stop": stop, "target": vwap, "reason": "2σ above VWAP, turning down"}
++        return None
++
++
++class TrendPullback(Strategy):
++    id = "trend_pullback"
++    name = "Trend pullback to EMA 21"
++    description = ("Only trades with the day's trend (price vs VWAP, EMA 21 vs EMA 50): waits for a dip "
++                   "to the 21-EMA and buys the bounce, or shorts the rally in a downtrend. Stop beyond the "
++                   "last swing, target 2x risk.")
++
++    def entry(self, row, prev):
++        if row["bar_no"] < 6 or not _ok(row["ema21"], row["ema50"], row["vwap"], row["swing_low5"], row["swing_high5"]):
++            return None
++        price = row["Close"]
++        up = price > row["vwap"] and row["ema21"] > row["ema50"]
++        down = price < row["vwap"] and row["ema21"] < row["ema50"]
++        if up and prev["Low"] <= prev["ema21"] and price > row["ema21"] and price > prev["High"]:
++            stop = min(row["swing_low5"], row["Low"])
++            if stop < price:
++                return {"stop": stop, "target": price + 2 * (price - stop), "reason": "bounced off EMA21 in uptrend"}
++        if down and prev["High"] >= prev["ema21"] and price < row["ema21"] and price < prev["Low"]:
++            stop = max(row["swing_high5"], row["High"])
++            if stop > price:
++                return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
++                        "reason": "rejected at EMA21 in downtrend"}
++        return None
++
++
++class GapFade(Strategy):
++    id = "gap_fade"
++    name = "Gap fade (gap-fill)"
++    description = ("When a stock opens 0.6%+ away from yesterday's close and the first 15 minutes fail to "
++                   "extend the gap, trades back toward yesterday's close. Stop beyond the day's extreme.")
++    max_trades_per_symbol_per_day = 1
++
++    def entry(self, row, prev):
++        if not (OPENING_RANGE_BARS <= row["bar_no"] <= 9):
++            return None
++        if not _ok(row["prev_session_close"], row["session_open"], row["or_high"], row["or_low"], row["atr14"]):
++            return None
++        pc, op, price = row["prev_session_close"], row["session_open"], row["Close"]
++        gap = (op - pc) / pc
++        if gap >= 0.006 and price < row["or_low"]:
++            stop = row["day_high"] + 0.2 * row["atr14"]
++            if stop > price > pc:
++                return {"side": "SHORT", "stop": stop, "target": pc, "reason": f"gap up {gap:.1%} failing"}
++        if gap <= -0.006 and price > row["or_high"]:
++            stop = row["day_low"] - 0.2 * row["atr14"]
++            if stop < price < pc:
++                return {"stop": stop, "target": pc, "reason": f"gap down {gap:.1%} recovering"}
++        return None
++
++
++class IntradayMomentum(Strategy):
++    id = "intraday_momentum"
++    name = "Intraday momentum (first 30 min → last hour)"
++    description = ("Based on research that the first half-hour's move tends to continue into the close: "
++                   "at 14:15, if the day is up 0.5%+ by 09:45 and price is above VWAP, buy (short the mirror "
++                   "case) and hold to the square-off.")
++    max_trades_per_symbol_per_day = 1
++
++    def entry(self, row, prev):
++        if row["minute"] != 14 * 60 + 15:
++            return None
++        if not _ok(row["prev_session_close"], row["close_0945"], row["vwap"], row["atr14"]):
++            return None
++        early = (row["close_0945"] - row["prev_session_close"]) / row["prev_session_close"]
++        price = row["Close"]
++        if early >= 0.005 and price > row["vwap"]:
++            stop = min(row["vwap"], price - 1.5 * row["atr14"])
++            return {"stop": stop, "target": price + 3 * (price - stop), "reason": f"first 30 min {early:+.1%}"}
++        if early <= -0.005 and price < row["vwap"]:
++            stop = max(row["vwap"], price + 1.5 * row["atr14"])
++            return {"side": "SHORT", "stop": stop, "target": price - 3 * (stop - price),
++                    "reason": f"first 30 min {early:+.1%}"}
++        return None
++
++
+ STRATEGIES: dict[str, Strategy] = {s.id: s for s in [
+     OpeningRangeBreakout(), VwapReclaim(), EmaCrossover(), RsiReversion(),
+-    BollingerBreakout(), LegacyScore(), BuyAtOpenBenchmark(),
++    BollingerBreakout(), LegacyScore(),
++    OrbBothWays(), SuperTrendFlip(), VwapBandReversion(), TrendPullback(), GapFade(), IntradayMomentum(),
++    BuyAtOpenBenchmark(),
+ ]}
+ 
++# The strategies that existed before the second wave. Arenas created back
++# then have these in their config; anything newer is switched on for them
++# once (see engine.adopt_new_strategies) - after that, the user's choice wins.
++ORIGINAL_STRATEGY_IDS = ["orb", "vwap_reclaim", "ema_cross", "rsi_reversion", "bb_breakout", "score4", "benchmark"]
++
+ 
+ def catalog() -> list[dict]:
+-    return [{"id": s.id, "name": s.name, "description": s.description, "benchmark": s.benchmark}
++    return [{"id": s.id, "name": s.name, "description": s.description, "benchmark": s.benchmark,
++             "both_sides": s.id not in ORIGINAL_STRATEGY_IDS}
+             for s in STRATEGIES.values()]
+diff --git a/backend/tests/test_arena_strategies2.py b/backend/tests/test_arena_strategies2.py
+new file mode 100644
+index 0000000..3facb8b
+--- /dev/null
++++ b/backend/tests/test_arena_strategies2.py
+@@ -0,0 +1,181 @@
++"""Second-wave strategies + short selling.
++
++The key properties: shorts are charged the right legs and mirror the long
++fill rules; every indicator is causal (no lookahead); each new strategy can
++actually fire; and existing arenas get the new strategies switched on once.
++"""
++import numpy as np
++import pandas as pd
++import pytest
++
++from arena import engine
++from arena import strategies as S
++from arena.strategies import enrich, STRATEGIES
++
++IST = "Asia/Kolkata"
++
++
++def bars(date, closes, gap_from=None, volume=1000.0):
++    closes = np.asarray(closes, dtype=float)
++    idx = pd.date_range(f"{date} 09:15", periods=len(closes), freq="5min", tz=IST)
++    o = np.r_[closes[0] if gap_from is None else closes[0], closes[:-1]]
++    return pd.DataFrame({"Open": o, "High": np.maximum(o, closes) + 0.1,
++                         "Low": np.minimum(o, closes) - 0.1, "Close": closes,
++                         "Volume": np.full(len(closes), volume)}, index=idx)
++
++
++def two_days(day1, day2):
++    return pd.concat([bars("2026-09-01", day1), bars("2026-09-02", day2)])
++
++
++def cfg(ids, **risk):
++    return {"strategies": ids, "symbols": ["T.NS"], "daily_capital": 10_000,
++            "risk": {"min_reward_to_cost": 0.5, **risk}}
++
++
++def run(state, df, day):
++    engine.start_day(state, day)
++    engine.process_bars(state, {"T.NS": enrich(df)}, now=None)
++    engine.settle_day(state)
++
++
++# ------------------------------------------------------------- shorts
++
++def test_short_exit_rules_mirror_longs():
++    pos = {"side": "SHORT", "stop": 101.0, "target": 98.0}
++    strat = STRATEGIES["orb_both"]
++    touch_both = pd.Series({"Open": 100.0, "High": 101.5, "Low": 97.5, "Close": 99.0})
++    assert engine._exit_decision(strat, touch_both, touch_both, pos, 600) == (101.0, "stop_loss")
++    gap_up = pd.Series({"Open": 102.0, "High": 102.5, "Low": 101.8, "Close": 102.2})
++    assert engine._exit_decision(strat, gap_up, gap_up, pos, 600) == (102.0, "stop_loss_gap")
++    hit_target = pd.Series({"Open": 99.0, "High": 99.5, "Low": 97.9, "Close": 98.5})
++    assert engine._exit_decision(strat, hit_target, hit_target, pos, 600) == (98.0, "target")
++
++
++def test_short_trade_cash_and_pnl_add_up():
++    st = engine.new_state(cfg(["orb_both"]))
++    engine.start_day(st, "2026-09-01")
++    book = st["books"]["orb_both"]
++    start_cash = book["cash"]
++
++    class Shorty(S.Strategy):
++        id = "orb_both"
++        def entry(self, row, prev):
++            return {"side": "SHORT", "stop": row["Close"] * 1.02, "target": row["Close"] * 0.97, "reason": "t"}
++
++    real = STRATEGIES["orb_both"]
++    STRATEGIES["orb_both"] = Shorty()
++    try:
++        ts = pd.Timestamp("2026-09-01 10:00", tz=IST)
++        row = pd.Series({"Open": 100.0, "High": 100.1, "Low": 99.9, "Close": 100.0, "minute": 600, "bar_no": 9})
++        engine.process_bar(st, "T.NS", ts, row, row, 1)
++        pos = book["positions"]["T.NS"]
++        assert pos["side"] == "SHORT"
++        # price falls 2%: the short should be worth more than it cost
++        st["marks"]["T.NS"] = {"price": 98.0, "at": "x"}
++        assert engine._equity(st, book) > start_cash
++        trade = engine._close(st, book, "T.NS", 98.0, "manual", "x")
++    finally:
++        STRATEGIES["orb_both"] = real
++    assert trade["side"] == "SHORT" and trade["gross"] > 0
++    assert trade["net"] == pytest.approx(trade["gross"] - trade["charges"], abs=0.02)
++    assert book["cash"] == pytest.approx(start_cash + trade["net"], abs=0.05)
++
++
++def test_short_pays_stt_on_entry_and_stamp_on_exit():
++    from arena import costs
++    c = costs.merged(None)
++    assert costs.leg_charges("SELL", 10_000, c)["stt"] > 0          # short entry
++    assert costs.leg_charges("BUY", 10_000, c)["stamp"] > 0         # short cover
++
++
++# ------------------------------------------------------------- no lookahead
++
++def test_every_indicator_is_causal():
++    rng = np.random.default_rng(3)
++    df = pd.concat([bars(d, 100 * np.exp(np.cumsum(rng.normal(0, 0.003, 75))))
++                    for d in ["2026-09-01", "2026-09-02"]])
++    full = enrich(df)
++    cols = [c for c in full.columns if c not in ("session",) and full[c].dtype != object]
++    for k in (20, 76, 90, 120, 149):
++        part = enrich(df.iloc[:k + 1])
++        a, b = part.iloc[-1][cols].astype(float), full.iloc[k][cols].astype(float)
++        both_nan = a.isna() & b.isna()
++        diff = (a - b).abs()[~both_nan]
++        assert (diff < 1e-9).all(), f"lookahead at bar {k}: {diff[diff >= 1e-9].to_dict()}"
++
++
++# ------------------------------------------------------------- each strategy fires
++
++def test_orb_both_shorts_a_breakdown():
++    closes = [100, 100.2, 99.9] + list(np.linspace(99.8, 97, 30)) + [97] * 42
++    st = engine.new_state(cfg(["orb_both"]))
++    run(st, bars("2026-09-01", closes), "2026-09-01")
++    t = st["books"]["orb_both"]["trades"]
++    assert t and t[0]["side"] == "SHORT"
++
++
++def test_supertrend_trades_a_reversal_both_ways():
++    closes = list(np.linspace(100, 106, 35)) + list(np.linspace(106, 98, 40))
++    st = engine.new_state(cfg(["supertrend"]))
++    df = pd.concat([bars("2026-08-31", np.linspace(100, 100.5, 75)), bars("2026-09-01", closes)])
++    engine.start_day(st, "2026-09-01")
++    engine.process_bars(st, {"T.NS": enrich(df)}, now=None)
++    engine.settle_day(st)
++    sides = {t["side"] for t in st["books"]["supertrend"]["trades"]}
++    assert "SHORT" in sides
++
++
++def test_gap_fade_shorts_a_failing_gap_up():
++    day1 = np.full(75, 100.0)
++    day2 = [101.5, 101.6, 101.4, 101.0, 100.8, 100.6] + list(np.linspace(100.5, 99.8, 69))
++    df = two_days(day1, day2)
++    st = engine.new_state(cfg(["gap_fade"]))
++    engine.start_day(st, "2026-09-02")
++    engine.process_bars(st, {"T.NS": enrich(df)}, now=None)
++    engine.settle_day(st)
++    t = st["books"]["gap_fade"]["trades"]
++    assert t and t[0]["side"] == "SHORT" and t[0]["exit_reason"] == "target"
++
++
++def test_intraday_momentum_enters_at_1415_only():
++    day1 = np.full(75, 100.0)
++    day2 = list(np.linspace(100, 101, 6)) + list(np.linspace(101, 102, 69))   # +1% by 09:45
++    df = two_days(day1, day2)
++    st = engine.new_state(cfg(["intraday_momentum"]))
++    engine.start_day(st, "2026-09-02")
++    engine.process_bars(st, {"T.NS": enrich(df)}, now=None)
++    engine.settle_day(st)
++    t = st["books"]["intraday_momentum"]["trades"]
++    assert len(t) == 1 and t[0]["side"] == "LONG"
++    assert "T14:15" in t[0]["entry_at"]
++
++
++def test_new_strategies_never_crash_on_random_data():
++    rng = np.random.default_rng(11)
++    df = pd.concat([bars(d.date().isoformat(), 500 * np.exp(np.cumsum(rng.normal(0, 0.004, 75))))
++                    for d in pd.bdate_range("2026-08-03", periods=8)])
++    ids = [s for s in STRATEGIES if s not in S.ORIGINAL_STRATEGY_IDS] + ["benchmark"]
++    st = engine.replay(cfg(ids), {"T.NS": enrich(df)}, days=8)
++    assert all(b["positions"] == {} for b in st["books"].values())
++    assert sum(b["stats"]["trades"] for b in st["books"].values()) > 0
++
++
++# ------------------------------------------------------------- adoption
++
++def test_existing_arena_gets_new_strategies_once_and_opt_out_sticks():
++    st = engine.new_state(cfg(["orb", "ema_cross", "benchmark"]))
++    st["config"].pop("known_strategies")          # an arena from before the update
++    added = engine.adopt_new_strategies(st)
++    assert set(added) == set(STRATEGIES) - set(S.ORIGINAL_STRATEGY_IDS)
++    assert st["config"]["strategies"][-1] == "benchmark"
++
++    st["config"]["strategies"].remove("gap_fade")   # user unticks one
++    assert engine.adopt_new_strategies(st) == []
++    assert "gap_fade" not in st["config"]["strategies"]
++
++
++def test_brand_new_arena_has_everything_and_nothing_to_adopt():
++    st = engine.new_state()
++    assert engine.adopt_new_strategies(st) == []
++    assert set(st["config"]["strategies"]) == set(STRATEGIES)
+-- 
+2.43.0
+
