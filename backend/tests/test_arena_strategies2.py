@@ -8,11 +8,14 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from arena import engine
+from arena import engine, markets as _markets
 from arena import strategies as S
 from arena.strategies import enrich, STRATEGIES
 
 IST = "Asia/Kolkata"
+
+
+NSE = _markets.get("nse")
 
 
 def bars(date, closes, gap_from=None, volume=1000.0):
@@ -45,11 +48,11 @@ def test_short_exit_rules_mirror_longs():
     pos = {"side": "SHORT", "stop": 101.0, "target": 98.0}
     strat = STRATEGIES["orb_both"]
     touch_both = pd.Series({"Open": 100.0, "High": 101.5, "Low": 97.5, "Close": 99.0})
-    assert engine._exit_decision(strat, touch_both, touch_both, pos, 600) == (101.0, "stop_loss")
+    assert engine._exit_decision(strat, touch_both, touch_both, pos, 300, NSE) == (101.0, "stop_loss")
     gap_up = pd.Series({"Open": 102.0, "High": 102.5, "Low": 101.8, "Close": 102.2})
-    assert engine._exit_decision(strat, gap_up, gap_up, pos, 600) == (102.0, "stop_loss_gap")
+    assert engine._exit_decision(strat, gap_up, gap_up, pos, 300, NSE) == (102.0, "stop_loss_gap")
     hit_target = pd.Series({"Open": 99.0, "High": 99.5, "Low": 97.9, "Close": 98.5})
-    assert engine._exit_decision(strat, hit_target, hit_target, pos, 600) == (98.0, "target")
+    assert engine._exit_decision(strat, hit_target, hit_target, pos, 300, NSE) == (98.0, "target")
 
 
 def test_short_trade_cash_and_pnl_add_up():

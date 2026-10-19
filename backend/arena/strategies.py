@@ -46,22 +46,109 @@ def _rsi(close: pd.Series, n: int = 14) -> pd.Series:
     return out
 
 
-def enrich(bars: pd.DataFrame) -> pd.DataFrame:
-    """Add every indicator column the strategies read. Input: OHLCV with a
-    tz-aware index (Yahoo returns Asia/Kolkata for NSE/BSE)."""
+# 15:30 IST, in minutes. Only used when enrich() is called without a market
+# profile, which is the NSE-shaped path the arena started life with.
+NSE_SESSION_END_MINUTE = 15 * 60 + 30
+
+
+def _sessionise(df, market, window):
+    """Label each bar with the active session it belongs to, and with how
+    far it is from that session's start and end.
+
+    Without a market profile this is the original behaviour: a session is a
+    calendar date in IST and the session ends at 15:30. With one, a session
+    is the overlap of market hours and the user's window, which can start
+    at any hour and cross midnight - so "how long until the close" has to
+    be measured against that session's own end, not against a clock time.
+    """
+    from arena import markets as markets_mod     # imported late: markets imports us
+
+    if market is None:
+        df["session"] = [t.date().isoformat() for t in df.index]
+        df["minute"] = [t.hour * 60 + t.minute for t in df.index]
+        df["mins_left"] = NSE_SESSION_END_MINUTE - df["minute"]
+        first = df.groupby("session")["minute"].transform("min")
+        df["sess_minute"] = df["minute"] - first
+        return df
+
+    window = window or market.default_window()
+    tz = market.tz
+    local = df.index.tz_convert(tz)
+    df["minute"] = [t.hour * 60 + t.minute for t in local]
+
+    lo, hi = df.index[0], df.index[-1]
+    import datetime as _dt
+    from zoneinfo import ZoneInfo as _ZoneInfo
+    wtz = _ZoneInfo(window["tz"])
+    first_date = (lo.to_pydatetime().astimezone(wtz).date() - _dt.timedelta(days=2))
+    last_date = (hi.to_pydatetime().astimezone(wtz).date() + _dt.timedelta(days=1))
+    spans = []
+    for iso in markets_mod.sessions_in_range(market, window, first_date, last_date):
+        bounds = markets_mod.session_bounds(market, window, iso)
+        if bounds:
+            spans.append((iso, bounds[0], bounds[1]))
+
+    sess, sess_min, left = [], [], []
+    for ts in df.index:
+        moment = ts.to_pydatetime()
+        hit = None
+        for iso, a, b in spans:
+            if a <= moment <= b:
+                hit = (iso, a, b)
+                break
+        if hit is None:
+            sess.append(None)
+            sess_min.append(float("nan"))
+            left.append(float("nan"))
+        else:
+            iso, a, b = hit
+            sess.append(iso)
+            sess_min.append(int((moment - a).total_seconds() // 60))
+            left.append(int((b - moment).total_seconds() // 60))
+    df["session"] = sess
+    df["sess_minute"] = sess_min
+    df["mins_left"] = left
+    # Bars outside every active session are dropped rather than kept with a
+    # null session: nothing downstream should ever see a bar the user's
+    # window excluded, and a stray one would quietly widen the opening range.
+    return df[df["session"].notna()].copy()
+
+
+def enrich(bars: pd.DataFrame, market=None, window: dict | None = None,
+           scale: float = 1.0) -> pd.DataFrame:
+    """Add every indicator column the strategies read.
+
+    Input: OHLCV with a tz-aware index. `market` and `window` decide what a
+    session is (see _sessionise); `scale` converts quoted prices into the
+    book's currency, which is how a yen-quoted FX pair is traded in a
+    dollar book without anything downstream knowing about FX.
+    """
     if bars is None or bars.empty:
         return pd.DataFrame()
     df = bars[["Open", "High", "Low", "Close", "Volume"]].copy().dropna(subset=["Close"])
     if df.empty:
         return df
     idx = df.index
+    tz_name = str(getattr(market, "tz", None) or "Asia/Kolkata")
     if idx.tz is None:
-        idx = idx.tz_localize("Asia/Kolkata")
-    df.index = idx.tz_convert("Asia/Kolkata")
+        idx = idx.tz_localize(tz_name if market is not None else "Asia/Kolkata")
+    df.index = idx.tz_convert("Asia/Kolkata" if market is None else market.tz)
+
+    if scale and scale != 1.0:
+        for col in ("Open", "High", "Low", "Close"):
+            df[col] = df[col] * float(scale)
+
+    df = _sessionise(df, market, window)
+    if df.empty:
+        return df
 
     close, high, low, vol = df["Close"], df["High"], df["Low"], df["Volume"].fillna(0)
-    df["session"] = [t.date().isoformat() for t in df.index]
-    df["minute"] = [t.hour * 60 + t.minute for t in df.index]
+    # Yahoo reports zero volume for every FX pair. Treating that as "no
+    # trading happened" would silently disable every volume-gated strategy
+    # and hand them a VWAP of NaN; the honest reading is that the feed has
+    # no volume, so the session's TWAP stands in for VWAP and the volume
+    # average is explicitly undefined rather than zero.
+    df["no_volume"] = bool(float(vol.sum()) <= 0)
 
     df["ema9"] = close.ewm(span=9, adjust=False).mean()
     df["ema21"] = close.ewm(span=21, adjust=False).mean()
@@ -78,13 +165,25 @@ def enrich(bars: pd.DataFrame) -> pd.DataFrame:
     # a trap for the next mean-reversion strategy, which would reach for
     # bb_low and silently get None.
     df["bb_mid"], df["bb_up"], df["bb_low"] = mid, mid + 2 * sd, mid - 2 * sd
-    df["vol_avg20"] = vol.rolling(20, min_periods=10).mean()
+    no_volume = bool(df["no_volume"].iloc[0])
+    # NaN, not 0: a volume average of zero would make "Volume >= 1.5x
+    # average" trivially true on a feed that reports no volume at all, and
+    # every volume breakout would fire on every bar.
+    df["vol_avg20"] = (np.nan if no_volume else vol.rolling(20, min_periods=10).mean())
 
     g = df.groupby("session", sort=False)
     df["bar_no"] = g.cumcount()
-    pv = (close * vol).groupby(df["session"]).cumsum()
-    cv = vol.groupby(df["session"]).cumsum()
-    df["vwap"] = (pv / cv.replace(0, np.nan)).fillna(close)
+    if no_volume:
+        # TWAP: the running mean of the typical price so far this session.
+        # It answers the same question VWAP does - "is price above or below
+        # where it has been trading today" - without needing volume.
+        typical = (high + low + close) / 3
+        df["vwap"] = typical.groupby(df["session"]).transform(
+            lambda x: x.expanding(min_periods=1).mean())
+    else:
+        pv = (close * vol).groupby(df["session"]).cumsum()
+        cv = vol.groupby(df["session"]).cumsum()
+        df["vwap"] = (pv / cv.replace(0, np.nan)).fillna(close)
     # Opening range only becomes known once its last bar has closed - before
     # that the columns are NaN so no strategy can peek at it.
     in_or = df["bar_no"] < OPENING_RANGE_BARS
@@ -109,9 +208,12 @@ def enrich(bars: pd.DataFrame) -> pd.DataFrame:
     df["session_open"] = df["Open"].groupby(df["session"]).transform("first")
     df["day_high"] = high.groupby(df["session"]).cummax()
     df["day_low"] = low.groupby(df["session"]).cummin()
-    # Close at 09:45 (end of the first 30 minutes), known from then on.
-    c945 = close.where(df["minute"] == 9 * 60 + 40).groupby(df["session"]).transform("max")
-    df["close_0945"] = c945.where(df["minute"] >= 9 * 60 + 40)
+    # The close 30 minutes into the session, known from then on. Measured
+    # from the session's own start: "09:45" means nothing to a market that
+    # opens at 19:00 IST, or to a window the user moved.
+    bar30 = df["sess_minute"].between(25, 29, inclusive="both")
+    c30 = close.where(bar30).groupby(df["session"]).transform("max")
+    df["close_0945"] = c30.where(df["sess_minute"] >= 25)
     st_line, st_dir = _supertrend(high, low, close, df["atr14"], 3.0)
     df["st_line"], df["st_dir"] = st_line, st_dir
     return df
@@ -162,6 +264,16 @@ class Strategy:
     description = ""
     benchmark = False          # benchmarks are never benched, only compared
     max_trades_per_symbol_per_day = 2
+    # True when the strategy normally requires a volume confirmation. On a
+    # market whose feed carries no volume it still trades, without that
+    # confirmation, and says so in its name rather than pretending the two
+    # are the same strategy.
+    volume_gated = False
+
+    def display_name(self, has_volume: bool = True) -> str:
+        if self.volume_gated and not has_volume:
+            return f"{self.name} · no-volume variant"
+        return self.name
 
     def entry(self, row, prev) -> dict | None:
         """Return {"stop", "target", "reason"} to buy at this bar's close."""
@@ -203,17 +315,30 @@ class VwapReclaim(Strategy):
     description = ("Buys when price crosses back above the day's VWAP with above-average volume. "
                    "Exits if it falls back below VWAP. Target 2x risk.")
 
+    # On a feed with no volume (every Yahoo FX pair) the VWAP is a session
+    # TWAP and the volume filter simply cannot be evaluated. Dropping the
+    # filter is honest - the strategy is then a plain TWAP reclaim, and the
+    # leaderboard labels it as such - whereas keeping it would compare
+    # volume against NaN and never trade.
+    volume_gated = True
+
     def entry(self, row, prev):
-        if row["bar_no"] < 3 or not _ok(row["vwap"], prev["vwap"], row["vol_avg20"], row["atr14"]):
+        no_vol = bool(row.get("no_volume", False))
+        if row["bar_no"] < 3 or not _ok(row["vwap"], prev["vwap"], row["atr14"]):
+            return None
+        if not no_vol and not _ok(row["vol_avg20"]):
             return None
         crossed = prev["Close"] <= prev["vwap"] and row["Close"] > row["vwap"]
-        if not crossed or row["Volume"] < row["vol_avg20"]:
+        if not crossed:
+            return None
+        if not no_vol and row["Volume"] < row["vol_avg20"]:
             return None
         price = row["Close"]
         stop = min(row["Low"], row["vwap"]) - 0.5 * row["atr14"]
         if stop >= price:
             return None
-        return {"stop": stop, "target": price + 2 * (price - stop), "reason": "reclaimed VWAP on volume"}
+        return {"stop": stop, "target": price + 2 * (price - stop),
+                "reason": "reclaimed TWAP" if no_vol else "reclaimed VWAP on volume"}
 
     def exit(self, row, prev, position):
         if _ok(row["vwap"]) and row["Close"] < row["vwap"] * 0.998:
@@ -266,13 +391,22 @@ class BollingerBreakout(Strategy):
     description = ("Momentum: buys a close above the upper Bollinger band on 1.5x average volume, "
                    "exits when price falls back to the middle band.")
 
+    volume_gated = True
+
     def entry(self, row, prev):
-        if row["bar_no"] < 3 or not _ok(row["bb_up"], row["vol_avg20"]):
+        no_vol = bool(row.get("no_volume", False))
+        if row["bar_no"] < 3 or not _ok(row["bb_up"]):
             return None
-        if row["Close"] > row["bb_up"] and row["Volume"] >= 1.5 * row["vol_avg20"]:
-            stop, target = self.atr_levels(row["Close"], row["atr14"], 1.5, 3.0)
-            return {"stop": stop, "target": target, "reason": "volume breakout above upper band"}
-        return None
+        if not no_vol and not _ok(row["vol_avg20"]):
+            return None
+        if row["Close"] <= row["bb_up"]:
+            return None
+        if not no_vol and row["Volume"] < 1.5 * row["vol_avg20"]:
+            return None
+        stop, target = self.atr_levels(row["Close"], row["atr14"], 1.5, 3.0)
+        return {"stop": stop, "target": target,
+                "reason": "breakout above upper band" if no_vol
+                          else "volume breakout above upper band"}
 
     def exit(self, row, prev, position):
         if _ok(row["bb_mid"]) and row["Close"] < row["bb_mid"]:
@@ -459,8 +593,14 @@ class IntradayMomentum(Strategy):
                    "case) and hold to the square-off.")
     max_trades_per_symbol_per_day = 1
 
+    # "14:15" was 75 minutes before the NSE close. Measured that way it
+    # keeps its meaning - the last hour and a quarter - on a market that
+    # closes at 02:30 IST or in a window the user shortened.
+    ENTRY_MINS_LEFT = 75
+
     def entry(self, row, prev):
-        if row["minute"] != 14 * 60 + 15:
+        left = row.get("mins_left")
+        if left is None or not (self.ENTRY_MINS_LEFT - 2 <= left <= self.ENTRY_MINS_LEFT + 2):
             return None
         if not _ok(row["prev_session_close"], row["close_0945"], row["vwap"], row["atr14"]):
             return None
@@ -489,7 +629,8 @@ STRATEGIES: dict[str, Strategy] = {s.id: s for s in [
 ORIGINAL_STRATEGY_IDS = ["orb", "vwap_reclaim", "ema_cross", "rsi_reversion", "bb_breakout", "score4", "benchmark"]
 
 
-def catalog() -> list[dict]:
-    return [{"id": s.id, "name": s.name, "description": s.description, "benchmark": s.benchmark,
+def catalog(has_volume: bool = True) -> list[dict]:
+    return [{"id": s.id, "name": s.display_name(has_volume), "description": s.description,
+             "benchmark": s.benchmark, "volume_gated": s.volume_gated,
              "both_sides": s.id not in ORIGINAL_STRATEGY_IDS}
             for s in STRATEGIES.values()]

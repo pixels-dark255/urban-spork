@@ -1,0 +1,41 @@
+{
+  "market": "us",
+  "source": "NYSE Group holiday and early-closings calendar for 2026, 2027 and 2028, announced 2025-12-23 (Intercontinental Exchange / BusinessWire). Canonical page: https://www.nyse.com/markets/hours-calendars",
+  "updated": "2026-10-19",
+  "note": "Full-day closures for the NYSE/Nasdaq EQUITIES session. Bond-market-only closures (Columbus Day, Veterans Day) are deliberately absent - the stock market trades on those days. Weekend dates are never listed: the loader rejects them, because a weekend entry means the list is a public-holiday calendar rather than a trading calendar.",
+  "holidays": {
+    "2026": [
+      {"date": "2026-01-01", "description": "New Year's Day"},
+      {"date": "2026-01-19", "description": "Martin Luther King, Jr. Day"},
+      {"date": "2026-02-16", "description": "Washington's Birthday"},
+      {"date": "2026-04-03", "description": "Good Friday"},
+      {"date": "2026-05-25", "description": "Memorial Day"},
+      {"date": "2026-06-19", "description": "Juneteenth National Independence Day"},
+      {"date": "2026-07-03", "description": "Independence Day (observed)"},
+      {"date": "2026-09-07", "description": "Labor Day"},
+      {"date": "2026-11-26", "description": "Thanksgiving Day"},
+      {"date": "2026-12-25", "description": "Christmas Day"}
+    ],
+    "2027": [
+      {"date": "2027-01-01", "description": "New Year's Day"},
+      {"date": "2027-01-18", "description": "Martin Luther King, Jr. Day"},
+      {"date": "2027-02-15", "description": "Washington's Birthday"},
+      {"date": "2027-03-26", "description": "Good Friday"},
+      {"date": "2027-05-31", "description": "Memorial Day"},
+      {"date": "2027-06-18", "description": "Juneteenth National Independence Day (observed)"},
+      {"date": "2027-07-05", "description": "Independence Day (observed)"},
+      {"date": "2027-09-06", "description": "Labor Day"},
+      {"date": "2027-11-25", "description": "Thanksgiving Day"},
+      {"date": "2027-12-24", "description": "Christmas Day (observed)"}
+    ]
+  },
+  "early_closes": {
+    "2026": [
+      {"date": "2026-11-27", "close": "13:00", "description": "Day after Thanksgiving"},
+      {"date": "2026-12-24", "close": "13:00", "description": "Christmas Eve"}
+    ],
+    "2027": [
+      {"date": "2027-11-26", "close": "13:00", "description": "Day after Thanksgiving"}
+    ]
+  }
+}

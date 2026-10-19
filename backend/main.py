@@ -521,6 +521,19 @@ def api_intraday_detail(symbol: str, request: Request):
 # ---------- Strategy Arena (several strategies, simulated money, side by side) ----------
 
 from arena import service as arena_service
+from arena import markets as arena_markets
+from arena import store as arena_store
+
+
+def arena_key(request: Request, market: str | None = None) -> str:
+    """One arena per client PER MARKET.
+
+    The market comes off the query string and is validated here, so an
+    unknown value falls back to the NSE rather than creating an arena under
+    a key nothing will ever tick.
+    """
+    market_id = market if arena_markets.is_market_id(market) else arena_markets.DEFAULT_MARKET
+    return arena_store.key(get_client_ip(request), market_id)
 
 
 class ArenaConfigRequest(BaseModel):
@@ -531,18 +544,28 @@ class ArenaConfigRequest(BaseModel):
     strategies: list[str] | None = None
     risk: dict | None = None
     costs: dict | None = None
+    # The hours the user wants to trade, in their own timezone.
+    window: dict | None = None
+    # Forex and crypto only, capped by the engine.
+    leverage: float | None = None
 
 
 class ArenaBacktestRequest(BaseModel):
     days: int = 30
-    # Replay the same sessions at 0% / 0.02% / 0.05% assumed slippage, so an
-    # edge that only exists with free fills is visible as such.
+    # Replay the same sessions at 0x, 0.5x and 1x the market's own assumed
+    # fill cost, so an edge that only exists with free fills is visible.
     slippage_sweep: bool = False
 
 
+@app.get("/api/arena/markets")
+def api_arena_markets(request: Request):
+    """Every market, its status, and this client's window for it."""
+    return arena_service.markets_overview(client=get_client_ip(request))
+
+
 @app.get("/api/arena")
-def api_arena(request: Request):
-    ip = get_client_ip(request)
+def api_arena(request: Request, market: str | None = None):
+    ip = arena_key(request, market)
     # On Render's free tier this request is often what woke the server. Start
     # the catch-up here rather than waiting up to five minutes for the
     # scheduler - but in the background, so the page still renders now. The
@@ -552,35 +575,39 @@ def api_arena(request: Request):
 
 
 @app.put("/api/arena/config")
-def api_arena_config(req: ArenaConfigRequest, request: Request):
+def api_arena_config(req: ArenaConfigRequest, request: Request,
+                     market: str | None = None):
     raw = {k: v for k, v in req.model_dump().items() if v is not None}
-    return {"config": arena_service.update_config(get_client_ip(request), raw)}
+    return {"config": arena_service.update_config(arena_key(request, market), raw)}
 
 
 @app.post("/api/arena/reset")
-def api_arena_reset(request: Request):
-    arena_service.reset(get_client_ip(request))
+def api_arena_reset(request: Request, market: str | None = None):
+    arena_service.reset(arena_key(request, market))
     return {"reset": True}
 
 
 @app.post("/api/arena/strategies/{strategy_id}/{action}")
-def api_arena_strategy_status(strategy_id: str, action: str, request: Request):
+def api_arena_strategy_status(strategy_id: str, action: str, request: Request,
+                              market: str | None = None):
     status = {"bench": "benched", "reinstate": "active"}.get(action)
     if not status:
         raise HTTPException(400, "action must be 'bench' or 'reinstate'")
-    if not arena_service.set_status(get_client_ip(request), strategy_id, status):
+    if not arena_service.set_status(arena_key(request, market), strategy_id, status):
         raise HTTPException(404, "strategy not found in this arena yet")
     return {"id": strategy_id, "status": status}
 
 
 @app.get("/api/arena/trades")
-def api_arena_trades(request: Request, strategy: str | None = None, limit: int = 100):
-    return {"trades": arena_service.trades(get_client_ip(request), strategy, limit)}
+def api_arena_trades(request: Request, strategy: str | None = None, limit: int = 100,
+                     market: str | None = None):
+    return {"trades": arena_service.trades(arena_key(request, market), strategy, limit)}
 
 
 @app.post("/api/arena/backtest")
-def api_arena_backtest(req: ArenaBacktestRequest, request: Request):
-    result = arena_service.run_backtest(get_client_ip(request), req.days,
+def api_arena_backtest(req: ArenaBacktestRequest, request: Request,
+                       market: str | None = None):
+    result = arena_service.run_backtest(arena_key(request, market), req.days,
                                         slippage_sweep=req.slippage_sweep)
     if not result.get("ok"):
         raise HTTPException(502, result.get("reason", "backtest failed"))
@@ -588,8 +615,8 @@ def api_arena_backtest(req: ArenaBacktestRequest, request: Request):
 
 
 @app.get("/api/arena/backtest")
-def api_arena_last_backtest(request: Request):
-    return {"backtest": arena_service.last_backtest(get_client_ip(request))}
+def api_arena_last_backtest(request: Request, market: str | None = None):
+    return {"backtest": arena_service.last_backtest(arena_key(request, market))}
 
 
 # ---------- Serve the PWA frontend ----------

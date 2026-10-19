@@ -51,7 +51,7 @@ def stub_bars(monkeypatch, frame):
     """Replace the fetch, and record what period the service asked for."""
     calls = []
 
-    def fake(symbols, period=None):
+    def fake(symbols, period=None, **kwargs):
         calls.append(period)
         return ({s: frame for s in symbols},
                 {"at": timeutil.iso_now(), "symbols_ok": list(symbols),
@@ -210,8 +210,12 @@ def test_a_brand_new_arena_does_not_backfill(arena_client, monkeypatch):
     service.tick_client(arena_client, ist_at("2026-10-07", 16, 0))
 
     state = store.load(arena_client)
+    # Today only - the two earlier sessions in the stub are NOT invented.
     assert [h["date"] for h in state["history"]] == ["2026-10-07"]
-    assert state["caught_up_last"] == 0
+    # Counted as caught up because it is: the arena woke at 16:00 and
+    # replayed a session that had already finished at 15:30.
+    assert state["caught_up_last"] == 1
+    assert state["history"][0]["caught_up"] is True
 
 def test_catch_up_is_capped(arena_client, monkeypatch):
     state = store.load(arena_client)
@@ -268,7 +272,7 @@ def test_storage_backend_reads_postgres_when_the_pool_exists(monkeypatch):
 def test_freshness_reports_last_tick_and_failures(arena_client, monkeypatch):
     stub = multi_session(["2026-10-09"])
 
-    def fake(symbols, period=None):
+    def fake(symbols, period=None, **kwargs):
         return ({"TEST.NS": stub},
                 {"at": timeutil.iso_now(), "symbols_ok": ["TEST.NS"],
                  "symbols_failed": ["BROKEN.NS"], "latest_bar_at": "2026-10-09T11:05:00+05:30"})
@@ -283,16 +287,21 @@ def test_freshness_reports_last_tick_and_failures(arena_client, monkeypatch):
     assert fresh["latest_bar_at"] == "2026-10-09T11:05:00+05:30"
     assert fresh["age_minutes"] is not None
 
-def test_freshness_flags_a_stale_tick_during_market_hours(arena_client, monkeypatch):
+def test_freshness_flags_a_stale_tick_during_the_session(arena_client, monkeypatch):
+    """Mid-session with nothing for three hours means the server was asleep."""
+    mid_session = ist_at("2026-10-09", 12, 0)          # Friday, NSE open
     state = store.load(arena_client)
-    state["last_tick_at"] = timeutil.to_iso(timeutil.utc_now() - dt.timedelta(hours=3))
+    state["last_tick_at"] = timeutil.to_iso(mid_session - dt.timedelta(hours=3))
     store.save(arena_client, state)
-    monkeypatch.setattr(market_calendar, "is_market_open", lambda now=None: True)
-    assert service.freshness(store.load(arena_client))["stale"] is True
+    assert service.freshness(store.load(arena_client), mid_session)["stale"] is True
 
-def test_freshness_is_not_stale_when_the_market_is_shut(arena_client, monkeypatch):
-    monkeypatch.setattr(market_calendar, "is_market_open", lambda now=None: False)
-    assert service.freshness(store.load(arena_client))["stale"] is False
+def test_freshness_is_not_stale_outside_the_session(arena_client, monkeypatch):
+    """The same silence after the close is just a shut market."""
+    after_close = ist_at("2026-10-09", 20, 0)
+    state = store.load(arena_client)
+    state["last_tick_at"] = timeutil.to_iso(after_close - dt.timedelta(hours=3))
+    store.save(arena_client, state)
+    assert service.freshness(store.load(arena_client), after_close)["stale"] is False
 
 def test_fetch_diagnostics_record_failed_symbols(monkeypatch):
     import data_sources

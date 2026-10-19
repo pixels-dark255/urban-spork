@@ -10,25 +10,75 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
+from zoneinfo import ZoneInfo
 
 import data_sources
 import market_calendar
 import timeutil
 from arena import engine, store
-from arena import costs as costs_mod
+from arena import markets as markets_mod
 from arena.strategies import enrich, catalog
 
 BACKTEST_PREFIX = "bt::"
 REPLAY_PERIOD = "60d"     # Yahoo serves 5-minute bars for about 60 days
-OPEN_MINUTE = 9 * 60 + 15
-SETTLE_MINUTE = engine.SESSION_END_MINUTE + engine.BAR_MINUTES   # last bar complete
+# A session is only finished once its last bar has printed.
+SETTLE_LAG = dt.timedelta(minutes=engine.BAR_MINUTES)
 
 
 def _ist(now: dt.datetime | None):
     return (now or timeutil.utc_now()).astimezone(timeutil.IST)
 
 
-def _fetch_enriched(symbols: list[str], period: str | None = None) -> tuple[dict, dict]:
+def _market_window(state: dict):
+    cfg = state["config"]
+    market = engine.market_of(state)
+    return market, (cfg.get("window") or market.default_window())
+
+
+def _session_ended(market, window, date_iso: str, now: dt.datetime) -> bool:
+    bounds = markets_mod.session_bounds(market, window, date_iso)
+    return bool(bounds) and now >= bounds[1] + SETTLE_LAG
+
+
+def current_session(market, window, now: dt.datetime):
+    """The session in progress, or the most recent one that has started.
+
+    Returned even once it is over, because that is the session this tick
+    should settle. Two window dates are tried, newest first: a window that
+    crosses midnight belongs to the date it started, so at 00:30 the
+    session under way is yesterday's.
+    """
+    local = now.astimezone(ZoneInfo(window["tz"])).date()
+    for cand in (local, local - dt.timedelta(days=1)):
+        bounds = markets_mod.active_session(market, window, cand)
+        if bounds and now >= bounds[0]:
+            return cand.isoformat(), bounds
+    return None, None
+
+
+def fetch_fx(market, now: dt.datetime | None = None) -> dict:
+    """The rates needed to state this market's money in rupees.
+
+    Skipped entirely for the NSE, whose book is already in rupees - there
+    is no reason to spend a network call converting INR to INR.
+    """
+    symbols = [] if market.quote_currency == "INR" else [markets_mod.FX_SYMBOLS["USDINR"]]
+    if any(market.symbol_currency(s) == "JPY" for s in market.default_symbols):
+        symbols.append(markets_mod.FX_SYMBOLS["USDJPY"])
+    quotes = {}
+    for sym in symbols:
+        try:
+            raw = data_sources.fetch_intraday_bars(sym, "5m")
+            if raw is not None and not raw.empty:
+                quotes[sym] = float(raw["Close"].dropna().iloc[-1])
+        except Exception as e:
+            print(f"[warn] arena: FX quote failed for {sym}: {e}")
+    return markets_mod.fx_for_session(market, list(market.default_symbols), quotes)
+
+
+def _fetch_enriched(symbols: list[str], period: str | None = None,
+                    market=None, window: dict | None = None,
+                    fx: dict | None = None) -> tuple[dict, dict]:
     """Returns (bars_by_symbol, diagnostics).
 
     The diagnostics exist because a silent data failure and a sleeping
@@ -41,7 +91,10 @@ def _fetch_enriched(symbols: list[str], period: str | None = None) -> tuple[dict
         try:
             raw = (data_sources._yf_download_cached(sym, period, "5m") if period
                    else data_sources.fetch_intraday_bars(sym, "5m"))
-            df = enrich(raw)
+            scale = ((fx or {}).get("symbol_scale") or {}).get(sym)
+            if scale is None:
+                scale = 1.0
+            df = enrich(raw, market=market, window=window, scale=float(scale))
             if df is None or df.empty:
                 failed.append(sym)
                 continue
@@ -74,18 +127,18 @@ def _bg_lock(ip: str) -> threading.Lock:
 
 
 def is_due(ip: str, now: dt.datetime | None = None) -> bool:
-    """Whether a tick would actually do something: a session that should be
-    open, or past days still unsettled. Cheap - reads state, no network."""
+    """Whether a tick would actually do something: a session running now, or
+    a finished one still unsettled. Cheap - reads state, no network."""
     state = store.load(ip)
     if not state or not state["config"].get("enabled"):
         return False
-    now = now or timeutil.utc_now()
-    ist = _ist(now)
-    today, minute = ist.date().isoformat(), ist.hour * 60 + ist.minute
-    if _missed_sessions(state, ist):
+    now = timeutil.ensure_aware(now or timeutil.utc_now())
+    if _missed_sessions(state, now):
         return True
-    if market_calendar.is_trading_day(ist.date()) and minute >= OPEN_MINUTE:
-        return state["day"] != today or not state["day_settled"]
+    market, window = _market_window(state)
+    current, _bounds = current_session(market, window, now)
+    if current:
+        return state["day"] != current or not state["day_settled"]
     return False
 
 
@@ -116,10 +169,21 @@ def tick_in_background(ip: str, now: dt.datetime | None = None) -> bool:
 
 
 def load_or_create(ip: str) -> dict:
+    """Load this client's arena for one market, creating it on first use.
+
+    The market comes from the storage key, so a client asking for their US
+    arena gets a US arena rather than a copy of their NSE one.
+    """
+    _client, market_id = store.split_key(ip)
     with store.lock:
         state = store.load(ip)
         if state is None:
-            state = engine.new_state()
+            state = engine.new_state({"market": market_id})
+            store.save(ip, state)
+        elif state["config"].get("market") != market_id:
+            # Defensive: a state filed under a market key must say so, or
+            # every cost and calendar decision below reads the wrong profile.
+            state["config"]["market"] = market_id
             store.save(ip, state)
         return state
 
@@ -129,6 +193,12 @@ def load_or_create(ip: str) -> dict:
 # ---------------------------------------------------------------------------
 
 def tick_all(now: dt.datetime | None = None) -> None:
+    """Advance every stored arena, across every market.
+
+    Each key is one client's arena for one market, so a user running all
+    four gets four ticks - each on its own calendar, and each a no-op
+    while its own session is shut.
+    """
     for ip in store.all_ids():
         if ip.startswith(BACKTEST_PREFIX):
             continue
@@ -142,58 +212,74 @@ MAX_CATCHUP_SESSIONS = 60       # Yahoo serves ~60 days of 5-minute bars
 SHORT_GAP_SESSIONS = 4          # beyond this, the 5d fetch can't cover it
 
 
-def _missed_sessions(state: dict, ist: dt.datetime) -> list[str]:
-    """Trading days that should have been settled but weren't.
+def _missed_sessions(state: dict, now: dt.datetime) -> list[str]:
+    """Active sessions that have finished but were never settled.
 
-    Walks forward from last_settled_day rather than looking only at the one
-    day left open. On a free Render instance the server can be asleep for a
-    week; the old code settled whichever single day was still open and
-    silently skipped every session between it and today.
+    Walks forward from last_settled_day over the market's own calendar and
+    the user's window, rather than over calendar dates: a US arena skips
+    NYSE holidays, a forex arena skips the weekend gap, and a window the
+    user restricted to three evenings a week has three sessions a week.
+
+    On a free Render instance the server can be asleep for a week, so this
+    returns every missed session, not just the one left open.
     """
-    today = ist.date()
+    market, window = _market_window(state)
     anchor = state.get("last_settled_day") or state.get("day")
     if not anchor:
-        return []                       # brand-new arena: start from today
+        return []                       # brand-new arena: start from now
     try:
         cursor = dt.date.fromisoformat(anchor)
     except (TypeError, ValueError):
         return []
 
-    # The open-but-unsettled day is itself a missed session.
-    include_anchor = bool(state.get("day")) and not state.get("day_settled")
-    out = [state["day"]] if include_anchor else []
+    # The session now under way (or the latest to have started) is the live
+    # path's business, not the catch-up's - otherwise a brand-new arena
+    # would file its very first session as "caught up", and the live and
+    # replayed paths would both try to settle it.
+    live_date, _bounds = current_session(market, window, now)
 
-    cursor += dt.timedelta(days=1)
-    while cursor <= today and len(out) < MAX_CATCHUP_SESSIONS:
-        if market_calendar.is_trading_day(cursor):
-            iso = cursor.isoformat()
-            if iso not in out:
-                out.append(iso)
-        cursor += dt.timedelta(days=1)
-    return out[:MAX_CATCHUP_SESSIONS]
+    out = []
+    # The open-but-unsettled session is itself missed, once it has ended.
+    if state.get("day") and state["day"] != live_date and not state.get("day_settled") \
+            and _session_ended(market, window, state["day"], now):
+        out.append(state["day"])
+
+    wtz = ZoneInfo(window["tz"])
+    # +1 day: a session that starts late and crosses midnight belongs to the
+    # date it started, which may already be "yesterday" by the window's clock.
+    last = now.astimezone(wtz).date() + dt.timedelta(days=1)
+    for iso in markets_mod.sessions_in_range(market, window,
+                                             cursor + dt.timedelta(days=1), last,
+                                             limit=MAX_CATCHUP_SESSIONS * 2):
+        if iso in out or iso == live_date:
+            continue
+        if _session_ended(market, window, iso, now):
+            out.append(iso)
+        if len(out) >= MAX_CATCHUP_SESSIONS:
+            break
+    return sorted(out)[:MAX_CATCHUP_SESSIONS]
 
 
 def tick_client(ip: str, now: dt.datetime | None = None) -> None:
-    now = now or timeutil.utc_now()
-    ist = _ist(now)
-    today, minute = ist.date().isoformat(), ist.hour * 60 + ist.minute
-    trading_today = market_calendar.is_trading_day(ist.date())
-
+    now = timeutil.ensure_aware(now or timeutil.utc_now())
     state = store.load(ip)
     if not state or not state["config"].get("enabled"):
         return
+    market, window = _market_window(state)
 
-    missed = _missed_sessions(state, ist)
-    # A session only counts as missed once it is over; today is handled below.
-    finished_missed = [d for d in missed if d < today or minute >= SETTLE_MINUTE]
-    should_open = trading_today and minute >= OPEN_MINUTE and state["day"] != today
-    today_live = state["day"] == today and not state["day_settled"]
-    if not (finished_missed or should_open or today_live):
+    finished_missed = _missed_sessions(state, now)
+    # The session under way, or the last one to have started. None outside
+    # the user's window - which is most of the day, and the whole point of
+    # letting them choose it.
+    current, _bounds = current_session(market, window, now)
+    should_open = bool(current) and state["day"] != current
+    live = bool(current) and state["day"] == current and not state["day_settled"]
+    if not (finished_missed or should_open or live):
         # Nothing to do - but still record that a tick happened. Without
         # this, last_tick_at keeps the timestamp of the last tick that had
         # work, and the UI reports "the server was asleep" about a server
-        # that is wide awake with a settled day behind it. The stale catch-up
-        # count would likewise keep claiming days were replayed.
+        # that is wide awake with a settled session behind it. The stale
+        # catch-up count would likewise keep claiming sessions were replayed.
         with store.lock:
             state = store.load(ip)
             if state:
@@ -203,32 +289,44 @@ def tick_client(ip: str, now: dt.datetime | None = None) -> None:
         return
 
     # A long gap needs more history than the 5-day intraday window holds.
-    gap = len([d for d in finished_missed if d != today])
+    gap = len([d for d in finished_missed if d != current])
     period = REPLAY_PERIOD if gap > SHORT_GAP_SESSIONS else None
-    bars, diagnostics = _fetch_enriched(state["config"]["symbols"], period)
+    fx = fetch_fx(market, now)
+    bars, diagnostics = _fetch_enriched(state["config"]["symbols"], period,
+                                        market=market, window=window, fx=fx)
 
     with store.lock:
         state = store.load(ip)
         if not state:
             return
         caught_up = 0
-        # Replay each missed session in date order, exactly as the live path
+        # Replay each missed session in order, exactly as the live path
         # would have: same engine, same bars, same functions.
-        for date in _missed_sessions(state, ist):
-            if date == today and minute < SETTLE_MINUTE:
-                break                   # today is still running; handled below
+        for date in _missed_sessions(state, now):
             if state["day"] != date:
-                engine.start_day(state, date, caught_up=True)
+                engine.start_day(state, date, caught_up=True, fx=fx)
             engine.process_bars(state, bars, now=None)
             engine.settle_day(state, caught_up=True)
             caught_up += 1
 
-        if trading_today and minute >= OPEN_MINUTE and state["day"] != today:
-            engine.start_day(state, today)
-        if state["day"] == today and not state["day_settled"]:
-            engine.process_bars(state, bars, now=now)
-            if minute >= SETTLE_MINUTE:
-                engine.settle_day(state)
+        if current:
+            # A session that was already over when this tick began was
+            # replayed, not watched - exactly like the ones above - so it
+            # is tagged and counted the same way. Anything else would make
+            # "caught up" mean "replayed, unless it happened to be the most
+            # recent one", which is not a distinction anyone can use.
+            ended = _session_ended(market, window, current, now)
+            opened_late = ended and state["day"] != current
+            if state["day"] != current:
+                engine.start_day(state, current, caught_up=opened_late, fx=fx)
+            if state["day"] == current and not state["day_settled"]:
+                # `now=None` once the session is over: every bar in it is
+                # complete, so none needs holding back as still forming.
+                engine.process_bars(state, bars, now=None if ended else now)
+                if ended:
+                    engine.settle_day(state, caught_up=opened_late)
+                    if opened_late:
+                        caught_up += 1
 
         state["last_tick_at"] = timeutil.iso_now()
         state["last_tick"] = diagnostics
@@ -250,10 +348,14 @@ def freshness(state: dict, now: dt.datetime | None = None) -> dict:
     is happening": the server was asleep, the data source failed, or the
     market is simply shut.
     """
-    now = now or timeutil.utc_now()
+    now = timeutil.ensure_aware(now or timeutil.utc_now())
     last = timeutil.parse_utc(state.get("last_tick_at"))
     age_minutes = None if last is None else round((now - last).total_seconds() / 60.0, 1)
-    market_open = market_calendar.is_market_open(now)
+    market, window = _market_window(state)
+    # Staleness is judged against the user's ACTIVE session, not the
+    # market's hours: nothing is expected to happen while the US market is
+    # open but the window says the user is asleep.
+    market_open = bool(markets_mod.session_date_for(market, window, now))
     tick = state.get("last_tick") or {}
     return {
         "last_tick_at": state.get("last_tick_at"),
@@ -274,10 +376,19 @@ def view(ip: str) -> dict:
         if engine.adopt_new_strategies(fresh):
             store.save(ip, fresh)
         state = fresh
+    market, window = _market_window(state)
     return {
         "config": state["config"],
-        "strategies": catalog(),
+        "strategies": catalog(market.has_volume),
+        # The NSE status block the frontend has always read, kept for the
+        # India tab and for /api/market-status's contract.
         "market": market_calendar.market_status(),
+        "market_profile": market.status(),
+        "session": markets_mod.session_info(market, window),
+        "currency": {"code": market.quote_currency, "symbol": market.currency_symbol,
+                     "fractional": market.fractional},
+        "fx": state.get("fx"),
+        "regulatory_note": REGULATORY_NOTE,
         "day": state["day"],
         "day_settled": state["day_settled"],
         "storage": {
@@ -291,17 +402,56 @@ def view(ip: str) -> dict:
         "leaderboard": engine.leaderboard(state),
         "open_positions": engine.open_positions(state),
         "history": state["history"][-30:],
-        "presets": {"liquid_nifty": engine.LIQUID_NIFTY},
-        "default_costs": costs_mod.DEFAULT_COSTS,
+        "presets": market.presets,
+        "symbol_hint": market.symbol_hint,
+        "default_costs": market.costs.defaults,
         "default_risk": engine.DEFAULT_RISK,
+        "max_leverage": engine.MAX_LEVERAGE if market.allow_leverage else 1.0,
     }
 
 
+# Shown under every leaderboard, on every market. The arena is a simulator,
+# and the rules for actually doing any of this from India are not the same
+# for the four markets - a note that only appears in the README is a note
+# the person placing a real order never reads.
+REGULATORY_NOTE = (
+    "Simulation only. For real money in India: forex is legal only in INR pairs and "
+    "RBI-permitted crosses on NSE/BSE through a SEBI-registered broker. Offshore forex "
+    "apps are illegal. US stocks go through the LRS route. Crypto is taxed at 30% plus "
+    "1% TDS."
+)
+
+
+def markets_overview(now: dt.datetime | None = None, client: str | None = None) -> dict:
+    """Every market with its status, and this client's window for it."""
+    now = timeutil.ensure_aware(now or timeutil.utc_now())
+    out = []
+    for market in markets_mod.MARKETS.values():
+        row = market.status(now)
+        window = market.default_window()
+        if client:
+            state = store.load(store.key(client, market.id))
+            if state:
+                window = state["config"].get("window") or window
+                row["has_arena"] = True
+                row["day"] = state.get("day")
+                row["day_settled"] = state.get("day_settled")
+        row["session"] = markets_mod.session_info(market, window, now=now)
+        out.append(row)
+    return {"markets": out, "default": markets_mod.DEFAULT_MARKET,
+            "regulatory_note": REGULATORY_NOTE,
+            "us_holidays": markets_mod.us_holiday_status()}
+
+
 def update_config(ip: str, raw: dict) -> dict:
+    _client, market_id = store.split_key(ip)
     with store.lock:
-        state = store.load(ip) or engine.new_state()
+        state = store.load(ip) or engine.new_state({"market": market_id})
         old = state["config"]
-        new = engine.normalise_config(raw, base=old)
+        # The market is taken from the storage key, never from the request:
+        # one arena per market, and a POST cannot move an arena's history
+        # onto a different calendar and currency.
+        new = engine.normalise_config(raw, base=old, market_id=market_id)
         in_session = bool(state["day"]) and not state["day_settled"]
         if in_session:
             # Close positions the new config no longer covers, at their mark,
@@ -325,9 +475,12 @@ def update_config(ip: str, raw: dict) -> dict:
 
 
 def reset(ip: str) -> None:
+    _client, market_id = store.split_key(ip)
     with store.lock:
         state = store.load(ip)
-        store.save(ip, engine.new_state(state["config"] if state else None))
+        cfg = state["config"] if state else {"market": market_id}
+        cfg = {**cfg, "market": market_id}
+        store.save(ip, engine.new_state(cfg))
 
 
 def set_status(ip: str, sid: str, status: str) -> bool:
@@ -364,15 +517,20 @@ def trades(ip: str, sid: str | None = None, limit: int = 100) -> list[dict]:
 
 def run_backtest(ip: str, days: int = 30, slippage_sweep: bool = False) -> dict:
     state = load_or_create(ip)
-    bars, _diag = _fetch_enriched(state["config"]["symbols"], REPLAY_PERIOD)
+    market, window = _market_window(state)
+    fx = fetch_fx(market)
+    bars, _diag = _fetch_enriched(state["config"]["symbols"], REPLAY_PERIOD,
+                                  market=market, window=window, fx=fx)
     bars = {k: v for k, v in bars.items() if v is not None and not v.empty}
     if not bars:
-        return {"ok": False, "reason": "No historical 5-minute data could be fetched for these stocks."}
+        return {"ok": False,
+                "reason": ("No historical 5-minute data could be fetched for these symbols "
+                           "inside your trading window.")}
     days = max(1, min(int(days), 60))
-    result = engine.replay(state["config"], bars, days=days)
+    result = engine.replay(state["config"], bars, days=days, fx=fx)
     if slippage_sweep:
         result["slippage_sweep"] = engine.replay_slippage_sweep(
-            state["config"], bars, days=days)
+            state["config"], bars, days=days, fx=fx)
     with store.lock:
         store.save(BACKTEST_PREFIX + ip, result)
     return backtest_view(result)
@@ -384,8 +542,11 @@ def last_backtest(ip: str) -> dict | None:
 
 
 def backtest_view(result: dict) -> dict:
+    market = engine.market_of(result)
     return {
         "ok": True,
+        "currency": {"code": market.quote_currency, "symbol": market.currency_symbol,
+                     "fractional": market.fractional},
         "replay": result.get("replay"),
         "verdict": engine.verdict(result),
         "leaderboard": engine.leaderboard(result),

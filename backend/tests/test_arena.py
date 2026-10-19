@@ -11,10 +11,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from arena import costs, engine
+from arena import costs, engine, markets as _markets
 from arena.strategies import enrich, STRATEGIES
 
 IST = "Asia/Kolkata"
+
+
+NSE = _markets.get("nse")
 
 
 def session(date: str, closes, open_=None, high=None, low=None, volume=1000.0):
@@ -69,14 +72,14 @@ def test_stop_wins_when_bar_touches_stop_and_target():
     book["positions"]["TEST.NS"] = {"symbol": "TEST.NS", "qty": 10, "entry_price": 100.0,
                                     "entry_at": "x", "stop": 99.0, "target": 101.0, "buy_charges": 0.5}
     row = pd.Series({"Open": 100.0, "High": 102.0, "Low": 98.0, "Close": 100.5, "minute": 600})
-    price, reason = engine._exit_decision(STRATEGIES["benchmark"], row, row, book["positions"]["TEST.NS"], 600)
+    price, reason = engine._exit_decision(STRATEGIES["benchmark"], row, row, book["positions"]["TEST.NS"], 300, NSE)
     assert reason == "stop_loss" and price == 99.0
 
 
 def test_gap_through_stop_fills_at_open_not_stop():
     row = pd.Series({"Open": 97.0, "High": 97.5, "Low": 96.0, "Close": 97.2, "minute": 600})
     pos = {"stop": 99.0, "target": 105.0}
-    price, reason = engine._exit_decision(STRATEGIES["orb"], row, row, pos, 600)
+    price, reason = engine._exit_decision(STRATEGIES["orb"], row, row, pos, 300, NSE)
     assert (price, reason) == (97.0, "stop_loss_gap")
 
 
@@ -360,9 +363,14 @@ def test_slippage_sweep_runs_the_same_sessions_at_each_assumption():
     ]))}
     sweep = engine.replay_slippage_sweep(cfg, bars, days=2)
 
+    # Levels are multiples of the market's OWN fill assumption, so the same
+    # sweep means something on a market whose cost is a spread in pips
+    # rather than a percentage.
     labels = [lv["label"] for lv in sweep["levels"]]
-    assert labels == ["0%", "0.02%", "0.05%"]
+    assert labels == ["0×", "0.5×", "1×"]
+    assert sweep["levels"][0]["describes"] == "perfect fills, no cost"
+    assert sweep["levels"][2]["describes"] == "0.05% a side"   # the NSE default
     bench = next(r for r in sweep["rows"] if r["id"] == "benchmark")
     assert set(bench["by_slippage"]) == set(labels)
     # More assumed slippage can only cost money, never make it.
-    assert bench["by_slippage"]["0%"]["net"] >= bench["by_slippage"]["0.05%"]["net"]
+    assert bench["by_slippage"]["0×"]["net"] >= bench["by_slippage"]["1×"]["net"]

@@ -121,9 +121,14 @@ def intraday_tick():
 
 
 def arena_tick():
-    """Advances every Strategy Arena. Runs every tick, not just in market
-    hours: it also opens the day at 09:15 and settles it after the close, and
-    catches up a session the server slept through."""
+    """Advances every Strategy Arena, on every market.
+
+    Runs on every tick rather than only in NSE hours - there is no single
+    "market hours" any more. Each arena opens its own session when the
+    market is open AND the user's window is active, settles it once that
+    session ends, and catches up any it slept through. A US arena ticks
+    through the Indian night; a crypto arena ticks at weekends.
+    """
     arena_service.tick_all()
 
 
