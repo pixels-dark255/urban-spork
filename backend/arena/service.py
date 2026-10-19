@@ -41,17 +41,25 @@ def _session_ended(market, window, date_iso: str, now: dt.datetime) -> bool:
 
 
 def current_session(market, window, now: dt.datetime):
-    """The session in progress, or the most recent one that has started.
+    """The session this tick is responsible for: the one in progress, or the
+    one that ended earlier today.
 
-    Returned even once it is over, because that is the session this tick
-    should settle. Two window dates are tried, newest first: a window that
-    crosses midnight belongs to the date it started, so at 00:30 the
-    session under way is yesterday's.
+    Two window dates are tried, newest first, because a window that crosses
+    midnight belongs to the date it started - at 00:30 the session under way
+    is yesterday's.
+
+    A session that ended on an earlier date is deliberately NOT current. It
+    is a session the server slept through, and the catch-up settles it and
+    tags it as replayed; letting the live path quietly adopt it would make a
+    Friday session still look "live" on Saturday night.
     """
-    local = now.astimezone(ZoneInfo(window["tz"])).date()
+    tz = ZoneInfo(window["tz"])
+    local = now.astimezone(tz).date()
     for cand in (local, local - dt.timedelta(days=1)):
         bounds = markets_mod.active_session(market, window, cand)
-        if bounds and now >= bounds[0]:
+        if not bounds or now < bounds[0]:
+            continue
+        if now <= bounds[1] or bounds[1].astimezone(tz).date() == local:
             return cand.isoformat(), bounds
     return None, None
 
