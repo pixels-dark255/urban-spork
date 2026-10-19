@@ -1,6 +1,8 @@
-# Python 3.11-3.13. numpy/pandas are ranges rather than exact pins because
-# the old numpy==1.26.4 / pandas==2.2.3 have no 3.13 wheels, so pip either
-# failed outright or fell back to compiling them from source for minutes.
+# numpy/pandas are ranges rather than exact pins because the old
+# numpy==1.26.4 / pandas==2.2.3 have no wheels for current Pythons, so pip
+# either failed outright or fell back to compiling them from source for
+# minutes. The Python version itself is pinned in .python-version - see the
+# note on psycopg2 below for what happens when it is not.
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
 yfinance>=0.2.66
@@ -10,6 +12,11 @@ numpy>=1.26,<3
 vaderSentiment==3.3.2
 requests==2.32.3
 apscheduler==3.10.4
-psycopg2-binary==2.9.9
+# 2.9.9 shipped wheels only up to cp312. When Render moved its default
+# Python to 3.14 there was no wheel, pip built it from source, and the
+# result failed to load with "undefined symbol: _PyInterpreterState_Get" -
+# a private CPython symbol 3.14 removed. The app kept running and quietly
+# fell back to JSON files. 2.9.13 ships real cp313/cp314/cp315 wheels.
+psycopg2-binary==2.9.13
 python-dotenv==1.0.1
 pytz==2024.1

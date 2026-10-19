@@ -220,9 +220,19 @@ function renderArenaLive(data) {
 // conclude the thing is broken.
 function storageWarning(storage) {
   if (!storage || !storage.ephemeral) return "";
-  return `<div class="arena-warn">Results are stored in a file that Render wipes whenever the
-    server sleeps or redeploys. Set <code>DATABASE_URL</code> to a free Postgres (Neon or
-    Supabase) to keep them.</div>`;
+  const wiped = `Results are stored in a file that Render wipes whenever the server sleeps
+    or redeploys.`;
+  // Telling someone who has already set DATABASE_URL to set DATABASE_URL is
+  // how a broken driver stays broken for a week. If it is configured, the
+  // problem is the connection, and the reason is worth printing.
+  if (storage.configured) {
+    return `<div class="arena-warn arena-warn-hard">${wiped}
+      <code>DATABASE_URL</code> <b>is set, but Postgres could not be used</b>${
+        storage.error ? `: <code>${escapeHtml(storage.error)}</code>` : "."}
+      Until that is fixed the arena is still running on files.</div>`;
+  }
+  return `<div class="arena-warn">${wiped} Set <code>DATABASE_URL</code> to a free Postgres
+    (Neon or Supabase) to keep them.</div>`;
 }
 
 // Tells three look-alike situations apart: the server was asleep, the data

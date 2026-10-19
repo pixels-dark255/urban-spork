@@ -35,6 +35,11 @@ STORE_PATH = os.path.join(DATA_DIR, "watchlists.json")
 
 _lock = threading.Lock()
 _pg_pool = None
+# Why Postgres is not in use, when it was asked for. None means it was
+# never configured. Surfaced through the API because the fallback is
+# silent: the app keeps serving from JSON files and the only other clue is
+# one line in the deploy log.
+PG_ERROR: str | None = None
 
 if DATABASE_URL:
     try:
@@ -57,8 +62,17 @@ if DATABASE_URL:
             _pg_pool.putconn(_conn)
         print("[info] storage.py: using Postgres backend (DATABASE_URL set) - watchlist will persist permanently.")
     except Exception as e:
+        PG_ERROR = f"{type(e).__name__}: {e}"
         print(f"[warn] Postgres init failed ({e}) - falling back to local JSON file. "
               f"Watchlist will NOT survive Render restarts until this is fixed.")
+        if isinstance(e, ImportError):
+            # The driver itself would not load, which is a build problem,
+            # not a database one. It happens when the installed
+            # psycopg2-binary has no wheel for the Python the host chose
+            # and pip compiled it against a newer CPython ABI.
+            print("[warn] ...that is the psycopg2 DRIVER failing to import, not your "
+                  "DATABASE_URL. Check the Python version and the psycopg2-binary "
+                  "pin - see backend/requirements.txt.")
         _pg_pool = None
 else:
     print("[info] storage.py: using local JSON file backend (no DATABASE_URL set) - "

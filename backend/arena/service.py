@@ -399,12 +399,10 @@ def view(ip: str) -> dict:
         "regulatory_note": REGULATORY_NOTE,
         "day": state["day"],
         "day_settled": state["day_settled"],
-        "storage": {
-            "backend": store.backend_name(),
-            # True means results live in a file Render wipes on every sleep
-            # or redeploy - worth a banner, not a footnote.
-            "ephemeral": store.backend_name() == "json_file",
-        },
+        # `ephemeral` means results live in a file Render wipes on every
+        # sleep or redeploy - worth a banner, not a footnote. `configured`
+        # and `error` say WHICH of the two reasons it is.
+        "storage": store.backend_status(),
         "freshness": freshness(state),
         "verdict": engine.verdict(state),
         "leaderboard": engine.leaderboard(state),

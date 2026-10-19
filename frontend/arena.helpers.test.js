@@ -218,6 +218,26 @@ test("the storage banner appears only on ephemeral storage", () => {
   assert.strictEqual(arena.storageWarning(null), "");
 });
 
+test("a configured-but-broken Postgres is not told to set DATABASE_URL", () => {
+  // The failure that prompted this: the driver would not import, the app
+  // fell back to files, and the banner advised setting a variable that was
+  // already set.
+  const html = arena.storageWarning({
+    backend: "json_file", ephemeral: true, configured: true,
+    error: "ImportError: undefined symbol: _PyInterpreterState_Get",
+  });
+  assert.ok(html.includes("is set, but Postgres could not be used"), html);
+  assert.ok(html.includes("_PyInterpreterState_Get"), "the reason must be printed");
+  assert.ok(!html.includes("Set <code>DATABASE_URL</code> to a free Postgres"),
+            "do not tell them to do the thing they have already done");
+});
+
+test("a broken Postgres without a captured reason still says it is broken", () => {
+  const html = arena.storageWarning({ backend: "json_file", ephemeral: true,
+                                      configured: true, error: null });
+  assert.ok(html.includes("is set, but Postgres could not be used"), html);
+});
+
 test("a stale tick during market hours is called out as sleep", () => {
   const html = arena.freshnessLine({
     last_tick_at: "2026-10-09T04:00:00Z", age_minutes: 95, stale: true,

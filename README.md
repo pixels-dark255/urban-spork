@@ -60,7 +60,10 @@ key at all**.
 
 ## 3. Test it locally first (optional but recommended)
 
-You'll need Python 3.11, 3.12 or 3.13.
+The Python version is pinned in `.python-version` (3.14.3) and mirrored in
+`render.yaml`. Any of 3.11 upwards works locally, but pin it on a host:
+Render moved its own default to 3.14 and that silently broke the Postgres
+driver — see "Postgres says it failed" below.
 
 (numpy and pandas are version *ranges* rather than exact pins: the previous
 `numpy==1.26.4` / `pandas==2.2.3` have no Python 3.13 wheels, so `pip
@@ -149,6 +152,36 @@ the three features differently:
   request after a wake it refetches Yahoo's 5-minute bars and runs every
   missed session through the same engine, in order, before touching today
   — see the next section.
+
+### Postgres says it failed, and the app carries on without it
+
+If the deploy log says:
+
+```
+[warn] Postgres init failed (... undefined symbol: _PyInterpreterState_Get)
+       - falling back to local JSON file.
+```
+
+that is the **psycopg2 driver failing to import**, not a problem with your
+`DATABASE_URL`. It happens when the host picks a Python newer than the
+pinned `psycopg2-binary` has a wheel for: pip then compiles it from source
+against a CPython ABI it was never written for, and the resulting `.so`
+will not load. `_PyInterpreterState_Get` is a private symbol that CPython
+3.14 removed.
+
+It bit this app when Render moved its default Python to 3.14.3 while
+`psycopg2-binary==2.9.9` (wheels only up to cp312) was pinned. Both halves
+are now fixed — `.python-version` pins the interpreter, and the driver is
+on a release with cp313/cp314/cp315 wheels — so a fresh deploy is fine. If
+you see it on an older service, check that its **Environment** tab has
+`PYTHON_VERSION` set, because a service created by hand in the dashboard
+does not inherit the value from `render.yaml`.
+
+The app deliberately keeps serving when this happens rather than refusing
+to boot, which is why it is easy to miss: everything works, nothing
+persists. The Arena's banner now says *"`DATABASE_URL` is set, but Postgres
+could not be used"* with the reason, rather than telling you to set a
+variable you have already set.
 
 ### Running the Arena live on Render free tier
 

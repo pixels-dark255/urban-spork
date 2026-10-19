@@ -40,6 +40,23 @@ def backend_name() -> str:
     return "postgres" if storage._pg_pool else "json_file"
 
 
+def backend_status() -> dict:
+    """Enough for the UI to say something true.
+
+    "Ephemeral" has two causes that need opposite advice: DATABASE_URL was
+    never set, or it was set and Postgres could not be reached. Telling
+    someone who has already set it to set it is how a broken driver stays
+    broken for a week.
+    """
+    name = backend_name()
+    return {
+        "backend": name,
+        "ephemeral": name == "json_file",
+        "configured": bool(getattr(storage, "DATABASE_URL", "")),
+        "error": getattr(storage, "PG_ERROR", None),
+    }
+
+
 def _file_load() -> dict:
     if not os.path.exists(ARENA_PATH):
         return {}

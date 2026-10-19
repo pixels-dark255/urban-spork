@@ -16,8 +16,11 @@ services:
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /api/health
     envVars:
+      # Must match .python-version at the repo root. Render's own default
+      # moves (it went to 3.14.3), and an unpinned interpreter is how
+      # psycopg2 silently stopped loading - see backend/requirements.txt.
       - key: PYTHON_VERSION
-        value: "3.11.11"
+        value: "3.14.3"
       # Optional. Without it, news falls back to keyless Google News RSS.
       - key: NEWS_API_KEY
         sync: false
