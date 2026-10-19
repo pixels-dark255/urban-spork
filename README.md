@@ -25,10 +25,12 @@ stock-analyzer/
     scheduler.py       background job that keeps watchlist predictions live
     storage.py         watchlist + prediction persistence (JSON file or Postgres)
     market_calendar.py NSE session hours + trading holidays (one shared rule)
+    us_holidays.json   NYSE closures + half days (2026-2027)
     timeutil.py        timezone-aware UTC helpers
     jsonsafe.py        strips NaN/inf before JSON or storage
     nse_holidays.json  trading-holiday dates (see "Trading holidays" below)
     arena/             Strategy Arena: strategies competing with simulated money
+      markets.py       market profiles: sessions, costs, currencies, windows
     requirements.txt
     tests/             pytest suite (no network required)
     .env.example
@@ -80,9 +82,9 @@ Run the tests with:
 
 ```bash
 pip install pytest pyflakes httpx
-python -m pytest tests/ -q          # 167 backend tests
+python -m pytest tests/ -q          # 223 backend tests
 python -m pyflakes .
-cd ../frontend && node --test app.helpers.test.js arena.helpers.test.js   # 29 frontend tests
+cd ../frontend && node --test app.helpers.test.js arena.helpers.test.js   # 46 frontend tests
 ```
 
 The suite stubs the market data source, so it needs no network and passes
@@ -303,6 +305,116 @@ answers one question: **which one actually makes money after costs?**
 Nothing in the arena places a real order. No strategy, rule or setting can
 guarantee a profit; the arena exists to find out which ones earn and to
 stop the ones that don't before any real money is involved.
+
+---
+
+## 6d. Global markets (US, forex, crypto) and your own hours
+
+The NSE session is 09:15-15:30 IST, which is the working day. The Arena
+therefore also runs **three other markets**, each as a **separate arena**
+with its own capital, symbols, strategies, history and currency - pick one
+from the tabs at the top of the Arena tab. Nothing here places a real
+order either.
+
+### The markets and when they run, in IST
+
+| Market | Symbols | Session in IST | Session locally | Volume? |
+|---|---|---|---|---|
+| **India (NSE)** | `RELIANCE`, `INFY` … | 09:15-15:30, Mon-Fri | same | yes |
+| **US stocks** | `AAPL`, `MSFT`, `SPY` … | **19:00-01:30** (Mar-Oct)<br>**20:00-02:30** (Nov-Mar) | 09:30-16:00 New York | yes |
+| **Forex** | `EURUSD=X`, `USDJPY=X`, `USDINR=X` … | 24×5 — **Mon 02:30 to Sat 02:30** (Mar-Oct)<br>**Mon 03:30 to Sat 03:30** (Nov-Mar) | Sun 17:00 to Fri 17:00 New York | **no** |
+| **Crypto** | `BTC-USD`, `ETH-USD` … | 24×7 | — | yes |
+
+**The US hours move by an hour twice a year.** The US observes daylight
+saving and India does not, so the New York session lands at 19:00-01:30 IST
+from March to early November and at 20:00-02:30 IST for the rest of the
+year. Everything is computed with `zoneinfo` from the market's own clock,
+so this happens by itself — but it is worth knowing before you set an alarm.
+Forex's weekly open and close move with it for the same reason.
+
+Holidays: NSE closures come from `backend/nse_holidays.json`, NYSE
+closures and its 13:00 half days from `backend/us_holidays.json`
+(2026-2027, from the NYSE Group calendar). Forex and crypto have no
+holidays — forex just shuts for the weekend.
+
+### Your trading window
+
+Each arena has a **window**: the hours you actually want it trading, set in
+IST, with the days of the week you want. The arena trades only when the
+market is open **and** your window is active; that overlap is one
+"session", and it is what opens, settles and gets caught up.
+
+- The default window is the market's full session, except forex and crypto
+  where it is **19:00-23:30 IST** — an evening, not a 24-hour day.
+- **A window that ends before it starts runs past midnight** (22:00-02:00)
+  and counts as one session, filed under the day it began.
+- **The entry cutoff and square-off follow your window's end**, not a clock
+  time: no new entries in the last 30 minutes, everything closed 15 minutes
+  before the end. The NSE arena keeps its original 14:45 and 15:15.
+- A window that never overlaps the market has no session that day, and the
+  arena says so rather than sitting silently empty.
+
+### Money
+
+Capital is always set in **rupees** (default ₹10,000). At each session's
+start it is converted to the market's currency at a Yahoo FX rate, and that
+rate is **recorded in the session's own record**, so a settled session is
+never restated when the rupee moves. P&L is shown in the market's currency
+with the rupee figure underneath.
+
+> **₹10,000 is about $113, which will not buy one share of most US
+> mega-caps.** US and Indian arenas trade whole shares, so at the default
+> capital a US arena skips most entries and the leaderboard stays empty —
+> the arena says exactly that instead of looking broken. Raise the capital
+> for that arena (₹50,000+ is a reasonable start) or pick lower-priced
+> symbols. Forex and crypto trade fractional units, so they are fine at
+> ₹10,000.
+
+Leverage is available on forex and crypto only, capped at 5×, and off by
+default. It multiplies the position a book may hold, never the money it
+risks per trade — and it loses just as much faster, which the UI says in
+red whenever it is on.
+
+### What each market charges
+
+Edit any of these in the arena's settings; the defaults are:
+
+- **India** — brokerage 0.03% capped at ₹20, STT 0.025% on sells, exchange
+  0.00297%, SEBI ₹10/crore, stamp 0.003% on buys, GST 18%, slippage 0.05%
+  a side.
+- **US** — $0 commission (configurable: "free" is a routing arrangement,
+  not a law), SEC fee 0.00278% on sells, FINRA TAF, slippage 0.02% a side.
+- **Forex** — no commission; the cost is the **spread**, in pips, half
+  charged each side: EUR/USD 1.0, GBP/USD 1.5, USD/JPY 1.0, AUD/USD 1.2,
+  USD/INR 2.0, anything else 1.5. A pip is 0.0001 on a major and 0.01 on a
+  yen pair.
+- **Crypto** — 0.10% taker fee plus 0.05% slippage, each side.
+
+The backtest's sensitivity table replays the same sessions at **0×, 0.5×
+and 1×** the market's own fill cost. A strategy that loses at 0× has no
+edge at all; one that wins only at 0× cannot survive real fills.
+
+### Forex has no volume
+
+Yahoo reports zero volume for every FX pair. Rather than let that quietly
+disable half the strategies, the arena substitutes a session **TWAP** (the
+running mean of the typical price) for VWAP, and marks the volume average
+**undefined** rather than zero — zero would make "volume above 1.5× average"
+trivially true and fire a breakout on every bar. The two volume-gated
+strategies trade without their volume confirmation and are labelled
+**"· no-volume variant"** in the leaderboard, because they are not quite the
+same strategy any more.
+
+### Before you think about real money
+
+> Simulation only. For real money in India: forex is legal only in INR
+> pairs and RBI-permitted crosses on NSE/BSE through a SEBI-registered
+> broker. Offshore forex apps are illegal. US stocks go through the LRS
+> route. Crypto is taxed at 30% plus 1% TDS.
+
+This note also sits under every leaderboard in the app. It is a summary,
+not advice, and none of it is a substitute for checking the current rules
+yourself — they change.
 
 ---
 
