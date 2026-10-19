@@ -392,6 +392,7 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
   overflow: hidden;
   background: var(--paper-raised);
 }
+.price-chart-container { height: 280px; }
 .intraday-chart { height: 220px; }
 
 /* ---- Watchlist ---- */
@@ -514,87 +515,7 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
   .skeleton-line, .skeleton-block { animation: none; opacity: 0.6; }
 }
 
-/* ---- Desktop 3-column dashboard (>=1024px) ---- */
-@media (min-width: 1024px) {
-  .ticker-strip, .app-header { padding-left: 24px; padding-right: 24px; }
-
-  .app-body {
-    display: grid;
-    grid-template-columns: 340px 1fr 400px;
-    grid-template-rows: auto 1fr;
-    gap: 18px;
-    align-items: start;
-    padding: 8px 24px 32px;
-    max-width: 1600px;
-    margin: 0 auto;
-  }
-
-  /* Left column: quick search on top, watchlist below - both always on */
-  #view-search { grid-column: 1; grid-row: 1; }
-  #view-watchlist { grid-column: 1; grid-row: 2; }
-
-  /* Center column: analysis + chart, spans full height */
-  #view-analysis { grid-column: 2; grid-row: 1 / span 2; }
-
-  /* Right column: intraday on top, that stock's 90-day backtest below */
-  #view-intraday { grid-column: 3; grid-row: 1; }
-  #view-watch-detail { grid-column: 3; grid-row: 2; }
-
-  /* These five are always visible on desktop, not toggled by .active -
-     the single-view mobile SPA model doesn't apply once there's room for
-     a real dashboard. */
-  #view-search, #view-watchlist, #view-analysis, #view-intraday, #view-watch-detail {
-    display: block !important;
-    animation: none;
-    max-height: calc(100vh - 140px);
-    overflow-y: auto;
-  }
-
-  /* Detail drill-downs that don't have a natural static column (intraday's
-     per-stock trade log/chart) become a centered overlay instead of trying
-     to force a 6th destination into a 3-column grid. */
-  #view-intraday-detail {
-    display: none;
-    position: fixed; inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    z-index: 50;
-    padding: 40px;
-    align-items: flex-start;
-    justify-content: center;
-    overflow-y: auto;
-  }
-  #view-intraday-detail.active { display: flex; animation: view-in 180ms ease; }
-  #view-intraday-detail .modal-card {
-    background: var(--paper);
-    border: 1px solid var(--hairline);
-    border-radius: 14px;
-    padding: 20px 24px 32px;
-    max-width: 720px;
-    width: 100%;
-  }
-
-  /* No "back" needed when the destination is already visible in another
-     column - back-buttons only still make sense for the overlay. */
-  #backFromAnalysis, #backFromWatchDetail { display: none; }
-
-  .tab-bar { display: none; }
-  body { padding-bottom: 0; }
-
-  #view-search .search-row input { font-size: 15px; }
-}
-
-@media (max-width: 1023px) {
-  .modal-card { all: unset; display: block; }
-}
-
 /* ---------- Strategy Arena ---------- */
-.arena-open-btn {
-  display: none;
-  margin-left: auto;
-  background: var(--paper-raised); color: var(--brass);
-  border: 1px solid var(--brass-dim); border-radius: 999px;
-  padding: 5px 14px; font-family: var(--font-body); font-size: 13px; cursor: pointer;
-}
 .arena-verdict {
   border-radius: 10px; padding: 12px 14px; margin: 12px 0 8px;
   font-size: 14px; line-height: 1.45; border: 1px solid var(--hairline);
@@ -634,31 +555,7 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 .arena-reset { display: block; margin-top: 14px; }
 
 @media (max-width: 1023px) {
-  #backFromArena { display: none; }
   .tab-btn { font-size: 10.5px; }
-}
-
-@media (min-width: 1024px) {
-  .arena-open-btn { display: inline-block; }
-  #view-arena {
-    display: none;
-    position: fixed; inset: 0;
-    background: rgba(0, 0, 0, 0.55);
-    z-index: 50;
-    padding: 40px;
-    align-items: flex-start;
-    justify-content: center;
-    overflow-y: auto;
-  }
-  #view-arena.active { display: flex; animation: view-in 180ms ease; }
-  #view-arena .modal-card {
-    background: var(--paper);
-    border: 1px solid var(--hairline);
-    border-radius: 14px;
-    padding: 20px 24px 32px;
-    max-width: 980px;
-    width: 100%;
-  }
 }
 
 /* ---- Arena: wake-up / data-health status ---- */
@@ -699,3 +596,129 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
   color: var(--mist);
   white-space: nowrap;
 }
+
+
+/* ======================================================================
+   Desktop layout (>= 1024px): a top tab bar, one tab at a time, using the
+   full width. Watchlist and Intraday are list + detail side by side; the
+   Analyse tab holds search beside the analysis. Phones keep the bottom
+   tab bar and single-view behaviour above.
+   ====================================================================== */
+.clickable-card { cursor: pointer; }
+.empty-state { padding: 28px 0; }
+
+@media (min-width: 1024px) {
+  body { padding-bottom: 0; }
+  .ticker-strip { order: 0; }
+  .app-header { order: 1; padding: 14px 32px 10px; }
+  .tab-bar { order: 2; }
+  .app-body { order: 3; }
+  .toast-host { order: 4; }
+
+  .app-header-top { justify-content: flex-start; gap: 14px; }
+  .app-header .eyebrow { margin-top: 2px; }
+
+  /* Top tab bar */
+  .tab-bar {
+    position: sticky; top: 0; z-index: 20;
+    justify-content: flex-start; gap: 4px;
+    padding: 0 32px;
+    border-top: none; border-bottom: 1px solid var(--hairline);
+    background: var(--ink);
+  }
+  .tab-btn {
+    flex: 0 0 auto;
+    flex-direction: row; gap: 8px;
+    font-size: 14px; font-weight: 500;
+    padding: 14px 18px 12px;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    color: var(--mist);
+  }
+  .tab-btn:hover { color: var(--bone); background: rgba(255, 255, 255, 0.03); }
+  .tab-btn.active { color: var(--brass); border-bottom-color: var(--brass); }
+  .tab-btn:active { transform: none; }
+  .tab-icon { font-size: 15px; }
+  .tab-btn[data-view="view-search"] { display: none; }   /* search lives in Analyse */
+
+  .app-body {
+    width: 100%;
+    max-width: 1440px;
+    margin: 0 auto;
+    padding: 20px 32px 40px;
+    display: grid;
+    gap: 24px;
+    align-items: start;
+  }
+  .view { padding: 0; }
+  .view.active { animation: none; }
+
+  /* Which views each tab shows */
+  body[data-tab="analyse"] .app-body { grid-template-columns: 340px minmax(0, 1fr); }
+  body[data-tab="watchlist"] .app-body,
+  body[data-tab="intraday"] .app-body { grid-template-columns: 380px minmax(0, 1fr); }
+  body[data-tab="arena"] .app-body { grid-template-columns: minmax(0, 1fr); }
+
+  body[data-tab="analyse"] #view-search,
+  body[data-tab="analyse"] #view-analysis,
+  body[data-tab="watchlist"] #view-watchlist,
+  body[data-tab="watchlist"] #view-watch-detail,
+  body[data-tab="intraday"] #view-intraday,
+  body[data-tab="intraday"] #view-intraday-detail,
+  body[data-tab="arena"] #view-arena { display: block; }
+
+  /* List columns scroll on their own; the detail column is the page */
+  #view-search, #view-watchlist, #view-intraday {
+    position: sticky; top: 64px;
+    max-height: calc(100vh - 84px);
+    overflow-y: auto;
+    padding-right: 6px;
+  }
+  #view-analysis, #view-watch-detail, #view-intraday-detail {
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 22px 26px 30px;
+    min-height: 60vh;
+  }
+
+  /* Side-by-side views don't need "back" buttons */
+  #backFromAnalysis, #backFromWatchDetail, #backFromIntradayDetail { display: none; }
+
+  /* Selected row in a list */
+  .watch-card.selected { border-color: var(--brass); box-shadow: 0 0 0 1px var(--brass-dim) inset; }
+  .clickable-card:hover { border-color: var(--brass-dim); }
+
+  /* Analysis: chart left, prediction + signals right */
+  .analysis-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.65fr) minmax(300px, 1fr);
+    gap: 24px;
+    align-items: start;
+  }
+  .analysis-side .prediction-card:first-child { margin-top: 12px; }
+  .price-chart-container { height: 440px; }
+  .intraday-chart { height: 260px; }
+
+  /* Arena tab: full width, readable table */
+  #view-arena {
+    background: var(--paper);
+    border: 1px solid var(--hairline);
+    border-radius: 14px;
+    padding: 22px 28px 32px;
+  }
+  .arena-board { width: 100%; }
+  .arena-board th { position: sticky; top: 0; background: var(--paper); z-index: 1; }
+  .arena-board td, .arena-board th { padding-top: 10px; padding-bottom: 10px; }
+  .arena-board td:not(:nth-child(2)), .arena-board th:not(:nth-child(2)) { text-align: right; }
+  .arena-board td { font-variant-numeric: tabular-nums; }
+  .arena-detail-row td { text-align: left !important; }
+  .arena-name { min-width: 220px; }
+}
+
+@media (min-width: 1440px) {
+  body[data-tab="analyse"] .app-body { grid-template-columns: 380px minmax(0, 1fr); }
+  body[data-tab="watchlist"] .app-body,
+  body[data-tab="intraday"] .app-body { grid-template-columns: 420px minmax(0, 1fr); }
+}
+.arena-tag.arena-short { color: var(--signal-red); border-color: rgba(193, 68, 60, 0.5); }

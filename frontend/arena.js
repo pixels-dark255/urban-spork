@@ -9,12 +9,11 @@ const ARENA_LEVEL_CLASS = {
   early: "arena-verdict-neutral", waiting: "arena-verdict-neutral",
 };
 let arenaData = null;
-document.getElementById("backFromArena").addEventListener("click", () => history.back());
-document.getElementById("openArenaBtn").addEventListener("click", () => navigateTo("view-arena"));
 let arenaOpenStrategy = null;
 
 function inr(n, withSign = true) {
   if (n == null || Number.isNaN(n)) return "—";
+  n = Math.round(n);            // so -0.4 shows as ₹0, not "−₹0"
   const sign = withSign && n > 0 ? "+" : n < 0 ? "−" : "";
   return `${sign}₹${Math.abs(n).toLocaleString("en-IN", { maximumFractionDigits: 0 })}`;
 }
@@ -92,7 +91,7 @@ function renderTrades(trades) {
     <tbody>${trades.map((t) => `
       <tr>
         <td>${fmtISTDateTime(t.exit_at)}</td>
-        <td>${escapeHtml(t.symbol.replace(/\.(NS|BO)$/, ""))}${t.shadow ? ' <span class="arena-sub">shadow</span>' : ""}</td>
+        <td>${t.side === "SHORT" ? '<span class="arena-tag arena-short">short</span> ' : ""}${escapeHtml(t.symbol.replace(/\.(NS|BO)$/, ""))}${t.shadow ? ' <span class="arena-sub">shadow</span>' : ""}</td>
         <td>${t.qty}</td>
         <td>₹${t.entry_price} → ₹${t.exit_price}</td>
         <td class="${pnlClass(t.net)}">${inr(t.net)}<div class="arena-sub">₹${t.charges} costs</div></td>
@@ -215,7 +214,7 @@ function renderArena(data) {
   const strategyChecks = data.strategies.map((s) => `
     <label class="arena-check">
       <input type="checkbox" name="strategy" value="${escapeHtml(s.id)}" ${c.strategies.includes(s.id) ? "checked" : ""} ${s.benchmark ? "checked disabled" : ""}>
-      <span><b>${escapeHtml(s.name)}</b><br><span class="arena-sub">${escapeHtml(s.description)}</span></span>
+      <span><b>${escapeHtml(s.name)}</b>${s.both_sides ? ' <span class="arena-tag">long + short</span>' : ""}<br><span class="arena-sub">${escapeHtml(s.description)}</span></span>
     </label>`).join("");
   const r = c.risk;
   document.getElementById("arenaContent").innerHTML = `

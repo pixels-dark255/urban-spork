@@ -24,7 +24,6 @@
     <div class="app-header-top">
       <h1>Tickerboard</h1>
       <span class="market-status-pill" id="marketStatusPill">…</span>
-      <button class="arena-open-btn" id="openArenaBtn" aria-label="Open Strategy Arena">⚔ Arena</button>
     </div>
     <p class="eyebrow">nse &middot; bse &middot; personal terminal</p>
   </header>
@@ -41,7 +40,7 @@
 
   <main id="view-analysis" class="view">
     <button class="back-btn" id="backFromAnalysis">&larr; back to search</button>
-    <div id="analysisContent"><p class="muted">Pick a stock to analyse.</p></div>
+    <div id="analysisContent"><p class="muted empty-state">Search a stock to see its chart, prediction and signals.</p></div>
   </main>
 
   <main id="view-watchlist" class="view">
@@ -57,7 +56,7 @@
 
   <main id="view-watch-detail" class="view">
     <button class="back-btn" id="backFromWatchDetail">&larr; back to watchlist</button>
-    <div id="watchDetailContent"><p class="muted">Select a watchlist stock to see its 90-day backtest.</p></div>
+    <div id="watchDetailContent"><p class="muted empty-state">Select a stock on the left to see its live track record and 90-day backtest.</p></div>
   </main>
 
   <main id="view-intraday" class="view">
@@ -76,35 +75,30 @@
   </main>
 
   <main id="view-intraday-detail" class="view">
-    <div class="modal-card">
-      <button class="back-btn" id="backFromIntradayDetail">&larr; back to intraday</button>
-      <div id="intradayDetailContent"><p class="muted">Loading…</p></div>
-    </div>
+    <button class="back-btn" id="backFromIntradayDetail">&larr; back to intraday</button>
+    <div id="intradayDetailContent"><p class="muted empty-state">Select a stock on the left to see its 5m / 15m / 30m paper trades.</p></div>
   </main>
 
   <main id="view-arena" class="view">
-    <div class="modal-card">
-      <button class="back-btn arena-close" id="backFromArena">&larr; close</button>
-      <div id="arenaContent"><p class="muted">Loading…</p></div>
-    </div>
+    <div id="arenaContent"><p class="muted">Loading…</p></div>
   </main>
 
   </div>
 
-  <nav class="tab-bar">
-    <button class="tab-btn active" data-view="view-search">
+  <nav class="tab-bar" role="tablist" aria-label="Sections">
+    <button class="tab-btn active" role="tab" data-view="view-search" data-group="analyse">
       <span class="tab-icon">◎</span><span>Search</span>
     </button>
-    <button class="tab-btn" data-view="view-analysis">
+    <button class="tab-btn" role="tab" data-view="view-analysis" data-group="analyse">
       <span class="tab-icon">◈</span><span>Analyse</span>
     </button>
-    <button class="tab-btn" data-view="view-watchlist">
+    <button class="tab-btn" role="tab" data-view="view-watchlist" data-group="watchlist">
       <span class="tab-icon">◐</span><span>Watchlist</span>
     </button>
-    <button class="tab-btn" data-view="view-intraday">
+    <button class="tab-btn" role="tab" data-view="view-intraday" data-group="intraday">
       <span class="tab-icon">⚡</span><span>Intraday</span>
     </button>
-    <button class="tab-btn" data-view="view-arena">
+    <button class="tab-btn" role="tab" data-view="view-arena" data-group="arena">
       <span class="tab-icon">⚔</span><span>Arena</span>
     </button>
   </nav>

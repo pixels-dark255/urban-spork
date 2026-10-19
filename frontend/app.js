@@ -196,11 +196,48 @@ function stopViewPolling() {
 }
 
 document.querySelectorAll(".tab-btn").forEach((btn) => {
-  btn.addEventListener("click", () => navigateTo(btn.dataset.view));
+  btn.addEventListener("click", () => {
+    // On desktop the Analyse tab also holds search, so open whichever of the
+    // two the user was last on rather than always dumping them on search.
+    const view = isDesktop() && btn.dataset.group === "analyse" ? lastAnalyseView : btn.dataset.view;
+    navigateTo(view);
+  });
 });
 document.getElementById("backFromAnalysis").addEventListener("click", () => history.back());
 document.getElementById("backFromWatchDetail").addEventListener("click", () => history.back());
 document.getElementById("backFromIntradayDetail").addEventListener("click", () => history.back());
+
+// Keyboard: arrow keys move between visible tabs (desktop tab bar).
+document.querySelector(".tab-bar").addEventListener("keydown", (e) => {
+  if (!["ArrowLeft", "ArrowRight"].includes(e.key)) return;
+  const tabs = [...document.querySelectorAll(".tab-btn")].filter((b) => b.offsetParent !== null);
+  const i = tabs.indexOf(document.activeElement);
+  if (i < 0) return;
+  const next = tabs[(i + (e.key === "ArrowRight" ? 1 : tabs.length - 1)) % tabs.length];
+  next.focus();
+  next.click();
+  e.preventDefault();
+});
+
+// "/" focuses stock search from anywhere (unless typing in a field).
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "/" || /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  e.preventDefault();
+  if (isDesktop()) navigateTo(lastAnalyseView); else navigateTo("view-search");
+  setTimeout(() => document.getElementById("searchInput").focus(), 0);
+});
+
+// Desktop shows a whole tab at a time: some tabs are two views side by side
+// (list + detail). Mobile still shows exactly one view.
+const VIEW_GROUP = {
+  "view-search": "analyse", "view-analysis": "analyse",
+  "view-watchlist": "watchlist", "view-watch-detail": "watchlist",
+  "view-intraday": "intraday", "view-intraday-detail": "intraday",
+  "view-arena": "arena",
+};
+const HASH_ALIASES = { analyse: "view-analysis", search: "view-search", watchlist: "view-watchlist",
+  intraday: "view-intraday", arena: "view-arena" };
+let lastAnalyseView = "view-search";
 
 function navigateTo(viewId, extraState = {}) {
   history.pushState({ view: viewId, ...extraState }, "", `#${viewId}`);
@@ -208,44 +245,54 @@ function navigateTo(viewId, extraState = {}) {
 }
 
 window.addEventListener("popstate", (e) => {
-  const state = e.state || { view: "view-search" };
+  // A typed/bookmarked hash (e.g. #arena) arrives with no state.
+  const state = e.state || { view: viewFromHash() };
   renderView(state.view, state);
 });
 
-// First load: establish the base history entry so back() from Search exits
-// cleanly instead of landing on an undefined state.
-history.replaceState({ view: "view-search" }, "", "#view-search");
-
-// ---------- Desktop always-on side panels ----------
-// On mobile this whole app is a single-view SPA (one .view visible at a
-// time, driven by the tab bar + browser history). On desktop, watchlist
-// and intraday become permanent side columns (see the >=1024px grid in
-// style.css) instead of tabs you navigate to - so they need to load and
-// keep polling independently of whatever's currently in the center
-// analysis panel, not wait for a navigateTo() that will never come once
-// the tab bar is hidden.
 const isDesktop = () => window.matchMedia("(min-width: 1024px)").matches;
-let desktopPanelsInitialized = false;
-function initDesktopPanelsIfNeeded() {
-  if (!isDesktop() || desktopPanelsInitialized) return;
-  desktopPanelsInitialized = true;
-  loadWatchlist();
-  loadIntradayList();
-  setInterval(() => loadWatchlist(true), 30000);
-  setInterval(() => loadIntradayList(true), 20000);
+
+function viewFromHash() {
+  const h = (location.hash || "").replace(/^#/, "");
+  if (VIEW_GROUP[h]) return h;
+  return HASH_ALIASES[h] || "view-search";
 }
-initDesktopPanelsIfNeeded();
-window.addEventListener("resize", initDesktopPanelsIfNeeded);
+
+function markSelected() {
+  document.querySelectorAll("#watchlistContent .watch-card").forEach((c) => {
+    const link = c.querySelector(".watch-symbol-link");
+    c.classList.toggle("selected", !!link && String(link.dataset.id) === String(currentWatchItemId));
+  });
+  document.querySelectorAll("#intradayContent .watch-card").forEach((c) => {
+    const link = c.querySelector(".intraday-card-link");
+    c.classList.toggle("selected", !!link && link.dataset.symbol === currentIntradaySymbol);
+  });
+}
 
 function renderView(viewId, state = {}) {
+  if (!VIEW_GROUP[viewId]) viewId = "view-search";
+  const group = VIEW_GROUP[viewId];
+  if (group === "analyse") lastAnalyseView = viewId;
+  document.body.dataset.tab = group;
   document.querySelectorAll(".view").forEach((v) => v.classList.remove("active"));
   document.getElementById(viewId).classList.add("active");
-  document.querySelectorAll(".tab-btn").forEach((b) => b.classList.toggle("active", b.dataset.view === viewId));
+  document.querySelectorAll(".tab-btn").forEach((b) => {
+    const on = isDesktop() ? b.dataset.group === group : b.dataset.view === viewId;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-selected", on ? "true" : "false");
+  });
   stopViewPolling();
+  const desktop = isDesktop();
 
-  if (viewId === "view-watchlist") {
+  if (viewId === "view-watchlist" || (desktop && viewId === "view-watch-detail")) {
+    if (viewId === "view-watch-detail") currentWatchItemId = state.itemId ?? currentWatchItemId;
     loadWatchlist();
-    startViewPolling(() => loadWatchlist(true), 30000);
+    const showDetail = viewId === "view-watch-detail" || (desktop && currentWatchItemId != null);
+    if (showDetail && currentWatchItemId != null) loadWatchDetail(currentWatchItemId);
+    startViewPolling(() => {
+      loadWatchlist(true);
+      if (showDetail && currentWatchItemId != null) loadWatchDetail(currentWatchItemId, true);
+    }, 30000);
   } else if (viewId === "view-analysis") {
     const backBtn = document.getElementById("backFromAnalysis");
     if (state.fromWatchlist && state.itemId != null) {
@@ -265,9 +312,15 @@ function renderView(viewId, state = {}) {
       loadWatchDetail(currentWatchItemId);
       startViewPolling(() => loadWatchDetail(currentWatchItemId, true), 120000);
     }
-  } else if (viewId === "view-intraday") {
+  } else if (viewId === "view-intraday" || (desktop && viewId === "view-intraday-detail")) {
+    if (viewId === "view-intraday-detail") currentIntradaySymbol = state.symbol ?? currentIntradaySymbol;
     loadIntradayList();
-    startViewPolling(() => loadIntradayList(true), 20000);
+    const showDetail = desktop && currentIntradaySymbol;
+    if (showDetail) loadIntradayDetail(currentIntradaySymbol);
+    startViewPolling(() => {
+      loadIntradayList(true);
+      if (showDetail) loadIntradayDetail(currentIntradaySymbol, true);
+    }, 20000);
   } else if (viewId === "view-arena") {
     if (typeof loadArena === "function") {
       loadArena();
@@ -280,6 +333,31 @@ function renderView(viewId, state = {}) {
       startViewPolling(() => loadIntradayDetail(currentIntradaySymbol, true), 20000);
     }
   }
+  markSelected();
+}
+
+// Polling pauses while the browser tab is hidden and resumes on return.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) stopViewPolling();
+  else renderView(history.state?.view || viewFromHash(), history.state || {});
+});
+
+// Re-evaluate the layout when crossing the desktop breakpoint.
+let wasDesktop = isDesktop();
+window.addEventListener("resize", () => {
+  if (isDesktop() !== wasDesktop) {
+    wasDesktop = isDesktop();
+    renderView(history.state?.view || viewFromHash(), history.state || {});
+  }
+});
+
+// First load: honour a bookmarked tab (#arena, #view-watchlist, ...).
+{
+  const initial = viewFromHash();
+  history.replaceState({ view: initial }, "", `#${initial}`);
+  // Deferred so the rest of app.js (and arena.js) has defined its loaders.
+  window.addEventListener("DOMContentLoaded", () => renderView(initial, {}));
+  if (document.readyState !== "loading") setTimeout(() => renderView(initial, {}), 0);
 }
 
 // Kept for compatibility with existing calls below - pushes new history.
@@ -388,11 +466,19 @@ async function loadIntradayList(silent = false) {
       return;
     }
     content.innerHTML = data.stocks.map(renderIntradayCard).join("");
-    content.querySelectorAll(".intraday-card-link").forEach((el) => {
-      el.addEventListener("click", () => {
-        navigateTo("view-intraday-detail", { symbol: el.dataset.symbol });
+    // Whole card opens the detail (on desktop it appears beside the list).
+    content.querySelectorAll(".watch-card").forEach((card) => {
+      const link = card.querySelector(".intraday-card-link");
+      if (!link) return;
+      card.classList.add("clickable-card");
+      card.addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        // On phones the timeframe columns toggle their verdict instead.
+        if (!isDesktop() && e.target.closest(".tf-col-clickable")) return;
+        navigateTo("view-intraday-detail", { symbol: link.dataset.symbol });
       });
     });
+    markSelected();
     content.querySelectorAll(".tf-col-clickable").forEach((el) => {
       el.addEventListener("click", () => {
         el.querySelector(".verdict-pill").classList.toggle("hidden");
@@ -542,7 +628,7 @@ function renderIntradayChart(tf, t) {
     try { intradayChartInstances[tf].remove(); } catch (e) { /* already gone */ }
   }
   const chart = LightweightCharts.createChart(container, {
-    height: 220,
+    autoSize: true,
     layout: { background: { color: "transparent" }, textColor: "#8FA39A" },
     grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
     rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
@@ -754,9 +840,13 @@ function renderAnalysis(data) {
       <span class="price-current">₹${data.current_price.toFixed(2)}</span>
     </div>
 
+    <div class="analysis-grid">
+    <div class="analysis-main">
     <div id="priceChart" class="price-chart-container"></div>
 
     <div class="horizon-row" id="horizonRow">${horizonPills}</div>
+    </div>
+    <div class="analysis-side">
 
     <div class="prediction-card">
       <div class="label">predicted price · ${data.horizon_label} from now</div>
@@ -775,6 +865,8 @@ function renderAnalysis(data) {
     <div class="disclaimer">${data.disclaimer}</div>
 
     <button class="add-watchlist-btn" id="addWatchlistBtn">Add to watchlist &amp; track live</button>
+    </div>
+    </div>
 
     <div class="section-heading"><span class="eyebrow">context</span><h2 style="font-size:17px;">Recent news</h2></div>
     ${newsHtml}
@@ -851,7 +943,11 @@ function renderWatchAnalysis(data, itemId, silent = false) {
       <span class="price-current">₹${data.current_price.toFixed(2)}</span>
     </div>
 
+    <div class="analysis-grid">
+    <div class="analysis-main">
     <div id="priceChart" class="price-chart-container"></div>
+    </div>
+    <div class="analysis-side">
 
     <div class="prediction-card">
       <div class="label">predicted price right now, using this stock's refined weights</div>
@@ -872,6 +968,8 @@ function renderWatchAnalysis(data, itemId, silent = false) {
     <div class="disclaimer">${data.disclaimer} Raw daily error naturally stays noisy - directional accuracy above and the weight trend on the next screen are the honest signs of whether refinement is working.</div>
 
     <button class="add-watchlist-btn" id="viewBacktestBtn">View 90-day backtest &amp; refinement log ›</button>
+    </div>
+    </div>
   `;
 
   document.getElementById("viewBacktestBtn").addEventListener("click", () => openWatchDetail(itemId));
@@ -923,7 +1021,7 @@ function renderPriceChart(container, historical, forecast) {
     priceChartInstance = null;
   }
   const chart = LightweightCharts.createChart(container, {
-    height: 260,
+    autoSize: true,
     layout: { background: { color: "transparent" }, textColor: "#8FA39A" },
     grid: { vertLines: { color: "rgba(255,255,255,0.05)" }, horzLines: { color: "rgba(255,255,255,0.05)" } },
     rightPriceScale: { borderColor: "rgba(255,255,255,0.1)" },
@@ -988,6 +1086,13 @@ async function addCurrentToWatchlist() {
 }
 
 // ---------- Watch analysis (live, right now, using this stock's refined weights) ----------
+// Watchlist row: on desktop, show its detail beside the list; on a phone,
+// open its live analysis (the original flow).
+function openWatchItem(itemId) {
+  if (isDesktop()) navigateTo("view-watch-detail", { itemId });
+  else openWatchAnalysis(itemId);
+}
+
 function openWatchAnalysis(itemId) {
   navigateTo("view-analysis", { itemId, fromWatchlist: true });
 }
@@ -1181,9 +1286,16 @@ async function loadWatchlist(silent = false) {
         refreshTicker();
       });
     });
-    content.querySelectorAll(".watch-symbol-link").forEach((el) => {
-      el.addEventListener("click", () => openWatchAnalysis(el.dataset.id));
+    content.querySelectorAll(".watch-card").forEach((card) => {
+      const link = card.querySelector(".watch-symbol-link");
+      if (!link) return;
+      card.classList.add("clickable-card");
+      card.addEventListener("click", (e) => {
+        if (e.target.closest("button")) return;
+        openWatchItem(link.dataset.id);
+      });
     });
+    markSelected();
   } catch (e) {
     if (!silent) content.innerHTML = `<p class="muted">Could not load watchlist.</p>`;
   }
