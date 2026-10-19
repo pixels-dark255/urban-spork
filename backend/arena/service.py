@@ -269,6 +269,11 @@ def freshness(state: dict, now: dt.datetime | None = None) -> dict:
 
 def view(ip: str) -> dict:
     state = load_or_create(ip)
+    with store.lock:
+        fresh = store.load(ip) or state
+        if engine.adopt_new_strategies(fresh):
+            store.save(ip, fresh)
+        state = fresh
     return {
         "config": state["config"],
         "strategies": catalog(),

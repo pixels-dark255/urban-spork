@@ -3,7 +3,7 @@ The competing intraday strategies.
 
 Each strategy looks at ONE completed 5-minute bar (plus the bar before it)
 whose indicator columns were precomputed by `enrich()`, and answers:
-  - flat:      BUY (with a stop and a target) or nothing
+  - flat:      BUY or SHORT (with a stop and a target) or nothing
   - in a trade: EXIT or nothing
 Stops, targets, the end-of-day square-off and the daily loss limit are
 enforced by the engine, not here, so no strategy can skip them.
@@ -11,9 +11,11 @@ enforced by the engine, not here, so no strategy can skip them.
 All indicators are causal (they only use bars up to and including the
 current one), so the historical replay has no lookahead.
 
-Long-only for this first version: shorting intraday is allowed in MIS, but
-it adds borrow/auction edge cases that would muddy a first comparison.
-Add short variants once the long-only results are understood.
+Shorting: intraday (MIS) short selling is allowed in India, and a long-only
+book can only lose in a falling market. A strategy shorts by returning
+{"side": "SHORT", "stop": <above entry>, "target": <below entry>}. The
+original six stay long-only so their history remains comparable; the newer
+strategies trade both directions.
 
 Adding a strategy: subclass Strategy, implement entry() (and exit() if it
 has a signal-based exit), add it to STRATEGIES. Nothing else changes.
@@ -91,7 +93,59 @@ def enrich(bars: pd.DataFrame) -> pd.DataFrame:
     known = df["bar_no"] >= OPENING_RANGE_BARS - 1
     df["or_high"] = or_high.where(known)
     df["or_low"] = or_low.where(known)
+
+    # --- inputs for the second wave of strategies (all causal) ---
+    df["ema50"] = close.ewm(span=50, adjust=False).mean()
+    # Spread of price around VWAP so far this session (expanding std).
+    dev = close - df["vwap"]
+    df["vwap_sd"] = dev.groupby(df["session"]).transform(lambda x: x.expanding(min_periods=6).std())
+    # Swing levels of the PREVIOUS 5 bars (excludes the current bar).
+    df["swing_low5"] = low.rolling(5, min_periods=3).min().shift(1)
+    df["swing_high5"] = high.rolling(5, min_periods=3).max().shift(1)
+    # Previous session's last close and this session's open.
+    last_close = close.groupby(df["session"], sort=False).last()
+    prev_sess = pd.Series(last_close.shift(1).values, index=last_close.index)
+    df["prev_session_close"] = df["session"].map(prev_sess)
+    df["session_open"] = df["Open"].groupby(df["session"]).transform("first")
+    df["day_high"] = high.groupby(df["session"]).cummax()
+    df["day_low"] = low.groupby(df["session"]).cummin()
+    # Close at 09:45 (end of the first 30 minutes), known from then on.
+    c945 = close.where(df["minute"] == 9 * 60 + 40).groupby(df["session"]).transform("max")
+    df["close_0945"] = c945.where(df["minute"] >= 9 * 60 + 40)
+    st_line, st_dir = _supertrend(high, low, close, df["atr14"], 3.0)
+    df["st_line"], df["st_dir"] = st_line, st_dir
     return df
+
+
+def _supertrend(high, low, close, atr, mult):
+    """Classic SuperTrend on the given ATR. Direction +1 = uptrend (line is
+    support below price), -1 = downtrend (line is resistance above)."""
+    n = len(close)
+    line = np.full(n, np.nan)
+    direction = np.zeros(n)
+    hl2 = ((high + low) / 2).to_numpy()
+    a = atr.to_numpy()
+    c = close.to_numpy()
+    upper_prev = lower_prev = np.nan
+    d = 1
+    for i in range(n):
+        if not np.isfinite(a[i]):
+            continue
+        upper = hl2[i] + mult * a[i]
+        lower = hl2[i] - mult * a[i]
+        if np.isfinite(upper_prev) and c[i - 1] <= upper_prev:
+            upper = min(upper, upper_prev)
+        if np.isfinite(lower_prev) and c[i - 1] >= lower_prev:
+            lower = max(lower, lower_prev)
+        if np.isfinite(upper_prev):
+            if d == 1 and c[i] < lower_prev:
+                d = -1
+            elif d == -1 and c[i] > upper_prev:
+                d = 1
+        line[i] = lower if d == 1 else upper
+        direction[i] = d
+        upper_prev, lower_prev = upper, lower
+    return pd.Series(line, index=close.index), pd.Series(direction, index=close.index)
 
 
 def _ok(*vals) -> bool:
@@ -273,12 +327,169 @@ class BuyAtOpenBenchmark(Strategy):
         return None
 
 
+# ---------------------------------------------------------------------------
+# Second wave: both directions, wider stops, fewer trades. The first six
+# lost mostly because a long-only book can't make money in a falling market
+# and because 5-minute noise kept hitting tight stops.
+# ---------------------------------------------------------------------------
+
+class OrbBothWays(Strategy):
+    id = "orb_both"
+    name = "Opening-range breakout (long + short)"
+    description = ("Buys a close above the first-15-minute high, or shorts a close below its low. "
+                   "Stop at the other side of the range (max 1.5%), target 2x the risk.")
+    max_trades_per_symbol_per_day = 1
+
+    def entry(self, row, prev):
+        if row["bar_no"] < OPENING_RANGE_BARS or not _ok(row["or_high"], row["or_low"], prev["Close"]):
+            return None
+        price = row["Close"]
+        if price > row["or_high"] >= prev["Close"]:
+            stop = max(row["or_low"], price * 0.985)
+            return {"stop": stop, "target": price + 2 * (price - stop), "reason": "broke above opening range"}
+        if price < row["or_low"] <= prev["Close"]:
+            stop = min(row["or_high"], price * 1.015)
+            return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
+                    "reason": "broke below opening range"}
+        return None
+
+
+class SuperTrendFlip(Strategy):
+    id = "supertrend"
+    name = "SuperTrend (10, 3) flip"
+    description = ("Trend-following with a 3-ATR trailing line: goes long when the trend flips up, "
+                   "short when it flips down. The line is the stop; exits on the opposite flip.")
+
+    def entry(self, row, prev):
+        if row["bar_no"] < 2 or not _ok(row["st_line"], row["atr14"]) or prev["st_dir"] == row["st_dir"]:
+            return None
+        price = row["Close"]
+        if row["st_dir"] == 1 and row["st_line"] < price:
+            stop = row["st_line"]
+            return {"stop": stop, "target": price + 2 * (price - stop), "reason": "SuperTrend flipped up"}
+        if row["st_dir"] == -1 and row["st_line"] > price:
+            stop = row["st_line"]
+            return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
+                    "reason": "SuperTrend flipped down"}
+        return None
+
+    def exit(self, row, prev, position):
+        want = -1 if position.get("side") == "SHORT" else 1
+        if _ok(row["st_dir"]) and row["st_dir"] == -want:
+            return "SuperTrend flipped against the trade"
+        return None
+
+
+class VwapBandReversion(Strategy):
+    id = "vwap_bands"
+    name = "VWAP band mean-reversion"
+    description = ("Fades stretched moves: buys when price is 2 standard deviations below VWAP and turns up "
+                   "(RSI under 35), shorts the mirror case. Target is VWAP itself.")
+
+    def entry(self, row, prev):
+        if row["bar_no"] < 6 or not _ok(row["vwap"], row["vwap_sd"], row["rsi14"], row["atr14"]) or row["vwap_sd"] <= 0:
+            return None
+        price, vwap, sd = row["Close"], row["vwap"], row["vwap_sd"]
+        if prev["Close"] < vwap - 2 * sd and price > prev["Close"] and row["rsi14"] < 35:
+            stop = min(row["Low"], prev["Low"]) - 0.5 * row["atr14"]
+            if stop < price < vwap:
+                return {"stop": stop, "target": vwap, "reason": "2σ below VWAP, turning up"}
+        if prev["Close"] > vwap + 2 * sd and price < prev["Close"] and row["rsi14"] > 65:
+            stop = max(row["High"], prev["High"]) + 0.5 * row["atr14"]
+            if stop > price > vwap:
+                return {"side": "SHORT", "stop": stop, "target": vwap, "reason": "2σ above VWAP, turning down"}
+        return None
+
+
+class TrendPullback(Strategy):
+    id = "trend_pullback"
+    name = "Trend pullback to EMA 21"
+    description = ("Only trades with the day's trend (price vs VWAP, EMA 21 vs EMA 50): waits for a dip "
+                   "to the 21-EMA and buys the bounce, or shorts the rally in a downtrend. Stop beyond the "
+                   "last swing, target 2x risk.")
+
+    def entry(self, row, prev):
+        if row["bar_no"] < 6 or not _ok(row["ema21"], row["ema50"], row["vwap"], row["swing_low5"], row["swing_high5"]):
+            return None
+        price = row["Close"]
+        up = price > row["vwap"] and row["ema21"] > row["ema50"]
+        down = price < row["vwap"] and row["ema21"] < row["ema50"]
+        if up and prev["Low"] <= prev["ema21"] and price > row["ema21"] and price > prev["High"]:
+            stop = min(row["swing_low5"], row["Low"])
+            if stop < price:
+                return {"stop": stop, "target": price + 2 * (price - stop), "reason": "bounced off EMA21 in uptrend"}
+        if down and prev["High"] >= prev["ema21"] and price < row["ema21"] and price < prev["Low"]:
+            stop = max(row["swing_high5"], row["High"])
+            if stop > price:
+                return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
+                        "reason": "rejected at EMA21 in downtrend"}
+        return None
+
+
+class GapFade(Strategy):
+    id = "gap_fade"
+    name = "Gap fade (gap-fill)"
+    description = ("When a stock opens 0.6%+ away from yesterday's close and the first 15 minutes fail to "
+                   "extend the gap, trades back toward yesterday's close. Stop beyond the day's extreme.")
+    max_trades_per_symbol_per_day = 1
+
+    def entry(self, row, prev):
+        if not (OPENING_RANGE_BARS <= row["bar_no"] <= 9):
+            return None
+        if not _ok(row["prev_session_close"], row["session_open"], row["or_high"], row["or_low"], row["atr14"]):
+            return None
+        pc, op, price = row["prev_session_close"], row["session_open"], row["Close"]
+        gap = (op - pc) / pc
+        if gap >= 0.006 and price < row["or_low"]:
+            stop = row["day_high"] + 0.2 * row["atr14"]
+            if stop > price > pc:
+                return {"side": "SHORT", "stop": stop, "target": pc, "reason": f"gap up {gap:.1%} failing"}
+        if gap <= -0.006 and price > row["or_high"]:
+            stop = row["day_low"] - 0.2 * row["atr14"]
+            if stop < price < pc:
+                return {"stop": stop, "target": pc, "reason": f"gap down {gap:.1%} recovering"}
+        return None
+
+
+class IntradayMomentum(Strategy):
+    id = "intraday_momentum"
+    name = "Intraday momentum (first 30 min → last hour)"
+    description = ("Based on research that the first half-hour's move tends to continue into the close: "
+                   "at 14:15, if the day is up 0.5%+ by 09:45 and price is above VWAP, buy (short the mirror "
+                   "case) and hold to the square-off.")
+    max_trades_per_symbol_per_day = 1
+
+    def entry(self, row, prev):
+        if row["minute"] != 14 * 60 + 15:
+            return None
+        if not _ok(row["prev_session_close"], row["close_0945"], row["vwap"], row["atr14"]):
+            return None
+        early = (row["close_0945"] - row["prev_session_close"]) / row["prev_session_close"]
+        price = row["Close"]
+        if early >= 0.005 and price > row["vwap"]:
+            stop = min(row["vwap"], price - 1.5 * row["atr14"])
+            return {"stop": stop, "target": price + 3 * (price - stop), "reason": f"first 30 min {early:+.1%}"}
+        if early <= -0.005 and price < row["vwap"]:
+            stop = max(row["vwap"], price + 1.5 * row["atr14"])
+            return {"side": "SHORT", "stop": stop, "target": price - 3 * (stop - price),
+                    "reason": f"first 30 min {early:+.1%}"}
+        return None
+
+
 STRATEGIES: dict[str, Strategy] = {s.id: s for s in [
     OpeningRangeBreakout(), VwapReclaim(), EmaCrossover(), RsiReversion(),
-    BollingerBreakout(), LegacyScore(), BuyAtOpenBenchmark(),
+    BollingerBreakout(), LegacyScore(),
+    OrbBothWays(), SuperTrendFlip(), VwapBandReversion(), TrendPullback(), GapFade(), IntradayMomentum(),
+    BuyAtOpenBenchmark(),
 ]}
+
+# The strategies that existed before the second wave. Arenas created back
+# then have these in their config; anything newer is switched on for them
+# once (see engine.adopt_new_strategies) - after that, the user's choice wins.
+ORIGINAL_STRATEGY_IDS = ["orb", "vwap_reclaim", "ema_cross", "rsi_reversion", "bb_breakout", "score4", "benchmark"]
 
 
 def catalog() -> list[dict]:
-    return [{"id": s.id, "name": s.name, "description": s.description, "benchmark": s.benchmark}
+    return [{"id": s.id, "name": s.name, "description": s.description, "benchmark": s.benchmark,
+             "both_sides": s.id not in ORIGINAL_STRATEGY_IDS}
             for s in STRATEGIES.values()]

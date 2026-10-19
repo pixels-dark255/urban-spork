@@ -43,7 +43,7 @@ import pandas as pd
 
 import timeutil
 from arena import costs as costs_mod
-from arena.strategies import STRATEGIES, LAST_ENTRY_MINUTE
+from arena.strategies import STRATEGIES, LAST_ENTRY_MINUTE, ORIGINAL_STRATEGY_IDS
 
 SQUARE_OFF_MINUTE = 15 * 60 + 15   # 15:15 IST
 SESSION_END_MINUTE = 15 * 60 + 30
@@ -126,6 +126,12 @@ def normalise_config(raw: dict | None, base: dict | None = None) -> dict:
 
 
 def new_state(config: dict | None = None) -> dict:
+    state = _new_state(config)
+    state["config"].setdefault("known_strategies", list(STRATEGIES))
+    return state
+
+
+def _new_state(config: dict | None = None) -> dict:
     return {
         "config": normalise_config(config),
         "books": {},
@@ -178,9 +184,36 @@ def _blank_day() -> dict:
 # Day lifecycle
 # ---------------------------------------------------------------------------
 
+def adopt_new_strategies(state: dict) -> list[str]:
+    """Switch on strategies added to the app since this arena was created -
+    once. `known_strategies` remembers what the user has already been
+    offered, so unticking one later sticks. Returns the ids switched on."""
+    cfg = state["config"]
+    known = cfg.get("known_strategies")
+    if known is None:
+        known = list(ORIGINAL_STRATEGY_IDS)
+    added = []
+    for sid in STRATEGIES:
+        if sid not in known:
+            known.append(sid)
+            if sid not in cfg["strategies"]:
+                cfg["strategies"].append(sid)
+                added.append(sid)
+    cfg["known_strategies"] = known
+    # Keep the yardstick last so it reads as the last row everywhere.
+    if "benchmark" in cfg["strategies"]:
+        cfg["strategies"] = [x for x in cfg["strategies"] if x != "benchmark"] + ["benchmark"]
+    if added and state.get("day") and not state.get("day_settled"):
+        # Mid-session: new strategies join with today's capital.
+        for sid in added:
+            state["books"].setdefault(sid, _new_book(sid, cfg["daily_capital"]))
+    return added
+
+
 def start_day(state: dict, date: str, caught_up: bool = False) -> None:
     if state["day"] and not state["day_settled"]:
         settle_day(state, caught_up=caught_up)
+    adopt_new_strategies(state)
     cfg = state["config"]
     capital = cfg["daily_capital"]
     for sid in cfg["strategies"]:
@@ -347,14 +380,25 @@ def process_bar(state: dict, sym: str, ts, row, prev, n_symbols: int) -> None:
 def _exit_decision(strat, row, prev, pos, minute):
     o, h, l, c = float(row["Open"]), float(row["High"]), float(row["Low"]), float(row["Close"])
     stop, target = pos["stop"], pos["target"]
-    if o <= stop:
-        return o, "stop_loss_gap"
-    if l <= stop:
-        return stop, "stop_loss"          # checked before target: pessimistic
-    if o >= target:
-        return o, "target"
-    if h >= target:
-        return target, "target"
+    if pos.get("side", "LONG") == "SHORT":
+        # Mirror image: the stop sits ABOVE the entry, the target below.
+        if o >= stop:
+            return o, "stop_loss_gap"
+        if h >= stop:
+            return stop, "stop_loss"      # checked before target: pessimistic
+        if o <= target:
+            return o, "target"
+        if l <= target:
+            return target, "target"
+    else:
+        if o <= stop:
+            return o, "stop_loss_gap"
+        if l <= stop:
+            return stop, "stop_loss"      # checked before target: pessimistic
+        if o >= target:
+            return o, "target"
+        if h >= target:
+            return target, "target"
     if minute >= SQUARE_OFF_MINUTE:
         return c, "eod_square_off"
     why = strat.exit(row, prev, pos)
@@ -375,33 +419,44 @@ def _maybe_enter(book, strat, sym, row, prev, minute, at, risk, ccfg, n_symbols)
     if not sig:
         return
 
-    fill = costs_mod.fill_price("BUY", float(row["Close"]), ccfg)
+    # Shorts (intraday MIS) sell first and buy back later. Margin is kept at
+    # 1x - the full notional is set aside - so a short can't size bigger
+    # than a long would, and leverage never flatters the comparison.
+    side = "SHORT" if sig.get("side") == "SHORT" else "LONG"
+    entry_leg = "SELL" if side == "SHORT" else "BUY"
+    fill = costs_mod.fill_price(entry_leg, float(row["Close"]), ccfg)
     stop, target = float(sig["stop"]), float(sig["target"])
-    if not (math.isfinite(stop) and math.isfinite(target)) or stop >= fill or target <= fill:
+    if not (math.isfinite(stop) and math.isfinite(target)):
         return
+    if side == "LONG" and (stop >= fill or target <= fill):
+        return
+    if side == "SHORT" and (stop <= fill or target >= fill):
+        return
+    risk_per_share = abs(fill - stop)
     equity = book["day_start_equity"]
     if strat.benchmark:
         qty = int((equity / n_symbols) // fill)
     else:
-        qty_risk = int((equity * risk["risk_per_trade_pct"] / 100) // (fill - stop))
+        qty_risk = int((equity * risk["risk_per_trade_pct"] / 100) // risk_per_share)
         qty_cap = int((equity * risk["max_position_pct"] / 100) // fill)
         qty = min(qty_risk, qty_cap)
-    est_buy_charges = costs_mod.leg_charges("BUY", fill * max(qty, 1), ccfg)["total"]
-    qty = min(qty, int((book["cash"] - est_buy_charges) // fill))
+    est_charges = costs_mod.leg_charges(entry_leg, fill * max(qty, 1), ccfg)["total"]
+    qty = min(qty, int((book["cash"] - est_charges) // fill))
     if qty < 1:
         day["skipped"]["too_expensive"] += 1
         return
     if not strat.benchmark:
-        reward = (target - fill) * qty
+        reward = abs(target - fill) * qty
         if reward < risk["min_reward_to_cost"] * costs_mod.round_trip_cost_estimate(fill, qty, ccfg):
             day["skipped"]["costs_exceed_target"] += 1
             return
 
-    charges = costs_mod.leg_charges("BUY", fill * qty, ccfg)
-    book["cash"] -= fill * qty + charges["total"]
+    charges = costs_mod.leg_charges(entry_leg, fill * qty, ccfg)
+    book["cash"] -= fill * qty + charges["total"]     # notional set aside either way
     book["positions"][sym] = {
-        "symbol": sym, "qty": qty, "entry_price": round(fill, 4), "entry_at": at,
+        "symbol": sym, "side": side, "qty": qty, "entry_price": round(fill, 4), "entry_at": at,
         "stop": round(stop, 4), "target": round(target, 4),
+        # name kept for stored state: it means "charges paid on the entry leg"
         "buy_charges": charges["total"], "entry_reason": sig.get("reason", ""),
     }
     day["trades"] += 1
@@ -413,15 +468,21 @@ def _close(state, book, sym, price, reason, at, ccfg=None):
     pos = book["positions"].pop(sym, None)
     if not pos:
         return None
-    fill = costs_mod.fill_price("SELL", float(price), ccfg)
-    proceeds = fill * pos["qty"]
-    charges = costs_mod.leg_charges("SELL", proceeds, ccfg)
-    book["cash"] += proceeds - charges["total"]
-    gross = (fill - pos["entry_price"]) * pos["qty"]
+    side = pos.get("side", "LONG")
+    exit_leg = "BUY" if side == "SHORT" else "SELL"
+    fill = costs_mod.fill_price(exit_leg, float(price), ccfg)
+    charges = costs_mod.leg_charges(exit_leg, fill * pos["qty"], ccfg)
+    if side == "SHORT":
+        gross = (pos["entry_price"] - fill) * pos["qty"]
+        # release the set-aside notional plus the short's profit/loss
+        book["cash"] += pos["entry_price"] * pos["qty"] + gross - charges["total"]
+    else:
+        gross = (fill - pos["entry_price"]) * pos["qty"]
+        book["cash"] += fill * pos["qty"] - charges["total"]
     total_charges = pos["buy_charges"] + charges["total"]
     net = gross - charges["total"] - pos["buy_charges"]
     trade = {
-        "strategy": book["id"], "symbol": sym, "qty": pos["qty"],
+        "strategy": book["id"], "symbol": sym, "side": side, "qty": pos["qty"],
         "entry_at": pos["entry_at"], "entry_price": round(pos["entry_price"], 2),
         "exit_at": at or timeutil.iso_now(), "exit_price": round(fill, 2),
         "gross": round(gross, 2), "charges": round(total_charges, 2), "net": round(net, 2),
@@ -445,11 +506,23 @@ def _close(state, book, sym, price, reason, at, ccfg=None):
     return trade
 
 
+def _position_value(pos: dict, mark: float) -> float:
+    """What an open position is worth to the book at `mark`."""
+    if pos.get("side", "LONG") == "SHORT":
+        return pos["entry_price"] * pos["qty"] + (pos["entry_price"] - mark) * pos["qty"]
+    return mark * pos["qty"]
+
+
+def _unrealised(pos: dict, mark: float) -> float:
+    sign = -1 if pos.get("side", "LONG") == "SHORT" else 1
+    return sign * (mark - pos["entry_price"]) * pos["qty"]
+
+
 def _equity(state, book) -> float:
     eq = book["cash"]
     for sym, pos in book["positions"].items():
         mark = state["marks"].get(sym, {}).get("price") or pos["entry_price"]
-        eq += mark * pos["qty"]
+        eq += _position_value(pos, mark)
     return eq
 
 
@@ -584,7 +657,7 @@ def open_positions(state: dict) -> list[dict]:
         for sym, pos in book["positions"].items():
             mark = state["marks"].get(sym, {}).get("price")
             out.append({**pos, "strategy": sid, "mark": mark,
-                        "unrealised": round((mark - pos["entry_price"]) * pos["qty"], 2) if mark else None})
+                        "unrealised": round(_unrealised(pos, mark), 2) if mark else None})
     return out
 
 
