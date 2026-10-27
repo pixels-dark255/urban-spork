@@ -62,10 +62,7 @@ def stub_bars(monkeypatch, frame):
 
 # --------------------------------------------------------------- startup tick
 
-def test_arena_job_is_scheduled_to_run_immediately(monkeypatch):
-    """A free instance is started by the first visitor after a sleep. With
-    the default first run a whole interval away, that visitor sees an empty
-    arena and leaves before anything happens."""
+def _registered_jobs(monkeypatch):
     import scheduler
 
     jobs = {}
@@ -74,6 +71,27 @@ def test_arena_job_is_scheduled_to_run_immediately(monkeypatch):
     monkeypatch.setattr(scheduler.scheduler, "start", lambda: None)
     monkeypatch.setattr(type(scheduler.scheduler), "running", property(lambda self: False))
     scheduler.start_scheduler()
+    return jobs
+
+
+def test_the_web_process_registers_no_arena_job_by_default(monkeypatch):
+    """The simulation belongs to the scheduled GitHub job. Registering it
+    here too would put two writers on the same Postgres rows, with the
+    heavy one on the weakest CPU - which is what used to 503 at the open."""
+    monkeypatch.delenv("ARENA_RUNNER", raising=False)
+    jobs = _registered_jobs(monkeypatch)
+    assert "arena_tick" not in jobs
+    # The other two features still tick here; they are separate and
+    # deliberately best-effort.
+    assert "watchlist_tick" in jobs and "intraday_tick" in jobs
+
+
+def test_arena_job_is_scheduled_to_run_immediately(monkeypatch):
+    """With ARENA_RUNNER=inprocess the old behaviour is intact: a free
+    instance is started by the first visitor after a sleep, and a first run
+    a whole interval away means that visitor sees an empty arena."""
+    monkeypatch.setenv("ARENA_RUNNER", "inprocess")
+    jobs = _registered_jobs(monkeypatch)
 
     assert "arena_tick" in jobs
     arena = jobs["arena_tick"]
@@ -99,8 +117,32 @@ def test_is_due_true_when_a_past_day_is_unsettled(arena_client):
     store.save(arena_client, state)
     assert service.is_due(arena_client, ist_at("2026-10-03", 11, 0)) is True
 
+def test_get_arena_never_ticks_in_dashboard_mode(client, monkeypatch):
+    """A page load is a read. Waking a free instance into a multi-arena
+    catch-up is exactly what made it fall over and restart into the same
+    catch-up again."""
+    monkeypatch.delenv("ARENA_RUNNER", raising=False)
+    monkeypatch.setattr(service, "is_due", lambda ip, now=None: True)
+    monkeypatch.setattr(service, "tick_client",
+                        lambda ip, now=None: pytest.fail("the dashboard must not tick"))
+    body = client.get("/api/arena", headers={"X-Client-Id": "ro1"}).json()
+    assert body["tick_started"] is False
+
+
+def test_the_api_reports_who_advances_the_arena(client, monkeypatch):
+    monkeypatch.delenv("ARENA_RUNNER", raising=False)
+    runner = client.get("/api/arena", headers={"X-Client-Id": "ro2"}).json()["runner"]
+    assert runner["mode"] == "github"
+    assert runner["ticks_in_process"] is False
+    assert "last_tick_at" in runner and "last_tick" in runner
+    # When the job is next due, stated in the user's own clock.
+    assert runner["next_run_at"] and len(runner["next_run_ist"]) == 5
+    assert runner["schedule"] == "every 2h at :17 UTC"
+
+
 def test_get_arena_starts_a_background_tick_when_due(client, monkeypatch):
     started = {}
+    monkeypatch.setenv("ARENA_RUNNER", "inprocess")
     monkeypatch.setattr(service, "is_due", lambda ip, now=None: True)
     monkeypatch.setattr(service, "tick_client",
                         lambda ip, now=None: started.setdefault("ran", True))
@@ -113,6 +155,7 @@ def test_get_arena_starts_a_background_tick_when_due(client, monkeypatch):
     assert started.get("ran") is True
 
 def test_get_arena_does_not_tick_when_not_due(client, monkeypatch):
+    monkeypatch.setenv("ARENA_RUNNER", "inprocess")
     monkeypatch.setattr(service, "is_due", lambda ip, now=None: False)
     monkeypatch.setattr(service, "tick_client",
                         lambda ip, now=None: pytest.fail("should not have ticked"))

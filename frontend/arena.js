@@ -90,6 +90,7 @@ async function loadArena(silent = false) {
     if (silent && editing) { renderArenaLive(data); return; }
     renderArena(data);
     loadLastBacktest();
+    loadScoreboard();
   } catch (e) {
     if (!silent) content.innerHTML = `<p class="muted">Could not load the arena.</p>`;
   }
@@ -261,6 +262,31 @@ function freshnessLine(f) {
   return `<div class="stock-sub arena-freshness">${bits.join(" · ")}</div>${stale}`;
 }
 
+// The simulation runs in a scheduled job, not in the web service, so "the
+// server was asleep" is no longer the story - the dashboard being asleep is
+// expected and harmless. What matters is whether the RUNNER still runs.
+function runnerLine(runner) {
+  if (!runner || runner.mode !== "github") return "";
+  const bits = [];
+  if (runner.last_tick_at) {
+    bits.push(`Updated by the daily runner at ${escapeHtml(fmtIST(runner.last_tick_at, {
+      hour: "2-digit", minute: "2-digit", hour12: false }))} IST`);
+  } else {
+    bits.push("The runner has not updated this arena yet");
+  }
+  bits.push(`next run ~${escapeHtml(runner.next_run_ist)} IST`);
+  const line = `<div class="stock-sub arena-freshness">${bits.join(" · ")}</div>`;
+  if (!runner.stale) return line;
+  const when = runner.last_tick_at
+    ? `hasn't updated since ${escapeHtml(fmtIST(runner.last_tick_at, {
+        day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
+        hour12: false }))}`
+    : "has never run for this arena";
+  return `${line}<div class="arena-stale">The runner ${when} — check
+    GitHub → Actions. Results are caught up automatically once it runs
+    again, so nothing is lost in the meantime.</div>`;
+}
+
 const MARKET_LABELS = { nse: "India", us: "US", forex: "Forex", crypto: "Crypto" };
 
 // The tab strip. Each market has its own arena, its own hours and its own
@@ -341,7 +367,8 @@ function arenaLiveHtml(data) {
       · ${inr(data.config.daily_capital, false)} per strategy · ${data.config.symbols.length} ${
         data.config.market === "forex" ? "pairs" : data.config.market === "crypto" ? "coins" : "stocks"}</div>
     ${sessionLine(data)}
-    ${freshnessLine(data.freshness)}
+    ${data.runner && data.runner.mode === "github"
+      ? runnerLine(data.runner) : freshnessLine(data.freshness)}
     ${renderBoard(data.leaderboard, { currency: data.currency })}
     <p class="arena-hint">Tap a strategy to see its trades. Benched strategies keep trading in shadow and come back automatically if they start earning.</p>
     ${regulatoryNote(data)}
@@ -365,6 +392,12 @@ function renderArena(data) {
       actually earn, and to bench the ones that don't.</div>
 
     <div id="arenaLive">${arenaLiveHtml(data)}</div>
+
+    <div class="section-heading"><span class="eyebrow">the record so far</span>
+      <h2 style="font-size:17px;">Scoreboard</h2></div>
+    <p class="arena-hint">Which strategy is actually earning, over weeks rather than today.
+      One good session is not a record.</p>
+    <div id="arenaScore"><div class="skeleton-block" style="height:180px"></div></div>
 
     <div class="section-heading"><span class="eyebrow">replay the past</span><h2 style="font-size:17px;">Backtest these strategies</h2></div>
     <div class="arena-row-inline">
@@ -396,6 +429,7 @@ function renderArena(data) {
         <label class="arena-field">Max open positions<input type="number" step="1" id="arenaMaxPos" value="${r.max_open_positions}"></label>
         <label class="arena-field">Trades before judging<input type="number" step="1" id="arenaJudge" value="${r.min_trades_to_judge}"></label>
       </div>
+      ${identityFields()}
       <p class="arena-hint">Capital changes apply from the next session. Removing a stock or strategy mid-session closes its positions at the last price.</p>
       <button class="add-watchlist-btn arena-btn" id="arenaSave">Save settings</button>
       <button class="watch-remove arena-reset" id="arenaReset">reset all results</button>
@@ -411,6 +445,7 @@ function renderArena(data) {
     });
   });
   bindMarketTabs();
+  bindIdentity();
   const reset = document.getElementById("arenaReset");
   reset.addEventListener("click", async () => {
     if (reset.dataset.confirming !== "1") {
@@ -492,6 +527,252 @@ function bindMarketTabs() {
       loadArena();
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Scoreboard: the record over weeks, not the state right now
+// ---------------------------------------------------------------------------
+
+let scorePeriod = "30";
+let scoreData = null;
+
+async function loadScoreboard(period) {
+  const box = document.getElementById("arenaScore");
+  if (!box) return;
+  if (period) scorePeriod = period;
+  box.innerHTML = `<div class="skeleton-block" style="height:180px"></div>`;
+  try {
+    const res = await apiFetch(mq("/api/arena/scoreboard", `&period=${encodeURIComponent(scorePeriod)}`));
+    const data = await res.json();
+    if (!res.ok) throw new Error("failed");
+    scoreData = data;
+    box.innerHTML = scoreboardHtml(data);
+    bindScoreboard();
+  } catch (e) {
+    box.innerHTML = `<p class="muted">Could not load the scoreboard.</p>`;
+  }
+}
+
+// Arenas are keyed by a client id this browser generated once, so a phone
+// and a PC are two different users with two different sets of arenas. This
+// lets one be pointed at the other's id.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function isValidClientId(id) {
+  return UUID_RE.test(String(id || "").trim());
+}
+
+function identityFields() {
+  const current = (typeof CLIENT_ID === "string" ? CLIENT_ID : "");
+  return `
+    <div class="arena-field">Your arena ID
+      <span class="arena-sub">Arenas belong to this ID, not to this device. Paste it into
+        another browser to see the same arenas there.</span>
+      <div class="arena-row-inline">
+        <input type="text" id="arenaClientId" readonly value="${escapeHtml(current)}">
+        <button class="arena-link" id="arenaCopyId">copy</button>
+      </div>
+    </div>
+    <div class="arena-field">Use an existing ID
+      <span class="arena-sub">Switches this browser to another ID. Nothing is deleted -
+        the arenas under the current ID stay where they are, and you can switch back by
+        pasting it again, so keep a copy first.</span>
+      <div class="arena-row-inline">
+        <input type="text" id="arenaNewId" placeholder="00000000-0000-0000-0000-000000000000">
+        <button class="arena-link" id="arenaUseId">use this ID</button>
+      </div>
+    </div>`;
+}
+
+function bindIdentity() {
+  const copy = document.getElementById("arenaCopyId");
+  if (copy) {
+    copy.addEventListener("click", async () => {
+      const value = document.getElementById("arenaClientId").value;
+      try {
+        await navigator.clipboard.writeText(value);
+        showToast("Arena ID copied", "success");
+      } catch (e) {
+        // Clipboard access is refused outside a secure context and in some
+        // in-app browsers; selecting it is then the next best thing.
+        const box = document.getElementById("arenaClientId");
+        box.removeAttribute("readonly");
+        box.select();
+        showToast("Press Ctrl/Cmd+C to copy");
+      }
+    });
+  }
+  const use = document.getElementById("arenaUseId");
+  if (use) {
+    use.addEventListener("click", () => {
+      const next = document.getElementById("arenaNewId").value.trim();
+      if (!isValidClientId(next)) {
+        showToast("That is not a valid arena ID", "error");
+        return;
+      }
+      if (next === CLIENT_ID) {
+        showToast("Already using that ID");
+        return;
+      }
+      if (!confirm(`Switch this browser to arena ID\n\n${next}\n\n`
+                   + `The arenas under your current ID are not deleted, but you will need `
+                   + `that ID to get back to them. Have you copied it?`)) {
+        return;
+      }
+      try {
+        localStorage.setItem("tickerboard_client_id", next.toLowerCase());
+      } catch (e) {
+        showToast("This browser will not let the app store the ID", "error");
+        return;
+      }
+      location.reload();
+    });
+  }
+}
+
+function bindScoreboard() {
+  document.querySelectorAll("#arenaScore .arena-period").forEach((btn) => {
+    btn.addEventListener("click", () => loadScoreboard(btn.dataset.period));
+  });
+}
+
+// A run of days as small bars. Not a chart library - just enough shape to
+// tell "one huge day" apart from "grinds out small wins", which is the
+// distinction the numbers beside it are making.
+function sparkline(recent, cur) {
+  if (!recent || !recent.length) return "";
+  const peak = Math.max(...recent.map((d) => Math.abs(d.net)), 1);
+  return `<span class="arena-spark" role="img"
+    aria-label="${recent.length} most recent sessions">${recent.map((d) => {
+      const h = Math.max(2, Math.round((Math.abs(d.net) / peak) * 14));
+      const cls = d.net > 0 ? "up" : d.net < 0 ? "down" : "flat";
+      return `<i class="${cls}" style="height:${h}px" title="${escapeHtml(
+        `${fmtDayLabel(d.date)}: ${money(d.net, cur)}`)}"></i>`;
+    }).join("")}</span>`;
+}
+
+function streakText(s) {
+  if (!s || !s.current) return "—";
+  const n = Math.abs(s.current);
+  return s.current > 0 ? `${n} up` : `${n} down`;
+}
+
+function highlightCards(h, cur) {
+  if (!h) return "";
+  const card = (label, body, tone = "") =>
+    `<div class="arena-card ${tone}"><span class="arena-card-label">${label}</span>${body}</div>`;
+  const cards = [];
+  if (h.most_profitable) {
+    cards.push(card("made the most", `<b>${escapeHtml(h.most_profitable.name)}</b>
+      <span class="${pnlClass(h.most_profitable.net)}">${money(h.most_profitable.net, cur)}</span>
+      <span class="arena-sub">${h.most_profitable.green_days} green · ${h.most_profitable.red_days} red</span>`));
+  }
+  if (h.most_winning_days) {
+    cards.push(card("won the most days", `<b>${escapeHtml(h.most_winning_days.name)}</b>
+      <span>${h.most_winning_days.daily_wins} ${h.most_winning_days.daily_wins === 1 ? "day" : "days"}</span>
+      <span class="arena-sub">best on the most sessions</span>`));
+  }
+  if (h.most_losing_days) {
+    cards.push(card("lost on the most days", `<b>${escapeHtml(h.most_losing_days.name)}</b>
+      <span class="neg">${h.most_losing_days.red_days} ${h.most_losing_days.red_days === 1 ? "day" : "days"}</span>
+      <span class="arena-sub">${money(h.most_losing_days.net, cur)} over the period</span>`, "arena-card-bad"));
+  }
+  if (h.best_single_day) {
+    cards.push(card("biggest single day", `<b>${escapeHtml(h.best_single_day.strategy)}</b>
+      <span class="pos">${money(h.best_single_day.net, cur)}</span>
+      <span class="arena-sub">${escapeHtml(fmtDayLabel(h.best_single_day.date))}</span>`));
+  }
+  if (h.worst_single_day) {
+    cards.push(card("worst single day", `<b>${escapeHtml(h.worst_single_day.strategy)}</b>
+      <span class="neg">${money(h.worst_single_day.net, cur)}</span>
+      <span class="arena-sub">${escapeHtml(fmtDayLabel(h.worst_single_day.date))}</span>`, "arena-card-bad"));
+  }
+  if (!cards.length) return "";
+  return `<div class="arena-cards">${cards.join("")}</div>`;
+}
+
+function scoreboardHtml(data) {
+  const cur = data.currency;
+  const p = data.period;
+  const buttons = (data.periods || []).map((opt) => `
+    <button class="arena-period ${opt.id === p.id ? "on" : ""}"
+      data-period="${escapeHtml(opt.id)}">${escapeHtml(opt.label)}</button>`).join("");
+
+  if (!p.sessions) {
+    return `<div class="arena-periods">${buttons}</div>
+      <p class="muted">No settled sessions yet. The scoreboard fills in once the arena has
+      traded and settled its first day - one row per strategy per session.</p>`;
+  }
+
+  const rows = data.strategies.map((r) => `
+    <tr class="${r.benchmark ? "arena-bench" : ""}">
+      <td>
+        <div class="arena-name">${escapeHtml(r.name)}</div>
+        <span class="arena-sub">${r.trades} trades${
+          r.status !== "active" && !r.benchmark ? " · benched" : ""}</span>
+      </td>
+      <td class="${pnlClass(r.net)}">${moneyWithInr(r.net, r.net_inr, cur)}</td>
+      <td>${sparkline(r.recent, cur)}</td>
+      <td><span class="pos">${r.green_days}</span> / <span class="neg">${r.red_days}</span>
+        ${r.quiet_days ? `<div class="arena-sub">${r.quiet_days} quiet</div>` : ""}</td>
+      <td>${r.day_win_rate == null ? "—" : r.day_win_rate + "%"}</td>
+      <td>${r.benchmark ? "—" : r.daily_wins}</td>
+      <td>${r.benchmark ? "—" : r.beat_benchmark_days}</td>
+      <td class="${r.streaks.current > 0 ? "pos" : r.streaks.current < 0 ? "neg" : ""}">${
+        escapeHtml(streakText(r.streaks))}</td>
+      <td>${r.best_day ? `<span class="${pnlClass(r.best_day.net)}">${money(r.best_day.net, cur)}</span>
+        <div class="arena-sub">${escapeHtml(fmtDayLabel(r.best_day.date))}</div>` : "—"}</td>
+      <td>${r.worst_day ? `<span class="${pnlClass(r.worst_day.net)}">${money(r.worst_day.net, cur)}</span>
+        <div class="arena-sub">${escapeHtml(fmtDayLabel(r.worst_day.date))}</div>` : "—"}</td>
+    </tr>`).join("");
+
+  const idle = (data.highlights && data.highlights.idle) || [];
+  return `
+    <div class="arena-periods">${buttons}
+      <span class="arena-sub">${p.sessions} ${p.sessions === 1 ? "session" : "sessions"},
+        ${escapeHtml(fmtDayLabel(p.from))} – ${escapeHtml(fmtDayLabel(p.to))}</span></div>
+    ${highlightCards(data.highlights, cur)}
+    <div class="table-scroll"><table class="backtest-table">
+      <thead><tr>
+        <th>strategy</th><th>net</th><th>last ${(data.strategies[0] || {}).recent?.length || 0}</th>
+        <th title="days finished up / down">green / red</th>
+        <th title="share of days with a result that finished up">day win%</th>
+        <th title="sessions where this was the best strategy of the day">days won</th>
+        <th title="sessions where this finished above the benchmark">beat bench</th>
+        <th>streak</th><th>best day</th><th>worst day</th>
+      </tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    ${idle.length ? `<p class="arena-hint">Found no signal at all this period:
+      ${idle.map((x) => escapeHtml(x.name)).join(", ")}. They are not winning - they are
+      not playing.</p>` : ""}
+    <p class="arena-hint">${escapeHtml(data.note || "")}</p>
+    ${dailyWinnersHtml(data)}`;
+}
+
+function dailyWinnersHtml(data) {
+  const days = (data.daily || []).slice(0, 15);
+  if (!days.length) return "";
+  const cur = data.currency;
+  return `
+    <details class="arena-settings">
+      <summary>Day by day — who won each session</summary>
+      <div class="table-scroll"><table class="backtest-table">
+        <thead><tr><th>day</th><th>best that day</th><th>worst that day</th>
+          <th>benchmark</th><th>traded</th></tr></thead>
+        <tbody>${days.map((d) => `
+          <tr>
+            <td>${escapeHtml(fmtDayLabel(d.date))}${
+              d.caught_up ? ' <span class="arena-tag">caught up</span>' : ""}</td>
+            <td>${d.winner_name ? `${escapeHtml(d.winner_name)}
+              <span class="${pnlClass(d.winner_net)}">${money(d.winner_net, cur)}</span>` : "—"}</td>
+            <td>${d.loser_name ? `${escapeHtml(d.loser_name)}
+              <span class="${pnlClass(d.loser_net)}">${money(d.loser_net, cur)}</span>` : "—"}</td>
+            <td class="${d.benchmark_net == null ? "" : pnlClass(d.benchmark_net)}">${
+              d.benchmark_net == null ? "—" : money(d.benchmark_net, cur)}</td>
+            <td>${d.traded}</td>
+          </tr>`).join("")}
+        </tbody></table></div>
+    </details>`;
 }
 
 function bindBoard() {

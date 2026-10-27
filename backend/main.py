@@ -520,6 +520,7 @@ def api_intraday_detail(symbol: str, request: Request):
 
 # ---------- Strategy Arena (several strategies, simulated money, side by side) ----------
 
+from arena import runner as arena_runner
 from arena import service as arena_service
 from arena import markets as arena_markets
 from arena import store as arena_store
@@ -566,12 +567,14 @@ def api_arena_markets(request: Request):
 @app.get("/api/arena")
 def api_arena(request: Request, market: str | None = None):
     ip = arena_key(request, market)
-    # On Render's free tier this request is often what woke the server. Start
-    # the catch-up here rather than waiting up to five minutes for the
-    # scheduler - but in the background, so the page still renders now. The
-    # 60-second poll shows the result.
-    started = arena_service.tick_in_background(ip)
-    return {**arena_service.view(ip), "tick_started": started}
+    # Only this process's own arenas get advanced here, and only when it
+    # has been told it owns them. Under the default (github) a page load
+    # is a read: waking a free instance into a multi-arena catch-up is
+    # what used to make it fall over and 503 at market open.
+    started = (arena_service.tick_in_background(ip)
+               if arena_runner.ticks_in_process() else False)
+    view = arena_service.view(ip)
+    return {**view, "tick_started": started}
 
 
 @app.put("/api/arena/config")
@@ -596,6 +599,14 @@ def api_arena_strategy_status(strategy_id: str, action: str, request: Request,
     if not arena_service.set_status(arena_key(request, market), strategy_id, status):
         raise HTTPException(404, "strategy not found in this arena yet")
     return {"id": strategy_id, "status": status}
+
+
+@app.get("/api/arena/scoreboard")
+def api_arena_scoreboard(request: Request, market: str | None = None,
+                         period: str | None = None):
+    """Per-strategy record over many sessions - who earns, who wins days,
+    who loses them. Read-only; it recomputes nothing the arena settled."""
+    return arena_service.scoreboard(arena_key(request, market), period)
 
 
 @app.get("/api/arena/trades")

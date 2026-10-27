@@ -35,3 +35,9 @@ services:
       # the Strategy Arena all tick on this interval.
       - key: TICK_MINUTES
         value: "5"
+      # The Strategy Arena's simulation runs in a scheduled GitHub Actions
+      # job, not here: a free instance woke into a multi-arena catch-up and
+      # fell over, 503ing at market open. "github" makes this process a
+      # read-only dashboard. "inprocess" restores the old behaviour.
+      - key: ARENA_RUNNER
+        value: "github"

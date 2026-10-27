@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import datetime as dt
 import threading
+import time
 from zoneinfo import ZoneInfo
 
 import data_sources
@@ -17,9 +18,15 @@ import market_calendar
 import timeutil
 from arena import engine, store
 from arena import markets as markets_mod
+from arena import runner as runner_mod
+from arena import scoreboard as scoreboard_mod
 from arena.strategies import enrich, catalog
 
 BACKTEST_PREFIX = "bt::"
+# Pause between symbols, and the waits before each retry of one symbol.
+# The first entry is 0 because the first attempt is not a retry.
+FETCH_GAP_SECONDS = 0.5
+FETCH_BACKOFF = (0.0, 2.0, 6.0)
 REPLAY_PERIOD = "60d"     # Yahoo serves 5-minute bars for about 60 days
 # A session is only finished once its last bar has printed.
 SETTLE_LAG = dt.timedelta(minutes=engine.BAR_MINUTES)
@@ -95,25 +102,41 @@ def _fetch_enriched(symbols: list[str], period: str | None = None,
     is lets the header say which it was.
     """
     out, ok, failed, latest = {}, [], [], None
-    for sym in symbols:
-        try:
-            raw = (data_sources._yf_download_cached(sym, period, "5m") if period
-                   else data_sources.fetch_intraday_bars(sym, "5m"))
-            scale = ((fx or {}).get("symbol_scale") or {}).get(sym)
-            if scale is None:
-                scale = 1.0
-            df = enrich(raw, market=market, window=window, scale=float(scale))
-            if df is None or df.empty:
-                failed.append(sym)
-                continue
-            out[sym] = df
-            ok.append(sym)
-            last_ts = df.index[-1]
-            if latest is None or last_ts > latest:
-                latest = last_ts
-        except Exception as e:  # one bad symbol must not stop the others
+    for i, sym in enumerate(symbols):
+        # Sequential, with a pause between symbols. Yahoo rate-limits by IP
+        # and a scheduled job runs from a datacenter address, which is
+        # exactly what gets throttled - the same reason the existing
+        # curl_cffi session is kept rather than plain requests.
+        if i:
+            time.sleep(FETCH_GAP_SECONDS)
+        df, error = None, None
+        for attempt, backoff in enumerate(FETCH_BACKOFF):
+            if attempt:
+                time.sleep(backoff)
+            try:
+                raw = (data_sources._yf_download_cached(sym, period, "5m") if period
+                       else data_sources.fetch_intraday_bars(sym, "5m"))
+                scale = ((fx or {}).get("symbol_scale") or {}).get(sym)
+                if scale is None:
+                    scale = 1.0
+                candidate = enrich(raw, market=market, window=window, scale=float(scale))
+                if candidate is None or candidate.empty:
+                    error = "no bars in this market's hours / your window"
+                    continue
+                df, error = candidate, None
+                break
+            except Exception as e:   # one bad symbol must not stop the others
+                error = f"{type(e).__name__}: {e}"
+        if df is None:
             failed.append(sym)
-            print(f"[warn] arena: bars failed for {sym}: {e}")
+            print(f"[warn] arena: bars failed for {sym} after "
+                  f"{len(FETCH_BACKOFF)} attempts: {error}")
+            continue
+        out[sym] = df
+        ok.append(sym)
+        last_ts = df.index[-1]
+        if latest is None or last_ts > latest:
+            latest = last_ts
     diagnostics = {
         "at": timeutil.iso_now(),
         "symbols_ok": ok,
@@ -303,19 +326,45 @@ def tick_client(ip: str, now: dt.datetime | None = None) -> None:
     bars, diagnostics = _fetch_enriched(state["config"]["symbols"], period,
                                         market=market, window=window, fx=fx)
 
+    missing = sorted(set(state["config"]["symbols"]) - set(bars))
+    # Nothing downloaded at all. Settling now would record a day of zero
+    # trades for every strategy and mark it done, and the real session -
+    # which did happen, and whose bars Yahoo still has - would be lost for
+    # good. Leave it unsettled; the next run picks it up.
+    if not bars:
+        with store.lock:
+            state = store.load(ip)
+            if state:
+                state["last_tick_at"] = timeutil.iso_now()
+                state["last_tick"] = {**diagnostics, "settled_nothing": True}
+                state["caught_up_last"] = 0
+                store.save(ip, state)
+        print(f"[warn] arena {ip}: no bars for any symbol - leaving "
+              f"{len(finished_missed)} session(s) unsettled for the next run")
+        return
+
+    caught_up = 0
     with store.lock:
         state = store.load(ip)
         if not state:
             return
-        caught_up = 0
         # Replay each missed session in order, exactly as the live path
         # would have: same engine, same bars, same functions.
+        #
+        # Saved after EACH one. This runs as a short-lived scheduled job
+        # that can be killed by a timeout partway through a long catch-up;
+        # saving once at the end would throw away every session replayed
+        # so far and make the next run start the same work from scratch.
         for date in _missed_sessions(state, now):
             if state["day"] != date:
                 engine.start_day(state, date, caught_up=True, fx=fx)
             engine.process_bars(state, bars, now=None)
-            engine.settle_day(state, caught_up=True)
+            engine.settle_day(state, caught_up=True, missing_symbols=missing)
             caught_up += 1
+            state["last_tick_at"] = timeutil.iso_now()
+            state["last_tick"] = diagnostics
+            state["caught_up_last"] = caught_up
+            store.save(ip, state)
 
         if current:
             # A session that was already over when this tick began was
@@ -332,7 +381,8 @@ def tick_client(ip: str, now: dt.datetime | None = None) -> None:
                 # complete, so none needs holding back as still forming.
                 engine.process_bars(state, bars, now=None if ended else now)
                 if ended:
-                    engine.settle_day(state, caught_up=opened_late)
+                    engine.settle_day(state, caught_up=opened_late,
+                                      missing_symbols=missing)
                     if opened_late:
                         caught_up += 1
 
@@ -404,6 +454,10 @@ def view(ip: str) -> dict:
         # and `error` say WHICH of the two reasons it is.
         "storage": store.backend_status(),
         "freshness": freshness(state),
+        # Who advances this arena, when it last did, and when it is next
+        # due. The dashboard being asleep is now expected; the RUNNER
+        # being asleep is the thing worth a banner.
+        "runner": runner_mod.status(state),
         "verdict": engine.verdict(state),
         "leaderboard": engine.leaderboard(state),
         "open_positions": engine.open_positions(state),
@@ -447,6 +501,16 @@ def markets_overview(now: dt.datetime | None = None, client: str | None = None) 
     return {"markets": out, "default": markets_mod.DEFAULT_MARKET,
             "regulatory_note": REGULATORY_NOTE,
             "us_holidays": markets_mod.us_holiday_status()}
+
+
+def scoreboard(ip: str, period: str | None = None) -> dict:
+    """The long-run record for this arena: per strategy, per day."""
+    state = load_or_create(ip)
+    board = scoreboard_mod.scoreboard(state, period)
+    # Where a day's rate was never recorded, offer a rough rupee total at
+    # the last rate seen - labelled separately so it is never mistaken for
+    # the figure the session actually settled at.
+    return scoreboard_mod.to_inr_totals(board, state.get("fx"))
 
 
 def update_config(ip: str, raw: dict) -> dict:

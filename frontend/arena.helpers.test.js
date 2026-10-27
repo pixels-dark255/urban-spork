@@ -53,6 +53,7 @@ function loadArenaHelpers() {
   // Literals lifted out of arena.js, so the labels stay in one place
   // rather than being restated here.
   vm.runInContext(extractConst(SOURCE, "MARKET_LABELS"), context);
+  vm.runInContext(extractConst(SOURCE, "UUID_RE"), context);
   vm.runInContext(extractConst(SOURCE, "DAY_NAMES"), context);
 
   // escapeHtml goes through a DOM node in the real app; the arena helpers
@@ -68,7 +69,8 @@ function loadArenaHelpers() {
                       "fmtDayLabel", "shortSymbol", "renderDayHistory", "renderBoard",
                       "storageWarning", "freshnessLine", "sessionLine",
                       "renderMarketTabs", "leverageWarning", "regulatoryNote",
-                      "renderSlippageSweep", "presetButtons"]) {
+                      "renderSlippageSweep", "presetButtons", "isValidClientId",
+                      "runnerLine", "streakText", "sparkline"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -440,4 +442,74 @@ test("the India arena is not told its own session twice", () => {
   assert.ok(html.includes("09:15–15:30 IST"), html);
   assert.ok(!html.includes("arena-sub"),
             "no redundant second clock on the India arena");
+});
+
+
+// ---------------------------------------------------------------------------
+// The scheduled runner, and one identity across devices
+// ---------------------------------------------------------------------------
+
+test("the runner line says when it last ran and when it runs next", () => {
+  const html = arena.runnerLine({
+    mode: "github", last_tick_at: "2026-10-27T04:17:00Z",
+    next_run_ist: "11:47", stale: false,
+  });
+  assert.ok(html.includes("Updated by the daily runner at 09:47 IST"), html);
+  assert.ok(html.includes("next run ~11:47 IST"), html);
+  assert.ok(!html.includes("asleep"), "the web service being asleep is no longer the story");
+});
+
+test("a runner that has not updated in hours gets a banner", () => {
+  const html = arena.runnerLine({
+    mode: "github", last_tick_at: "2026-10-25T04:17:00Z",
+    next_run_ist: "11:47", stale: true,
+  });
+  assert.ok(html.includes("hasn't updated since"), html);
+  assert.ok(html.includes("GitHub"), "it must say where to look");
+  assert.ok(html.includes("arena-stale"));
+});
+
+test("an arena the runner has never touched says so", () => {
+  const html = arena.runnerLine({ mode: "github", last_tick_at: null,
+                                  next_run_ist: "11:47", stale: false });
+  assert.ok(html.includes("has not updated this arena yet"), html);
+});
+
+test("a never-run banner does not say 'since ever'", () => {
+  const html = arena.runnerLine({ mode: "github", last_tick_at: null,
+                                  next_run_ist: "11:47", stale: true });
+  assert.ok(html.includes("has never run for this arena"), html);
+  assert.ok(!html.includes("since ever"), html);
+});
+
+test("the runner line is silent when this process does the ticking", () => {
+  assert.strictEqual(arena.runnerLine({ mode: "inprocess" }), "");
+  assert.strictEqual(arena.runnerLine(null), "");
+});
+
+test("an arena ID is accepted only if it is a UUID", () => {
+  assert.strictEqual(arena.isValidClientId("3f2504e0-4f89-41d3-9a0c-0305e82c3301"), true);
+  assert.strictEqual(arena.isValidClientId("3F2504E0-4F89-41D3-9A0C-0305E82C3301"), true);
+  assert.strictEqual(arena.isValidClientId("  3f2504e0-4f89-41d3-9a0c-0305e82c3301  "), true);
+  for (const bad of ["", null, undefined, "not-a-uuid", "3f2504e0", "../../etc/passwd",
+                     "3f2504e0-4f89-41d3-9a0c-0305e82c330", "' OR 1=1 --"]) {
+    assert.strictEqual(arena.isValidClientId(bad), false, `should reject ${bad}`);
+  }
+});
+
+test("a streak reads as up or down, and a flat record as neither", () => {
+  assert.strictEqual(arena.streakText({ current: 3 }), "3 up");
+  assert.strictEqual(arena.streakText({ current: -2 }), "2 down");
+  assert.strictEqual(arena.streakText({ current: 0 }), "—");
+  assert.strictEqual(arena.streakText(null), "—");
+});
+
+test("the sparkline colours each session and labels it for screen readers", () => {
+  const html = arena.sparkline([{ date: "2026-10-05", net: 10 },
+                                { date: "2026-10-06", net: -4 },
+                                { date: "2026-10-07", net: 0 }], null);
+  assert.ok(html.includes('class="up"') && html.includes('class="down"')
+            && html.includes('class="flat"'), html);
+  assert.ok(html.includes("aria-label"), "colour alone is not an answer");
+  assert.strictEqual(arena.sparkline([], null), "");
 });

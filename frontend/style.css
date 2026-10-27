@@ -814,3 +814,75 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
   font-family: var(--font-mono);
   font-size: 13px;
 }
+
+/* ---------- Arena: scoreboard ---------- */
+
+.arena-periods {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 2px 0 12px;
+}
+.arena-period {
+  padding: 5px 11px;
+  border: 1px solid var(--hairline);
+  border-radius: 999px;
+  background: var(--paper);
+  color: var(--mist);
+  font-family: var(--font-body);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.arena-period:active { transform: scale(0.97); }
+.arena-period.on {
+  background: var(--paper-raised);
+  border-color: var(--brass-dim);
+  color: var(--brass);
+  font-weight: 600;
+}
+
+/* The handful of answers worth reading before the table. */
+.arena-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.arena-card {
+  padding: 10px 12px;
+  border: 1px solid var(--hairline);
+  border-left: 3px solid var(--brass-dim);
+  border-radius: 0 9px 9px 0;
+  background: var(--paper);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 13px;
+}
+.arena-card-bad { border-left-color: var(--signal-red); }
+.arena-card-label {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--mist);
+}
+.arena-card b { font-weight: 600; }
+
+/* A run of sessions as bars: enough shape to tell one enormous day apart
+   from a steady grind, which is the whole point of the columns beside it. */
+.arena-spark {
+  display: inline-flex;
+  align-items: flex-end;
+  gap: 2px;
+  height: 16px;
+}
+.arena-spark i {
+  display: block;
+  width: 3px;
+  border-radius: 1px;
+  background: var(--mist);
+}
+.arena-spark i.up { background: var(--brass); }
+.arena-spark i.down { background: var(--signal-red); }
+.arena-spark i.flat { background: var(--hairline); }

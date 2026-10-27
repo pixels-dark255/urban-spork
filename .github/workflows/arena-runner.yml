@@ -1,0 +1,66 @@
+# Runs the Strategy Arena's simulation.
+#
+# The arena used to tick inside the Render web service. A free instance has
+# a tiny CPU and sleeps after 15 minutes, so the first request at market
+# open woke it straight into a multi-arena catch-up, it fell over, restarted
+# and began the same catch-up again - 503s at exactly the moment anyone
+# looked. Paper trading does not have to be live: the engine replays a
+# finished session from Yahoo's 5-minute bars and reaches the same fills,
+# because it only ever acts on completed bars. So this settles whatever has
+# finished, every couple of hours, and Render just shows the results.
+#
+# SETUP:
+#   Settings -> Secrets and variables -> Actions -> New repository secret
+#       Name:  DATABASE_URL
+#       Value: your Neon Postgres connection string
+#   Without it the runner refuses to start - see backend/run_daily.py.
+
+name: Arena runner
+
+on:
+  schedule:
+    # Every two hours, at :17 - off the hour, where every other cron on the
+    # platform piles up and scheduled runs get delayed the most. The
+    # catch-up decides what is actually due, so a run with nothing to
+    # settle is a cheap no-op.
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+    inputs:
+      market:
+        description: "Which market to advance"
+        required: false
+        default: "all"
+        type: choice
+        options: [all, nse, us, forex, crypto]
+
+# Never let two runs overlap: they would both replay the same unsettled
+# sessions and race each other writing the same rows.
+concurrency:
+  group: arena-runner
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Advance the arenas
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: python run_daily.py --market "${{ inputs.market || 'all' }}"

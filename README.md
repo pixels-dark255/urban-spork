@@ -19,6 +19,7 @@ stock-analyzer/
   render.yaml        Render Blueprint (must stay at the repo root)
   backend/          FastAPI app — data fetching, prediction engine, watchlist scheduler
     main.py
+    run_daily.py       the scheduled runner - advances every arena, then exits
     data_sources.py   NSE/BSE list, yfinance prices, news, weather
     indicators.py     RSI / MACD / Bollinger / volatility
     predictor.py       the ensemble prediction engine
@@ -31,6 +32,8 @@ stock-analyzer/
     nse_holidays.json  trading-holiday dates (see "Trading holidays" below)
     arena/             Strategy Arena: strategies competing with simulated money
       markets.py       market profiles: sessions, costs, currencies, windows
+      runner.py        who advances the arenas: the scheduled job, or this process
+      scoreboard.py    the long-run record, per strategy per session
     requirements.txt
     tests/             pytest suite (no network required)
     .env.example
@@ -85,9 +88,9 @@ Run the tests with:
 
 ```bash
 pip install pytest pyflakes httpx
-python -m pytest tests/ -q          # 226 backend tests
+python -m pytest tests/ -q          # 264 backend tests
 python -m pyflakes .
-cd ../frontend && node --test app.helpers.test.js arena.helpers.test.js   # 46 frontend tests
+cd ../frontend && node --test app.helpers.test.js arena.helpers.test.js   # 56 frontend tests
 ```
 
 The suite stubs the market data source, so it needs no network and passes
@@ -136,22 +139,119 @@ Postgres from [supabase.com](https://supabase.com) or
 [neon.tech](https://neon.tech) and all three persist (tables
 `watchlist_store`, `intraday_store`, `arena_store`). See `.env.example`.
 
-### Free tier sleeps — what that costs, feature by feature
+### Free tier sleeps — what that costs now
 
 Free web services spin down after ~15 minutes without traffic and take
-30-60s to wake. The scheduler is asleep for that whole time, which affects
-the three features differently:
+30-60s to wake. Since the Arena moved to the scheduled runner (below), that
+affects the three features very differently:
 
+- **The Strategy Arena** no longer cares. Its simulation runs in GitHub
+  Actions and writes to Postgres; Render only reads. A sleeping dashboard
+  costs you one slow page load.
 - **Watchlist predictions** resolve against the price *at* their target
   time, so a nap costs nothing — they are graded correctly whenever the
   service next wakes.
-- **Intraday paper trading** reads live 5-minute bars and keeps no
-  historical catch-up, so trades that would have triggered during a nap
-  simply do not happen.
-- **The Strategy Arena** replays what it slept through. On the first
-  request after a wake it refetches Yahoo's 5-minute bars and runs every
-  missed session through the same engine, in order, before touching today
-  — see the next section.
+- **Intraday paper trading** still reads live bars with no catch-up, so
+  trades that would have triggered during a nap do not happen. It is the
+  one feature that would still benefit from an uptime pinger.
+
+### How the Arena runs
+
+**The simulation does not run on Render.** It runs as a scheduled GitHub
+Actions job that writes to the same Postgres database Render reads from.
+Render is a dashboard.
+
+That is not a workaround, it is the right shape. A free Render instance has
+a tiny CPU and sleeps after 15 minutes, so the first request at market open
+woke it straight into a multi-arena catch-up, it fell over under the load,
+restarted, and began the same catch-up again — 503s at exactly the moment
+anyone would look. And paper trading does not need to be live: the engine
+only ever acts on *completed* 5-minute bars, so replaying a finished
+session reaches the same fills as watching it print. A job that settles
+whatever has finished, every couple of hours, is the same trading done
+afterwards.
+
+#### Setting it up (three steps, about five minutes)
+
+1. **Give the job the database.** GitHub → your repo → **Settings** →
+   *Secrets and variables* → **Actions** → **New repository secret**:
+   - Name: `DATABASE_URL`
+   - Value: your Neon connection string (keep `?sslmode=require`)
+
+2. **Run it once by hand.** **Actions** tab → enable workflows if prompted
+   → **Arena runner** → **Run workflow**. When it finishes, open the run
+   and read the summary: a table of every arena, what it settled, what it
+   caught up, and any symbols that failed. If `DATABASE_URL` is missing the
+   job stops immediately and says so rather than pretending to work.
+
+3. **Point Render at the same database and stand it down.** In the Render
+   service's **Environment** tab:
+   - `ARENA_RUNNER` = `github`
+   - `DATABASE_URL` = **the same Neon string**. Delete any old Supabase
+     value: Render cannot reach Supabase's direct host, which is IPv6-only.
+
+   Any uptime pinger you set up for the Arena (cron-job.org, UptimeRobot)
+   can be deleted. Nothing needs Render awake any more.
+
+#### Worth knowing
+
+- **Scheduled runs start late.** GitHub's scheduler is best-effort and is
+  regularly several minutes behind, sometimes much more. It does not
+  matter here: the job settles whatever has finished, so a late run
+  catches up rather than missing anything.
+- **GitHub pauses schedules in a repo with no activity for 60 days.** It
+  emails first, and the Actions tab has a button to re-enable them.
+- This repository is public, so Actions minutes are free and unlimited. On
+  a **private** repo they come out of a monthly allowance; each run takes
+  roughly one to three minutes.
+- **Nothing is lost if a run dies.** Each caught-up session is saved as it
+  settles, so a run killed by the 20-minute timeout keeps everything it
+  finished and the next run carries on from there.
+- **A session with no data is not settled.** If every symbol fails to
+  download, the job leaves that session alone and tries again next time,
+  rather than recording a day of zero trades for every strategy and losing
+  the real session for good. If only some symbols fail, the day settles and
+  records which ones were missing.
+
+#### Run the Arena on your own PC
+
+Optional — results go to the same Neon database, so the Render dashboard
+shows them either way.
+
+```bash
+pip install -r backend/requirements.txt
+cp backend/.env.example backend/.env     # then paste your Neon string in
+cd backend && python run_daily.py
+```
+
+`run_daily.py` reads `backend/.env` through `python-dotenv` if it is there.
+Useful flags:
+
+| flag | what it does |
+|---|---|
+| `--market us` | only that market's arenas (`nse`, `us`, `forex`, `crypto`, `all`) |
+| `--now 2026-10-27T18:00:00+05:30` | run as if it were then |
+| `--allow-file` | run against the local JSON file instead of Postgres |
+| `--max-minutes 12` | stop starting new arenas after this long |
+
+Without `DATABASE_URL` it refuses to run unless you pass `--allow-file`,
+because in CI a file backend means every settled session is written to a
+container that is deleted when the job ends.
+
+To run it on a schedule on Windows, add two Task Scheduler entries calling
+`python run_daily.py` — 15:50 IST catches the NSE close, 23:59 IST catches
+the evening forex and crypto sessions and most of the US one. Anything the
+US session finishes after that is picked up by the next run.
+
+#### Using the same arenas on your phone and your PC
+
+Arenas belong to a **client ID**, not to a device, and each browser
+generates its own the first time it loads the app — which is why a phone
+and a laptop end up with two separate sets. **Arena → Settings → Your
+arena ID** shows the current one with a copy button, and *Use an existing
+ID* switches this browser to another one. Copy the ID you want to keep
+first: switching does not delete anything, but you need the old ID to get
+back to it.
 
 ### Postgres says it failed, and the app carries on without it
 
@@ -183,42 +283,22 @@ persists. The Arena's banner now says *"`DATABASE_URL` is set, but Postgres
 could not be used"* with the reason, rather than telling you to set a
 variable you have already set.
 
-### Running the Arena live on Render free tier
+### What the catch-up does and does not promise
 
-The Arena is built to survive the free tier rather than fight it. You need
-one thing, and one more is nice to have:
-
-1. **Set `DATABASE_URL`** (free Postgres from [neon.tech](https://neon.tech)
-   or [supabase.com](https://supabase.com)). This is not optional for the
-   Arena: without it the state is a JSON file on a disk Render wipes on
-   every spin-down, so each wake starts a brand-new arena with no history
-   to catch up to. The Arena tab says so in a banner when it is running on
-   ephemeral storage.
-
-2. **Optional, to watch trades appear during the day:** point a free cron
-   pinger (e.g. [cron-job.org](https://cron-job.org)) at
-   `https://your-app.onrender.com/api/health` every 10 minutes, Mon-Fri,
-   09:00-15:45 IST. The service then stays awake through the session and
-   the Arena trades bar by bar as they print, exactly like a paid instance.
-
-3. **Minimum:** one ping after 15:40 IST on trading days is enough. The
-   catch-up fills in the entire day from Yahoo's 5-minute bars and settles
-   it. Opening the Arena tab in a browser does the same thing — any request
-   that wakes the service starts a tick in the background.
-
-What the catch-up does and does not promise:
+The runner settles whatever has finished since it last ran, so these hold
+whether it runs every two hours or once a week:
 
 - It replays up to **60 sessions** — as far back as Yahoo serves 5-minute
   bars. A gap longer than that loses the sessions beyond it, permanently.
 - Trades filled from a replay are tagged **"caught up"** in the trade list,
   and the day's summary records it, so a replayed day is never silently
-  passed off as a live one. The fills are identical either way (the engine
-  only ever reads completed bars), but the tag is there to be audited.
-- It is idempotent. Pinging ten times on the same evening settles each
-  session once.
-- The Arena tab shows when the last tick ran, and warns if the market is
-  open but nothing has ticked for 30 minutes — i.e. the service is asleep
-  and nobody is pinging it.
+  passed off as a watched one. The fills are identical either way (the
+  engine only reads completed bars), but the tag is there to be audited.
+- It is **idempotent**, and saves each session as it settles. Running it ten
+  times settles each session once, and a run killed halfway keeps
+  everything it finished.
+- A session where **every** symbol failed to download is left unsettled for
+  the next run, rather than recorded as a day on which nothing traded.
 
 ---
 
@@ -329,8 +409,10 @@ answers one question: **which one actually makes money after costs?**
   automatically when they start earning again. If every strategy is
   benched, the arena says so - a live account would sit in cash.
 - **Daily cycle:** opens at 09:15 IST, no new entries after 14:45, everything
-  squared off at 15:15, settled after 15:30. A day the server slept through
-  is caught up and settled from Yahoo's bars on the next tick.
+  squared off at 15:15, settled after 15:30. Sessions are replayed from
+  Yahoo's 5-minute bars by the scheduled runner (see "How the Arena runs"),
+  which reaches the same fills as watching them print - the engine only ever
+  acts on completed bars.
 - **Backtest:** replays the last 10-60 sessions of real 5-minute bars (Yahoo
   keeps about 60 days) through the same engine, so you see results today
   instead of after weeks. Treat a short backtest as a hint, not proof.

@@ -18,6 +18,7 @@ from data_sources import (
 )
 from predictor import predict_price, nudge_weights
 import intraday
+from arena import runner as arena_runner
 from arena import service as arena_service
 
 IST = pytz.timezone("Asia/Kolkata")
@@ -154,8 +155,16 @@ def start_scheduler(interval_minutes: int = 5):
     # whole interval later - by which time the visitor has already seen an
     # empty arena and gone. Running on startup is what makes a cold wake
     # produce data.
-    scheduler.add_job(arena_tick, "interval", minutes=interval_minutes, id="arena_tick",
-                      replace_existing=True, max_instances=1, coalesce=True,
-                      next_run_time=timeutil.utc_now())
+    # The arena's simulation belongs to the scheduled GitHub job unless
+    # this process is explicitly told to own it. Registering the job
+    # anyway would mean two writers racing over the same Postgres rows -
+    # and on a free instance, the heavy one running on the weakest CPU.
+    if arena_runner.ticks_in_process():
+        scheduler.add_job(arena_tick, "interval", minutes=interval_minutes,
+                          id="arena_tick", replace_existing=True, max_instances=1,
+                          coalesce=True, next_run_time=timeutil.utc_now())
+    else:
+        print(f"[info] arena: ARENA_RUNNER={arena_runner.mode()} - this process is a "
+              f"dashboard; the scheduled job advances the arenas.")
     scheduler.start()
     return scheduler

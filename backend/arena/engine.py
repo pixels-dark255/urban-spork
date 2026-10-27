@@ -336,7 +336,8 @@ def start_day(state: dict, date: str, caught_up: bool = False,
     state["day_settled"] = False
 
 
-def settle_day(state: dict, caught_up: bool = False) -> dict | None:
+def settle_day(state: dict, caught_up: bool = False,
+               missing_symbols: list[str] | None = None) -> dict | None:
     """Close leftovers at their last mark, record the day, judge every book.
 
     `caught_up` marks a session the server slept through and replayed after
@@ -348,7 +349,14 @@ def settle_day(state: dict, caught_up: bool = False) -> dict | None:
         return None
     cfg, risk = state["config"], state["config"]["risk"]
     fx = state.get("fx") or {}
+    # Symbols whose bars could not be downloaded for this session. The day
+    # is still settled on what did arrive - refusing would lose the session
+    # entirely - but it is settled on less than the arena was configured to
+    # trade, and the record says so rather than presenting a thinner day as
+    # a complete one.
+    missing = sorted(missing_symbols or [])
     summary = {"date": state["day"], "books": {}, "caught_up": bool(caught_up),
+               "missing_symbols": missing,
                "market": cfg.get("market", markets_mod.DEFAULT_MARKET),
                # The rate this session's rupee figures were computed at.
                # Kept per day so an old session is never restated at
@@ -372,6 +380,7 @@ def settle_day(state: dict, caught_up: bool = False) -> dict | None:
             "equity_end": round(book["cash"], 2), "status": book["status"],
             "stopped": book["day"]["stop_reason"], "skipped": book["day"]["skipped"],
             "caught_up": bool(caught_up),
+            "missing_symbols": missing,
             "net_inr": markets_mod.to_inr(day_net, fx),
             "fx_rate": fx.get("inr_per_unit"),
         })
