@@ -486,15 +486,26 @@ Defaults differ by market, because what counts as a workable stake does:
 
 | Market | Default | Why |
 |---|---|---|
-| India, forex, crypto | **₹10,000** | forex and crypto size fractional positions; NSE shares are cheap enough |
-| **US stocks** | **₹50,000** | ₹10,000 is about $113, and US equities trade in **whole shares** |
+| **India and US stocks** | **₹50,000** | both trade in **whole shares**, and rounding down wastes a big slice of a small book |
+| forex, crypto | **₹10,000** | they size fractional positions, so the book is used almost exactly |
 
-> One share of most US mega-caps costs more than $113, so at ₹10,000 a US
-> arena skipped most of its entries and showed an empty leaderboard. On
-> five sessions of $250 bars that is 50 skipped entries and nothing traded;
-> at ₹50,000 (about $565), eight strategies trade and nothing is skipped.
-> If you do set a US arena low, the arena says exactly why it is idle
-> instead of looking broken.
+> **Why a whole-share market needs a bigger book.** A single position is
+> capped at `max_position_pct` (50% by default), and the size is then
+> rounded **down** to whole shares. Measured over ~27 sessions of NSE
+> large-caps: at ₹10,000 the cap is ₹5,000 per position, and rounding threw
+> away a **median 22%** of the intended size — a ₹3,100 TCS share out of a
+> ₹5,000 allowance is one share and ₹1,900 left idle. At ₹50,000 the same
+> waste is **3%**.
+>
+> It is worse on US mega-caps: ₹10,000 is about $113, which will not buy
+> one share at all, so the arena skipped most entries and the leaderboard
+> stayed empty. If you do set a whole-share arena low, the verdict says
+> exactly why it is idle rather than looking broken.
+>
+> Very expensive shares have the same problem at any book size: at ₹50,000
+> the cap is ₹25,000, which buys two shares of an ₹11,000 stock and leaves
+> ₹3,000 idle. That is why the NSE defaults stay below roughly ₹3,600, and
+> why there is a **`low_priced`** preset for smaller books.
 
 Changing this later is a settings change, not a code one: **Arena → the
 market's tab → Settings → Capital per strategy**. A figure you have set is

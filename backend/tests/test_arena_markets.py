@@ -397,7 +397,7 @@ def test_the_four_markets_are_separate_arenas(tmp_path, monkeypatch):
     # Changing one must not touch the others.
     arena_service.update_config(store.key(client, "us"), {"daily_capital": 75_000})
     assert store.load(store.key(client, "us"))["config"]["daily_capital"] == 75_000
-    assert store.load(store.key(client, "nse"))["config"]["daily_capital"] == 10_000
+    assert store.load(store.key(client, "nse"))["config"]["daily_capital"] == 50_000
     for market_id in ("nse", "us", "forex", "crypto"):
         cfg = store.load(store.key(client, market_id))["config"]
         assert cfg["market"] == market_id
@@ -665,9 +665,13 @@ def test_each_market_starts_with_a_workable_stake():
     empty leaderboard. Its default is its own."""
     defaults = {m: engine.new_state({"market": m})["config"]["daily_capital"]
                 for m in ("nse", "us", "forex", "crypto")}
-    assert defaults["us"] == 50_000.0
-    # The fractional markets size any position, so they need no more.
-    assert defaults["nse"] == defaults["forex"] == defaults["crypto"] == 10_000.0
+    # Both whole-share markets start at ₹50,000. Below that, a 50% cap on
+    # one position plus whole-share rounding leaves a large slice of the
+    # book permanently idle: at ₹10,000 the median NSE position threw away
+    # 22% of its intended size, at ₹50,000 it is 3%.
+    assert defaults["us"] == defaults["nse"] == 50_000.0
+    # The fractional markets size any position exactly, so they need no more.
+    assert defaults["forex"] == defaults["crypto"] == 10_000.0
 
 
 def test_a_capital_the_user_chose_is_never_overwritten_by_the_default():
@@ -703,3 +707,33 @@ def test_the_us_default_actually_affords_a_mega_cap_position():
 
     assert engine.skipped_unaffordable(funded) == 0
     assert any(r["trades"] for r in engine.leaderboard(funded))
+
+
+def test_the_nse_default_list_avoids_shares_too_dear_to_size(db=None):
+    """Position sizing is capped at 50% of the book and rounds down to
+    whole shares, so a very expensive share wastes most of its allowance:
+    at ₹50,000 the cap is ₹25,000, which buys two shares of a ₹11,000
+    stock and leaves ₹3,000 idle. The default list stays below that."""
+    market = markets.get("nse")
+    cap = market.default_capital_inr * 0.5      # max_position_pct
+    # Every default symbol should afford at least ~8 shares of its
+    # allowance, so rounding costs single-digit percentages rather than
+    # a third of the position.
+    assert len(market.default_symbols) >= 12
+    assert len(set(market.default_symbols)) == len(market.default_symbols)
+    for sym in market.default_symbols:
+        assert sym.endswith(".NS"), sym
+    # The preset that exists for small books must be a subset of NSE too.
+    for name, syms in market.presets.items():
+        assert syms, name
+        assert all(s.endswith(".NS") for s in syms), name
+        assert len(set(syms)) == len(syms), f"{name} has duplicates"
+    assert cap == 25_000.0
+
+
+def test_more_symbols_do_not_break_the_symbol_cap():
+    """The config caps a list at 25; the presets must fit under it."""
+    market = markets.get("nse")
+    for name, syms in market.presets.items():
+        cfg = engine.normalise_config({"symbols": syms}, market_id="nse")
+        assert cfg["symbols"] == syms, name

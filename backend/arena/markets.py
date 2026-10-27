@@ -383,11 +383,32 @@ class NseMarket(Market):
     entry_cutoff_before_end = 45
     square_off_before_end = 15
     symbol_hint = "NSE symbols, e.g. RELIANCE (.NS is added for you)"
-    default_symbols = ["RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS",
-                       "INFY.NS", "TCS.NS", "SBIN.NS"]
-    presets = {"liquid_nifty": [
+    # ₹10,000 against a 50% per-position cap left about ₹5,000 for one
+    # position, and whole-share rounding then threw away a median 22% of
+    # the intended size - a ₹3,100 share of TCS out of a ₹5,000 allowance
+    # is one share and ₹1,900 idle. At ₹50,000 that waste drops to 3%.
+    default_capital_inr = 50_000.0
+    default_symbols = [
         "RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "TCS.NS",
-        "SBIN.NS", "AXISBANK.NS", "ITC.NS", "BHARTIARTL.NS", "TATASTEEL.NS"]}
+        "SBIN.NS", "AXISBANK.NS", "ITC.NS", "BHARTIARTL.NS", "TATAMOTORS.NS",
+        "TATASTEEL.NS", "HINDUNILVR.NS",
+    ]
+    presets = {
+        "liquid_nifty": [
+            "RELIANCE.NS", "HDFCBANK.NS", "ICICIBANK.NS", "INFY.NS", "TCS.NS",
+            "SBIN.NS", "AXISBANK.NS", "ITC.NS", "BHARTIARTL.NS", "TATAMOTORS.NS",
+            "TATASTEEL.NS", "HINDUNILVR.NS", "LT.NS", "HCLTECH.NS", "SUNPHARMA.NS"],
+        "banking": [
+            "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "AXISBANK.NS",
+            "KOTAKBANK.NS", "INDUSINDBK.NS"],
+        "it": ["TCS.NS", "INFY.NS", "HCLTECH.NS", "WIPRO.NS", "TECHM.NS"],
+        # Lower-priced names, where whole-share rounding barely bites: a
+        # ₹250 share fills its allowance almost exactly, a ₹3,600 one
+        # cannot. Useful if you run a smaller book.
+        "low_priced": [
+            "ITC.NS", "TATASTEEL.NS", "WIPRO.NS", "NTPC.NS", "POWERGRID.NS",
+            "COALINDIA.NS", "ONGC.NS", "SBIN.NS"],
+    }
 
     def default_window(self):
         return {"start": "09:15", "end": "15:30", "tz": "Asia/Kolkata", "days": [0, 1, 2, 3, 4]}
