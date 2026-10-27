@@ -63,10 +63,14 @@ key at all**.
 
 ## 3. Test it locally first (optional but recommended)
 
-The Python version is pinned in `.python-version` (3.14.3) and mirrored in
-`render.yaml`. Any of 3.11 upwards works locally, but pin it on a host:
-Render moved its own default to 3.14 and that silently broke the Postgres
-driver — see "Postgres says it failed" below.
+The Python version is pinned in `.python-version` (`3.14`), which both
+Render and the GitHub runner read — one pin, one place. It names the minor
+only on purpose: pinning a patch pins you to whichever runner images ship
+that exact patch, and `3.14.3` broke the CI job the day `ubuntu-latest`
+moved to Ubuntu 26.04, which only carries 3.14.6 and up. Any of 3.11
+upwards works locally, but the minor does need pinning on a host — Render
+moving its own default to 3.14 is what silently broke the Postgres driver,
+see "Postgres says it failed" below.
 
 (numpy and pandas are version *ranges* rather than exact pins: the previous
 `numpy==1.26.4` / `pandas==2.2.3` have no Python 3.13 wheels, so `pip
@@ -271,11 +275,12 @@ will not load. `_PyInterpreterState_Get` is a private symbol that CPython
 
 It bit this app when Render moved its default Python to 3.14.3 while
 `psycopg2-binary==2.9.9` (wheels only up to cp312) was pinned. Both halves
-are now fixed — `.python-version` pins the interpreter, and the driver is
-on a release with cp313/cp314/cp315 wheels — so a fresh deploy is fine. If
-you see it on an older service, check that its **Environment** tab has
-`PYTHON_VERSION` set, because a service created by hand in the dashboard
-does not inherit the value from `render.yaml`.
+are now fixed — `.python-version` pins the interpreter and is read from the
+repo by both Render and CI, and the driver is on a release with
+cp313/cp314/cp315 wheels — so a fresh deploy is fine. If you have a
+`PYTHON_VERSION` env var set in the Render dashboard, delete it: it
+overrides the file, and a stale value there is harder to spot than a line
+in the repo.
 
 The app deliberately keeps serving when this happens rather than refusing
 to boot, which is why it is easy to miss: everything works, nothing

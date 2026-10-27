@@ -16,11 +16,17 @@ services:
     startCommand: "uvicorn main:app --host 0.0.0.0 --port $PORT"
     healthCheckPath: /api/health
     envVars:
-      # Must match .python-version at the repo root. Render's own default
-      # moves (it went to 3.14.3), and an unpinned interpreter is how
-      # psycopg2 silently stopped loading - see backend/requirements.txt.
-      - key: PYTHON_VERSION
-        value: "3.14.3"
+      # The Python version lives in .python-version at the repo root, which
+      # both Render and the GitHub runner read - one pin, one place. It
+      # names the MINOR only (3.14), because pinning a patch pins it to the
+      # images that happen to ship that patch: 3.14.3 existed on Ubuntu
+      # 22.04/24.04 and not on 26.04, which broke the runner the day
+      # ubuntu-latest moved. An unpinned interpreter is how psycopg2
+      # silently stopped loading, so the minor still has to be pinned -
+      # see backend/requirements.txt.
+      #
+      # A PYTHON_VERSION env var would override that file, so there is
+      # deliberately none here.
       # Optional. Without it, news falls back to keyless Google News RSS.
       - key: NEWS_API_KEY
         sync: false
