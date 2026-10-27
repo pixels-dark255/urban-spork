@@ -267,3 +267,52 @@ def test_the_summary_tabulates_each_arena(db, monkeypatch, tmp_path):
 def test_a_bad_now_is_rejected_rather_than_silently_meaning_today():
     with pytest.raises(SystemExit):
         run_daily.main(["--allow-file", "--now", "yesterday-ish"])
+
+
+# ---------------------------------------------------------------- refusing
+
+def test_the_two_refusals_have_different_exit_codes(db, monkeypatch):
+    """A red job shows "exit code N" on the run page long before anyone
+    opens the log, and these two need completely different fixes."""
+    monkeypatch.setattr(storage, "_pg_pool", None)
+    monkeypatch.setattr(storage, "DATABASE_URL", "")
+    assert run_daily.main([]) == run_daily.EXIT_NO_DATABASE_URL == 2
+
+    monkeypatch.setattr(storage, "DATABASE_URL", "postgresql://u:p@h/db")
+    monkeypatch.setattr(storage, "PG_ERROR", "OperationalError: nope")
+    assert run_daily.main([]) == run_daily.EXIT_POSTGRES_UNUSABLE == 3
+
+
+def test_the_refusal_explains_itself_in_the_run_summary(db, monkeypatch, tmp_path):
+    """Exiting with the reason only on stderr is what this looked like the
+    first time: a red job, an exit code, and a blank summary."""
+    summary = tmp_path / "s.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(storage, "_pg_pool", None)
+    monkeypatch.setattr(storage, "DATABASE_URL", "")
+    run_daily.main([])
+    text = summary.read_text()
+    assert "refused to start" in text
+    assert "repository secret" in text and "not a *variable*" in text
+
+
+def test_a_refusal_summary_never_carries_the_password(db, monkeypatch, tmp_path):
+    """Step summaries are not masked the way log output is."""
+    summary = tmp_path / "s.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    monkeypatch.setattr(storage, "_pg_pool", None)
+    monkeypatch.setattr(storage, "DATABASE_URL",
+                        "postgresql://owner:SUPERSECRET@ep-x.neon.tech/db?sslmode=require")
+    monkeypatch.setattr(storage, "PG_ERROR",
+                        "could not connect to postgresql://owner:SUPERSECRET@ep-x/db")
+    run_daily.main([])
+    text = summary.read_text()
+    assert "SUPERSECRET" not in text
+    assert "<redacted>" in text
+    # The shape is still reported, which is what makes it diagnosable.
+    assert "begins `postgresql://`" in text
+
+
+def test_redaction_leaves_an_error_without_credentials_alone():
+    plain = "OperationalError: timeout expired"
+    assert run_daily._redact(plain) == plain

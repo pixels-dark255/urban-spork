@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import re
 import os
 import sys
 import traceback
@@ -182,6 +183,69 @@ def write_github_summary(text: str) -> None:
         print(f"[warn] could not write the run summary: {e}")
 
 
+# Distinct exit codes, because the run page shows "Process completed with
+# exit code N" long before anyone opens the log, and the two causes below
+# need completely different fixes.
+EXIT_NO_DATABASE_URL = 2
+EXIT_POSTGRES_UNUSABLE = 3
+
+
+def _redact(text: str) -> str:
+    """Strip anything resembling credentials out of a driver error before
+    it is written anywhere. GitHub masks secret values in log output; it
+    does not mask step summaries."""
+    return re.sub(r"(?i)(postgres(?:ql)?://)[^@\s]*@", r"\1<redacted>@", str(text))
+
+
+def refuse_file_backend() -> int:
+    """Say which of the two problems this is, on the run page itself.
+
+    Exiting with the reason only on stderr is what this looked like the
+    first time it happened: a red job, "exit code 2", and a blank summary.
+    """
+    configured = bool(getattr(storage, "DATABASE_URL", ""))
+    lines = ["## Arena runner - refused to start", ""]
+    if not configured:
+        code = EXIT_NO_DATABASE_URL
+        lines += [
+            "**`DATABASE_URL` is not set for this job.** Nothing ran: on the "
+            "JSON-file backend every session this run settled would be written "
+            "into a container that is deleted when the job ends.",
+            "",
+            "Check **Settings -> Secrets and variables -> Actions**:",
+            "",
+            "- it must be a **repository secret**, not a *variable* - those are "
+            "separate tabs on that page, and `secrets.DATABASE_URL` cannot see "
+            "a variable;",
+            "- the name must be exactly `DATABASE_URL`;",
+            "- a secret attached to an **Environment** is not visible here, "
+            "because this workflow does not request one.",
+        ]
+    else:
+        code = EXIT_POSTGRES_UNUSABLE
+        raw = getattr(storage, "DATABASE_URL", "")
+        scheme = raw.split("://", 1)[0] if "://" in raw else "(no scheme)"
+        lines += [
+            "**`DATABASE_URL` is set, but Postgres could not be used.** The "
+            "value arrived; loading the driver or connecting failed.",
+            "",
+            "```",
+            _redact(storage.PG_ERROR or "no reason recorded"),
+            "```",
+            "",
+            "Common causes: a missing `?sslmode=require`, a `[YOUR-PASSWORD]` "
+            "placeholder never substituted, or an IPv6-only host.",
+            "",
+            # Shape only, never the value: a step summary is not masked.
+            f"_The value is {len(raw)} characters and begins `{scheme}://`._",
+        ]
+    lines += ["", "_To run against a local file instead, pass `--allow-file`._"]
+    text = "\n".join(lines)
+    write_github_summary(text)
+    print(text, file=sys.stderr)
+    return code
+
+
 def main(argv=None) -> int:
     args = parse_args(argv)
     started = timeutil.utc_now()
@@ -191,16 +255,7 @@ def main(argv=None) -> int:
     # is deleted when the job ends. Everything would appear to work and
     # nothing would ever be saved, which is far worse than refusing.
     if not storage._pg_pool and not args.allow_file:
-        print("ERROR: the arena store is on the JSON-file backend, so anything this "
-              "run settles would be thrown away when the job ends.\n"
-              "       Set DATABASE_URL to your Postgres connection string "
-              "(in CI: a repository secret).\n"
-              "       To run against a local file anyway, pass --allow-file.",
-              file=sys.stderr)
-        if storage.PG_ERROR:
-            print(f"       Postgres was configured but failed: {storage.PG_ERROR}",
-                  file=sys.stderr)
-        return 2
+        return refuse_file_backend()
 
     keys = arena_keys(args.market)
     print(f"[info] runner: {len(keys)} arena(s) for market={args.market}, "
