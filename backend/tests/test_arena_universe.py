@@ -251,7 +251,7 @@ def test_the_screen_is_downloaded_once_per_process(monkeypatch):
     universe._daily_cache.clear()
     calls = []
 
-    def fake_download(symbols, period, interval, timeout=None):
+    def fake_download(symbols, period, interval, timeout=None, flatten=True):
         calls.append(symbols)
         return pd.DataFrame()
 
@@ -293,3 +293,56 @@ def test_the_screen_never_uses_todays_bar():
     a backtest look brilliant and a live account lose money."""
     now = dt.datetime(2026, 11, 5, 11, 0, tzinfo=markets.IST)
     assert universe.previous_session_cutoff(now) == dt.date(2026, 11, 4)
+
+
+def test_a_batched_download_is_split_back_into_one_frame_per_symbol(monkeypatch):
+    """The bug this exists for: `_yf_download` flattens a column
+    MultiIndex, and for a batched download the level it drops is the
+    TICKER. The screen then saw one symbol's bars repeated 160 times,
+    found nothing eligible, and fell back to the old list - silently, on
+    a green run.
+    """
+    import pandas as pd
+
+    symbols = ["A.NS", "B.NS", "C.NS"]
+    idx = pd.bdate_range("2026-09-01", periods=30)
+    frame = pd.DataFrame(
+        {(field, sym): range(len(idx))
+         for sym in symbols for field in ("Open", "High", "Low", "Close", "Volume")},
+        index=idx)
+    frame.columns = pd.MultiIndex.from_tuples(frame.columns)
+
+    seen = {}
+
+    def fake_download(tickers, period, interval, timeout=None, flatten=True):
+        seen["flatten"] = flatten
+        seen["tickers"] = tickers
+        return frame
+
+    universe._daily_cache.clear()
+    monkeypatch.setattr(universe, "fetch_daily", _REAL_FETCH_DAILY)
+    monkeypatch.setattr(universe.data_sources, "_yf_download", fake_download)
+    frames = universe.fetch_daily(symbols)
+    universe._daily_cache.clear()
+
+    assert seen["flatten"] is False, "flattening destroys the ticker level"
+    assert seen["tickers"] == "A.NS B.NS C.NS", "one request, not three"
+    assert sorted(frames) == symbols
+    for sym in symbols:
+        assert list(frames[sym].columns) == ["Open", "High", "Low", "Close", "Volume"]
+        assert len(frames[sym]) == 30
+
+
+def test_a_single_symbol_download_still_works(monkeypatch):
+    import pandas as pd
+
+    idx = pd.bdate_range("2026-09-01", periods=30)
+    flat = pd.DataFrame({"Open": 1.0, "High": 1.0, "Low": 1.0, "Close": 1.0,
+                         "Volume": 1.0}, index=idx)
+    universe._daily_cache.clear()
+    monkeypatch.setattr(universe, "fetch_daily", _REAL_FETCH_DAILY)
+    monkeypatch.setattr(universe.data_sources,
+                        "_yf_download", lambda *a, **k: flat)
+    frames = universe.fetch_daily(["ONLY.NS"])
+    universe._daily_cache.clear()
+    assert list(frames) == ["ONLY.NS"]

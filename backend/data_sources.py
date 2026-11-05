@@ -244,10 +244,17 @@ def _yf_download_cached(symbol: str, period: str, interval: str) -> pd.DataFrame
 
 
 def _yf_download(symbol: str, period: str, interval: str,
-                 timeout: float | None = None) -> pd.DataFrame:
+                 timeout: float | None = None,
+                 flatten: bool = True) -> pd.DataFrame:
     """Thin wrapper around yf.download with the impersonating session,
     normalised to single-level columns (yf.download can return a MultiIndex
-    even for a single ticker, depending on version/args)."""
+    even for a single ticker, depending on version/args).
+
+    `flatten=False` keeps that MultiIndex, which a caller passing SEVERAL
+    space-separated tickers needs: the second level is the ticker, and
+    dropping it makes a batched download indistinguishable from one
+    symbol's bars repeated.
+    """
     try:
         kwargs = dict(
             tickers=symbol, period=period, interval=interval,
@@ -263,7 +270,7 @@ def _yf_download(symbol: str, period: str, interval: str,
         hist = yf.download(**kwargs)
         if hist is None or hist.empty:
             return pd.DataFrame()
-        if isinstance(hist.columns, pd.MultiIndex):
+        if flatten and isinstance(hist.columns, pd.MultiIndex):
             hist.columns = hist.columns.get_level_values(0)
         return hist
     except Exception as e:

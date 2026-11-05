@@ -218,8 +218,12 @@ def fetch_daily(symbols: list[str], period: str = "3mo") -> dict[str, pd.DataFra
     key = (tuple(symbols), period)
     if key in _daily_cache:
         return _daily_cache[key]
+    # flatten=False: the column MultiIndex's second level is the ticker,
+    # and without it a batched download is indistinguishable from one
+    # symbol's bars repeated - which is exactly how this silently screened
+    # nothing the first time it ran for real.
     raw = data_sources._yf_download(" ".join(symbols), period, "1d",
-                                    timeout=FETCH_TIMEOUT)
+                                    timeout=FETCH_TIMEOUT, flatten=False)
     if raw is None or raw.empty:
         _daily_cache[key] = frames
         return frames
