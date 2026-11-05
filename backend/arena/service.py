@@ -20,6 +20,7 @@ from arena import engine, store
 from arena import markets as markets_mod
 from arena import runner as runner_mod
 from arena import scoreboard as scoreboard_mod
+from arena import universe as universe_mod
 from arena.strategies import enrich, catalog
 
 BACKTEST_PREFIX = "bt::"
@@ -291,6 +292,39 @@ def _missed_sessions(state: dict, now: dt.datetime) -> list[str]:
     return sorted(out)[:MAX_CATCHUP_SESSIONS]
 
 
+def choose_symbols(state: dict, session_date: str | None,
+                   now: dt.datetime | None = None) -> dict | None:
+    """Screen the market's universe for this session, once.
+
+    Returns None when there is nothing to change - a fixed symbol list, a
+    market with no universe, or picks already made for this session. The
+    picks are deliberately made once per session and reused, so every
+    strategy trades the same stocks and the day stays a fair comparison.
+    """
+    cfg = state["config"]
+    market = engine.market_of(state)
+    if cfg.get("universe", "auto") != "auto":
+        return None
+    if market.id not in universe_mod.UNIVERSES or not session_date:
+        return None
+    if not universe_mod.is_stale(state.get("picked"), session_date):
+        return None
+    allowance = universe_mod.allowance_per_position(
+        cfg["daily_capital"], engine.open_slots(cfg))
+    try:
+        picked = universe_mod.screen(market.id, cfg.get("universe_size", 15), allowance)
+    except Exception as e:
+        print(f"[warn] arena: screening failed ({e}) - keeping the current symbols")
+        return None
+    if not picked.get("symbols"):
+        # Keep yesterday's picks rather than trading nothing: a screen that
+        # returns empty is a data problem, not a signal to sit out.
+        print("[warn] arena: the screen returned no symbols - keeping the current list")
+        return None
+    picked["session"] = session_date
+    return picked
+
+
 def tick_client(ip: str, now: dt.datetime | None = None) -> None:
     now = timeutil.ensure_aware(now or timeutil.utc_now())
     state = store.load(ip)
@@ -319,14 +353,22 @@ def tick_client(ip: str, now: dt.datetime | None = None) -> None:
                 store.save(ip, state)
         return
 
+    # Pick the day's stocks before fetching anything, so the fetch is for
+    # the symbols actually being traded.
+    picked = choose_symbols(state, current or (finished_missed[-1] if finished_missed else None), now)
+    if picked is not None:
+        state["picked"] = picked
+    symbols = engine.active_symbols(state)
+
     # A long gap needs more history than the 5-day intraday window holds.
     gap = len([d for d in finished_missed if d != current])
     period = REPLAY_PERIOD if gap > SHORT_GAP_SESSIONS else None
     fx = fetch_fx(market, now)
-    bars, diagnostics = _fetch_enriched(state["config"]["symbols"], period,
+    bars, diagnostics = _fetch_enriched(symbols, period,
                                         market=market, window=window, fx=fx)
+    diagnostics["picked"] = (picked or {}).get("symbols") or symbols
 
-    missing = sorted(set(state["config"]["symbols"]) - set(bars))
+    missing = sorted(set(symbols) - set(bars))
     # Nothing downloaded at all. Settling now would record a day of zero
     # trades for every strategy and mark it done, and the real session -
     # which did happen, and whose bars Yahoo still has - would be lost for
@@ -454,6 +496,20 @@ def view(ip: str) -> dict:
         # and `error` say WHICH of the two reasons it is.
         "storage": store.backend_status(),
         "freshness": freshness(state),
+        # Which stocks it chose for this session, and the workings. Without
+        # this the arena silently trades a list nobody picked.
+        "picked": state.get("picked"),
+        "symbols_live": engine.active_symbols(state),
+        "allocation": {
+            "mode": state["config"].get("allocation", engine.EQUAL),
+            "slots": engine.open_slots(state["config"]),
+            "share_pct": round(100 * engine.position_share(state["config"]), 1),
+            "per_position_inr": round(universe_mod.allowance_per_position(
+                state["config"]["daily_capital"], engine.open_slots(state["config"])), 2),
+            "screened": state["config"].get("universe", "auto") == "auto"
+                        and engine.market_of(state).id in universe_mod.UNIVERSES,
+            "universe_size": state["config"].get("universe_size", 15),
+        },
         # Who advances this arena, when it last did, and when it is next
         # due. The dashboard being asleep is now expected; the RUNNER
         # being asleep is the thing worth a banner.

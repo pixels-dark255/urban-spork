@@ -172,6 +172,13 @@ def no_outbound_calls(monkeypatch):
         ],
     )
 
+    # The arena's daily screen is its own network edge - a single batched
+    # download of ~160 daily series - and it is reached from tick_client,
+    # so leaving it live made the whole suite hang waiting on Yahoo.
+    from arena import universe as arena_universe
+    arena_universe._daily_cache.clear()
+    monkeypatch.setattr(arena_universe, "fetch_daily", lambda *a, **k: {})
+
 
 @pytest.fixture
 def client(fake_yf, isolated_storage, monkeypatch):

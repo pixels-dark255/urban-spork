@@ -320,6 +320,17 @@ class Market:
     # Per market because what counts as a workable stake is not the same
     # everywhere: see UsMarket.
     default_capital_inr = 10_000.0
+    # How many stocks the book spreads over at once. Per market, because
+    # dividing a book N ways only works if each share is still affordable
+    # afterwards: five slots of a ₹50,000 book is ₹10,000, fine for a
+    # screened Indian stock and not enough for one US mega-cap share.
+    #
+    # Four is measured, not chosen. Over a month of synthetic sessions,
+    # median capital at work was 96% at 2 slots, 70% at 4 and 46% at 6 -
+    # because the strategies rarely find six signals at once, so the extra
+    # slots sit in cash. Four holds three stocks at a time (the same as
+    # five or six) while leaving far less idle, and trades nearly as often.
+    default_open_slots = 4
     cost_model_id = "nse"
     # Minutes before the session end: no new entries, then square everything off.
     entry_cutoff_before_end = 30
@@ -448,6 +459,10 @@ class UsMarket(Market):
     # showed an empty leaderboard. ₹50,000 is roughly $565, enough to size
     # a position in a mega-cap and still respect the risk limits.
     default_capital_inr = 50_000.0
+    # ₹50,000 is about $565. Split five ways that is $113 a position,
+    # which will not buy one share of most of the list; split two ways it
+    # is $282, which will.
+    default_open_slots = 2
     default_symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "SPY", "QQQ"]
     presets = {
         "mega_cap": ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META"],
@@ -543,6 +558,7 @@ class CryptoMarket(Market):
     qty_step = 1e-6
     cost_model_id = "crypto"
     allow_leverage = True
+    default_open_slots = 3
     symbol_hint = "Yahoo crypto symbols, e.g. BTC-USD"
     default_symbols = ["BTC-USD", "ETH-USD", "SOL-USD"]
     presets = {"majors": ["BTC-USD", "ETH-USD", "SOL-USD", "XRP-USD"]}

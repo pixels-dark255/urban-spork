@@ -243,7 +243,8 @@ def _yf_download_cached(symbol: str, period: str, interval: str) -> pd.DataFrame
     return frame
 
 
-def _yf_download(symbol: str, period: str, interval: str) -> pd.DataFrame:
+def _yf_download(symbol: str, period: str, interval: str,
+                 timeout: float | None = None) -> pd.DataFrame:
     """Thin wrapper around yf.download with the impersonating session,
     normalised to single-level columns (yf.download can return a MultiIndex
     even for a single ticker, depending on version/args)."""
@@ -252,6 +253,11 @@ def _yf_download(symbol: str, period: str, interval: str) -> pd.DataFrame:
             tickers=symbol, period=period, interval=interval,
             progress=False, auto_adjust=True, threads=False,
         )
+        if timeout is not None:
+            # Without this a download can block until the socket gives up,
+            # which in a scheduled job means burning the whole time budget
+            # on one unreachable request.
+            kwargs["timeout"] = timeout
         if _YF_SESSION is not None:
             kwargs["session"] = _YF_SESSION
         hist = yf.download(**kwargs)

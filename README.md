@@ -92,9 +92,9 @@ Run the tests with:
 
 ```bash
 pip install pytest pyflakes httpx
-python -m pytest tests/ -q          # 264 backend tests
+python -m pytest tests/ -q          # 294 backend tests
 python -m pyflakes .
-cd ../frontend && node --test app.helpers.test.js arena.helpers.test.js   # 56 frontend tests
+cd ../frontend && node --test app.helpers.test.js arena.helpers.test.js   # 60 frontend tests
 ```
 
 The suite stubs the market data source, so it needs no network and passes
@@ -158,6 +158,55 @@ affects the three features very differently:
 - **Intraday paper trading** still reads live bars with no catch-up, so
   trades that would have triggered during a nap do not happen. It is the
   one feature that would still benefit from an uptime pinger.
+
+### Which stocks it trades, and how the money is split
+
+The arena is not handed a list of stocks. Each session it screens a broad
+NSE universe (~160 liquid names across every sector, not an index) and
+keeps the best 15 on three things an intraday strategy actually needs:
+
+| | why |
+|---|---|
+| **Liquidity** | ranked on median daily turnover, with a floor. A strategy that cannot get out is not a strategy. |
+| **Movement** | daily range as a share of price, through a *preference band*. Something moving 0.4% a day cannot pay its own costs; something moving 9% is usually news or a circuit, not something a rule can trade. |
+| **Affordability** | whether a whole number of shares actually uses one position's allowance. Measured, not assumed — see below. |
+
+Everything is computed from **daily bars up to the previous session**,
+never today's, so the same list could have been chosen before the open.
+Picking today's movers with today's data is the oldest way to make a
+backtest look brilliant and a live account lose money. The picks are made
+**once per session** and reused, so every strategy trades the same stocks
+and the day stays a fair comparison. The Arena tab shows the chosen stocks
+with their turnover, range, allowance used and score under *"Why these 15
+stocks"*.
+
+**The money divides evenly.** Each strategy has its own book, and each book
+splits evenly between the positions it may hold at once:
+
+| market | book | slots | per position |
+|---|---|---|---|
+| India | ₹50,000 | 4 | ₹12,500 (25%) |
+| US | ₹50,000 | 2 | ₹25,000 (50%) |
+| Forex | ₹10,000 | 4 | ₹2,500 |
+| Crypto | ₹10,000 | 3 | ₹3,333 |
+
+Both numbers are measured rather than chosen. Over a month of sessions,
+median capital at work was 96% at 2 slots, **70% at 4** and 46% at 6 — the
+strategies rarely find six signals at once, so extra slots sit in cash
+while holding no more stocks. Four holds three at a time, the same as five
+or six, and leaves far less idle. The US gets two slots because ₹50,000
+split five ways is about $113, which will not buy one share of a mega-cap.
+
+> **Why affordability is a screen at all.** A position's size is rounded
+> **down** to whole shares, so a share priced near the whole allowance
+> wastes most of it: against a ₹12,500 allowance a ₹7,000 share is one
+> share and ₹5,500 left in cash. The screen drops anything that would use
+> less than 75% of its allowance — which is relative to your book, so a
+> bigger book automatically admits more of the market.
+
+To go back to a fixed list, set **Universe** to *fixed* in Arena Settings;
+your own symbol list is kept untouched while the screener runs, so
+switching back returns to it.
 
 ### How the Arena runs
 

@@ -114,6 +114,52 @@ INT_RISK_KEYS = {"max_open_positions", "max_trades_per_day", "min_trades_to_judg
 
 MAX_LEVERAGE = 5.0
 
+# How many stocks a book spreads itself over, and therefore the share of
+# the book one position may take. Both are read with `.get(...)` defaults
+# rather than being baked into DEFAULT_RISK, so an arena created before
+# they existed picks them up on its next tick instead of needing its
+# settings rewritten behind the user's back.
+EQUAL = "equal"
+LEGACY = "legacy"
+
+
+def active_symbols(state: dict) -> list[str]:
+    """What this arena is actually trading right now.
+
+    Under `universe: auto` that is the screener's picks for the current
+    session; the user's own list in `config["symbols"]` is left untouched
+    so switching back to `fixed` returns to it rather than to whatever the
+    screener last chose.
+    """
+    picked = (state.get("picked") or {}).get("symbols")
+    if state.get("config", {}).get("universe", "auto") == "auto" and picked:
+        return list(picked)
+    return list(state.get("config", {}).get("symbols", []))
+
+
+def open_slots(cfg: dict) -> int:
+    """Concurrent positions allowed, and the divisor for equal sizing."""
+    raw = cfg.get("open_slots")
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw >= 1:
+        return max(1, min(int(raw), 20))
+    if cfg.get("allocation", EQUAL) == EQUAL:
+        return int(markets_mod.get(cfg.get("market")).default_open_slots)
+    # The old shape: two positions at up to half the book each.
+    return int(cfg.get("risk", {}).get("max_open_positions", 2))
+
+
+def position_share(cfg: dict) -> float:
+    """The fraction of the book one position may use.
+
+    Under "equal" every slot gets the same slice, so a book spread over
+    five stocks puts a fifth in each rather than half in each of two. That
+    is what makes a wider stock list mean anything: with two slots at 50%,
+    screening twenty stocks still only ever holds two of them.
+    """
+    if cfg.get("allocation", EQUAL) == EQUAL:
+        return 1.0 / open_slots(cfg)
+    return float(cfg.get("risk", {}).get("max_position_pct", 50.0)) / 100.0
+
 DEFAULT_CONFIG = {
     "enabled": True,
     "market": markets_mod.DEFAULT_MARKET,
@@ -125,12 +171,40 @@ DEFAULT_CONFIG = {
     "costs": {},
     "window": None,                 # None means the market's own session
     "leverage": 1.0,
+    # "auto" screens the market's universe each session; "fixed" trades
+    # exactly the symbols listed above.
+    "universe": "auto",
+    "universe_size": 15,
+    "allocation": EQUAL,
+    "open_slots": None,             # None means the market's own default
 }
 
 
 # ---------------------------------------------------------------------------
 # Config + state
 # ---------------------------------------------------------------------------
+
+def normalise_allocation(cfg: dict) -> dict:
+    """Keep the allocation knobs coherent with each other.
+
+    With N equal slots, a book can only fill them all if its per-trade risk
+    budget is big enough to size N positions. Left at 1% with five slots,
+    the risk rule binds first and four slots stay empty - the arena would
+    look like it was ignoring its own setting.
+    """
+    if cfg.get("allocation", EQUAL) != EQUAL:
+        return cfg
+    slots = open_slots(cfg)
+    risk = cfg.setdefault("risk", {})
+    risk["max_open_positions"] = slots
+    risk["max_position_pct"] = round(100.0 / slots, 2)
+    if not cfg.get("risk_per_trade_pct_set_by_user"):
+        # Enough budget that the slot is what limits size, not the stop.
+        risk["risk_per_trade_pct"] = max(float(risk.get("risk_per_trade_pct", 1.0)),
+                                         round(DEFAULT_RISK["risk_per_trade_pct"]
+                                               * slots / 2.0, 2))
+    return cfg
+
 
 def normalise_config(raw: dict | None, base: dict | None = None,
                      market_id: str | None = None) -> dict:
@@ -188,12 +262,23 @@ def normalise_config(raw: dict | None, base: dict | None = None,
     for k, v in (raw.get("risk") or {}).items():
         if k in DEFAULT_RISK and isinstance(v, (int, float)) and not isinstance(v, bool) and v > 0:
             cfg["risk"][k] = max(1, int(v)) if k in INT_RISK_KEYS else float(v)
+    for key, lo, hi in (("universe_size", 3, 25), ("open_slots", 1, 20)):
+        val = raw.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            cfg[key] = max(lo, min(int(val), hi))
+    if raw.get("universe") in ("auto", "fixed"):
+        cfg["universe"] = raw["universe"]
+    if raw.get("allocation") in (EQUAL, LEGACY):
+        cfg["allocation"] = raw["allocation"]
+    if isinstance((raw.get("risk") or {}).get("risk_per_trade_pct"), (int, float)):
+        cfg["risk_per_trade_pct_set_by_user"] = True
+
     if isinstance(raw.get("costs"), dict):
         allowed = market.costs.defaults
         cfg["costs"] = {k: float(v) for k, v in raw["costs"].items()
                         if k in allowed and isinstance(v, (int, float))
                         and not isinstance(v, bool) and v >= 0}
-    return cfg
+    return normalise_allocation(cfg)
 
 
 def new_state(config: dict | None = None) -> dict:
@@ -225,6 +310,8 @@ def _new_state(config: dict | None = None) -> dict:
         # rather than looked up live, so the rupee figures for a session
         # never drift after the fact.
         "fx": None,
+        # The screener's picks for the current session, and its workings.
+        "picked": None,
         "created_at": timeutil.iso_now(),
     }
 
@@ -459,9 +546,10 @@ def process_bars(state: dict, enriched: dict[str, pd.DataFrame],
     if now is not None:
         cutoff = timeutil.ensure_aware(now) - dt.timedelta(minutes=BAR_MINUTES)
 
+    tradeable = set(active_symbols(state))
     queue = []
     for sym, df in enriched.items():
-        if df is None or df.empty or sym not in state["config"]["symbols"]:
+        if df is None or df.empty or sym not in tradeable:
             continue
         last = timeutil.parse_utc(state["last_bar"].get(sym))
         sess = (df["session"] == day).to_numpy()
@@ -475,7 +563,7 @@ def process_bars(state: dict, enriched: dict[str, pd.DataFrame],
             queue.append((ts, sym, i))
     queue.sort(key=lambda x: (x[0], x[1]))
 
-    n_symbols = max(1, len(state["config"]["symbols"]))
+    n_symbols = max(1, len(tradeable))
     for ts, sym, i in queue:
         df = enriched[sym]
         row = df.iloc[i]
@@ -557,7 +645,8 @@ def _maybe_enter(book, strat, sym, row, prev, mins_left, at, risk, ccfg,
     if mins_left < market.entry_cutoff_before_end or mins_left <= market.square_off_before_end:
         return
     day = book["day"]
-    if (len(book["positions"]) >= risk["max_open_positions"] and not strat.benchmark) \
+    slots = open_slots(state["config"])
+    if (len(book["positions"]) >= slots and not strat.benchmark) \
             or day["trades"] >= risk["max_trades_per_day"] \
             or day["per_symbol"].get(sym, 0) >= strat.max_trades_per_symbol_per_day:
         return
@@ -592,7 +681,7 @@ def _maybe_enter(book, strat, sym, row, prev, mins_left, at, risk, ccfg,
         qty = buying_power / max(1, n_symbols) / fill
     else:
         qty_risk = (equity * risk["risk_per_trade_pct"] / 100) / risk_per_share
-        qty_cap = (buying_power * risk["max_position_pct"] / 100) / fill
+        qty_cap = (buying_power * position_share(state["config"])) / fill
         qty = min(qty_risk, qty_cap)
     qty = quantise(market, qty)
     step = float(getattr(market, "qty_step", 1.0) or 1.0)

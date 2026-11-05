@@ -343,6 +343,55 @@ function regulatoryNote(data) {
   return `<p class="arena-legal">${escapeHtml(data.regulatory_note)}</p>`;
 }
 
+// Which stocks it chose today and why. Without this the arena trades a
+// list nobody picked and nobody can check.
+function picksPanel(data) {
+  const alloc = data.allocation || {};
+  const picked = data.picked;
+  const live = data.symbols_live || [];
+  const bits = [];
+  if (alloc.slots) {
+    bits.push(`${alloc.slots} position${alloc.slots === 1 ? "" : "s"} at a time`
+      + ` · ${inr(alloc.per_position_inr, false)} each (${alloc.share_pct}% of the book)`);
+  }
+  if (!alloc.screened) {
+    return `<div class="stock-sub arena-session">Trading your fixed list of
+      ${live.length} · ${escapeHtml(bits.join(" · "))}</div>`;
+  }
+  if (!picked || !picked.rows || !picked.rows.length) {
+    return `<div class="stock-sub arena-session">Picking its own stocks each session
+      · ${escapeHtml(bits.join(" · "))}</div>
+      <p class="arena-hint">The screen has not run for this session yet — it runs once a
+      day, before the first bars are fetched. Until then the arena trades its
+      ${live.length}-stock fallback list.</p>`;
+  }
+  const head = `<div class="stock-sub arena-session">Today's picks: ${live.length} of
+    ${picked.measured} stocks screened · ${escapeHtml(bits.join(" · "))}</div>`;
+  return head + `
+    <details class="arena-settings">
+      <summary>Why these ${picked.rows.length} stocks</summary>
+      <div class="table-scroll"><table class="backtest-table">
+        <thead><tr><th>stock</th><th>price</th>
+          <th title="median daily turnover - can you get out of it">turnover</th>
+          <th title="average daily range as a share of price">daily range</th>
+          <th title="how much of one position's allowance a whole number of shares uses">allowance used</th>
+          <th>score</th></tr></thead>
+        <tbody>${picked.rows.map((r) => `
+          <tr>
+            <td>${escapeHtml(shortSymbol(r.symbol))}</td>
+            <td>₹${r.price.toLocaleString("en-IN")}</td>
+            <td>₹${r.turnover_crore}cr</td>
+            <td>${(r.atr_pct * 100).toFixed(1)}%</td>
+            <td>${r.utilisation == null ? "—" : Math.round(r.utilisation * 100) + "%"}</td>
+            <td>${r.score}</td>
+          </tr>`).join("")}
+        </tbody></table></div>
+      <p class="arena-hint">${escapeHtml(picked.note || "")}
+        ${picked.rejected ? `${picked.rejected} others were dropped for being too thinly
+        traded, too still, too wild, or too dear for one position's allowance.` : ""}</p>
+    </details>`;
+}
+
 function arenaLiveHtml(data) {
   const v = data.verdict;
   const m = data.market;
@@ -367,6 +416,7 @@ function arenaLiveHtml(data) {
       · ${inr(data.config.daily_capital, false)} per strategy · ${data.config.symbols.length} ${
         data.config.market === "forex" ? "pairs" : data.config.market === "crypto" ? "coins" : "stocks"}</div>
     ${sessionLine(data)}
+    ${picksPanel(data)}
     ${data.runner && data.runner.mode === "github"
       ? runnerLine(data.runner) : freshnessLine(data.freshness)}
     ${renderBoard(data.leaderboard, { currency: data.currency })}

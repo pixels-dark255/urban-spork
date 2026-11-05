@@ -549,6 +549,13 @@ class ArenaConfigRequest(BaseModel):
     window: dict | None = None
     # Forex and crypto only, capped by the engine.
     leverage: float | None = None
+    # "auto" screens the market's universe each session; "fixed" trades the
+    # symbols above.
+    universe: str | None = None
+    universe_size: int | None = None
+    # "equal" divides the book evenly between open_slots positions.
+    allocation: str | None = None
+    open_slots: int | None = None
 
 
 class ArenaBacktestRequest(BaseModel):

@@ -70,7 +70,7 @@ function loadArenaHelpers() {
                       "storageWarning", "freshnessLine", "sessionLine",
                       "renderMarketTabs", "leverageWarning", "regulatoryNote",
                       "renderSlippageSweep", "presetButtons", "isValidClientId",
-                      "runnerLine", "streakText", "sparkline"]) {
+                      "runnerLine", "streakText", "sparkline", "picksPanel"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -512,4 +512,56 @@ test("the sparkline colours each session and labels it for screen readers", () =
             && html.includes('class="flat"'), html);
   assert.ok(html.includes("aria-label"), "colour alone is not an answer");
   assert.strictEqual(arena.sparkline([], null), "");
+});
+
+
+// ---------------------------------------------------------------------------
+// The daily screen
+// ---------------------------------------------------------------------------
+
+const SCREENED = {
+  allocation: { mode: "equal", slots: 4, share_pct: 25, per_position_inr: 12500,
+                screened: true, universe_size: 15 },
+  symbols_live: ["ITC.NS", "SBIN.NS", "ONGC.NS"],
+  picked: {
+    measured: 150, rejected: 135, note: "Ranked on 30 days of DAILY bars.",
+    rows: [{ symbol: "ITC.NS", price: 410, turnover_crore: 320, atr_pct: 0.021,
+             utilisation: 0.98, score: 0.91 },
+           { symbol: "SBIN.NS", price: 820, turnover_crore: 280, atr_pct: 0.025,
+             utilisation: 0.98, score: 0.88 }],
+  },
+};
+
+test("the picks panel says how the book is divided", () => {
+  const html = arena.picksPanel(SCREENED);
+  assert.ok(html.includes("4 positions at a time"), html);
+  assert.ok(html.includes("25% of the book"), html);
+  assert.ok(html.includes("₹12,500"), html);
+});
+
+test("the picks panel shows the workings, not just the answer", () => {
+  const html = arena.picksPanel(SCREENED);
+  assert.ok(html.includes("ITC") && html.includes("SBIN"));
+  assert.ok(html.includes("320cr"), "turnover is why it is tradeable");
+  assert.ok(html.includes("2.1%"), "daily range is why it is worth trading");
+  assert.ok(html.includes("98%"), "allowance used is why it is affordable");
+  assert.ok(html.includes("135 others were dropped"), html);
+});
+
+test("a fixed list is described as a fixed list, not as a screen", () => {
+  const html = arena.picksPanel({
+    allocation: { slots: 2, share_pct: 50, per_position_inr: 25000, screened: false },
+    symbols_live: ["AAPL", "MSFT"],
+  });
+  // The template wraps, so match the phrase rather than the whole line.
+  assert.ok(/your fixed list of\s+2/.test(html), html);
+  assert.ok(!html.includes("Today's picks"), html);
+});
+
+test("a screened arena before its first screen says so rather than looking empty", () => {
+  const html = arena.picksPanel({
+    allocation: { slots: 4, share_pct: 25, per_position_inr: 12500, screened: true },
+    symbols_live: [], picked: null,
+  });
+  assert.ok(html.includes("has not run for this session yet"), html);
 });
