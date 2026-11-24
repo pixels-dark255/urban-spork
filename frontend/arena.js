@@ -431,6 +431,65 @@ function arenaLiveHtml(data) {
     ${renderDayHistory(data.history, data.strategies, data.currency)}`;
 }
 
+// The Arena trades 5-minute bars, and Yahoo keeps only ~60 days of those.
+// Sixty days cannot prove an intraday edge, so the banner says so above the
+// leaderboard rather than in a footnote nobody reads. It disappears on its
+// own once the bar archive has stored enough history.
+function unprovenBanner(sys) {
+  const bars = (sys && sys.bars) || [];
+  const live = bars.find((b) => b.used_by === "Strategy Arena");
+  if (!live || !live.unproven) return "";
+  return `<div class="arena-warn">
+    <b>${escapeHtml(live.label)}</b> &mdash; these results run on ${escapeHtml(live.bar_size)} bars,
+    and only ${escapeHtml(live.why)}. Treat the table below as a work in progress, not a verdict.
+    The bar archive is accumulating history daily; this notice clears itself once there is enough.
+  </div>`;
+}
+
+function barTable(sys) {
+  const bars = (sys && sys.bars) || [];
+  if (!bars.length) return "";
+  const rows = bars.map((b) => `
+      <tr class="${b.unproven ? "sys-gap" : "sys-ok"}">
+        <td class="sys-status">${escapeHtml(b.bar_size)}</td>
+        <td class="arena-name">${b.unproven ? escapeHtml(b.label) : "proven"}</td>
+        <td class="sys-detail">${escapeHtml(b.why)}${b.used_by ? ` &middot; used by ${escapeHtml(b.used_by)}` : ""}</td>
+      </tr>`).join("");
+  return `
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Bars</th><th>Status</th><th>Why</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
+function settingsTable(sys) {
+  const st = sys && sys.settings;
+  if (!st) return "";
+  const row = (k, v) => `<tr><td class="arena-name">${escapeHtml(k)}</td><td class="sys-detail">${escapeHtml(v)}</td></tr>`;
+  return `
+    <details class="arena-settings sys-modules">
+      <summary>Settings in force</summary>
+      <div class="table-scroll">
+        <table class="backtest-table">
+          <tbody>
+            ${row("Market", st.market)}
+            ${row("Session", st.session)}
+            ${row("Daily capital", inr(st.daily_capital_inr, false))}
+            ${row("Swing capital", inr(st.swing_capital_inr, false))}
+            ${row("Train window", st.train_window)}
+            ${row("Locked window", st.locked_window)}
+            ${row("Kill line", `${st.kill_line_multiple}x worst tested drawdown`)}
+            ${row("Study tickers", (st.study_tickers || []).join(", "))}
+            ${row("Engine candidates", (st.engine_candidates || []).join(", "))}
+            ${row("Safe candidates", (st.safe_candidates || []).join(", "))}
+          </tbody>
+        </table>
+      </div>
+    </details>`;
+}
+
 // ---------- System panel (Phase 0) ----------
 // What the system is made of, and which of its own hard rules it does not
 // meet yet. The gaps matter more than the map: a result produced under a
@@ -461,6 +520,8 @@ function systemPanel(sys) {
         <tbody>${rules}</tbody>
       </table>
     </div>
+    ${barTable(sys)}
+    ${settingsTable(sys)}
     <details class="arena-settings sys-modules">
       <summary>Module map</summary>
       <div class="table-scroll">
@@ -486,6 +547,8 @@ function renderArena(data) {
     <div class="disclaimer">Simulated money only. Every strategy gets its own ${inr(c.daily_capital, false)} and trades the same ${unit} on the same 5-minute bars,
       paying the market's real costs. No strategy can guarantee a profit - the arena's job is to show which ones
       actually earn, and to bench the ones that don't.</div>
+
+    ${unprovenBanner(arenaSystem)}
 
     <div id="arenaLive">${arenaLiveHtml(data)}</div>
 

@@ -38,7 +38,7 @@ open. Never fill at the bar that produced the signal.
 
 > **Not yet true.** `engine._maybe_enter()` fills at `row["Close"]` — the
 > close of the signal bar — and signal-based exits do the same. This is a
-> known, logged violation; see §4. Every Arena number produced before it is
+> known, logged violation; see §5. Every Arena number produced before it is
 > fixed carries up to one bar of look-ahead and should be treated as
 > optimistic. Fixing it is its own phase, because it changes every result.
 
@@ -86,7 +86,47 @@ A phase is done when all three are true:
 
 ---
 
-## 2. Repo map
+## 2. My settings
+
+Every later phase reads these values from this block. Nothing hardcodes a
+capital figure, a window or a ticker list. `backend/settings.py` parses it;
+`python3.13 -m settings` prints what it parsed and checks every ticker.
+
+```yaml
+market: NSE
+timezone: Asia/Kolkata
+session: 09:15-15:30 IST, intraday square-off by 15:15
+bar_sizes: [1d, 1h, 15m, 5m]          # daily is the default for proof work
+default_bar_size: 1d
+study_tickers: [RELIANCE.NS, HDFCBANK.NS, ICICIBANK.NS, INFY.NS, TCS.NS,
+                SBIN.NS, AXISBANK.NS, ITC.NS, BHARTIARTL.NS, TATAMOTORS.NS,
+                TATASTEEL.NS, HINDUNILVR.NS]
+engine_candidates: [NIFTYBEES.NS, JUNIORBEES.NS, BANKBEES.NS, ITBEES.NS]
+safe_candidates: [GOLDBEES.NS, LIQUIDBEES.NS, GILT5YBEES.NS, CASH]
+daily_capital_inr: 10000              # intraday paper budget per day
+swing_capital_inr: 100000             # core+sleeve paper account
+train_window_daily: 2022-01-01 .. 2024-12-31
+locked_window_daily: 2025-01-01 .. today
+cost_model: existing Indian cost legs + slippage; stress at 2x
+kill_line_multiple: 2.0               # x worst tested drawdown
+
+# Data-length rules. Yahoo keeps ~2 years of 1h bars and only ~60 days of
+# 5m/15m, which is far too little to prove anything intraday.
+hourly_train_fraction: 0.70           # 1h: first 70% train, last 30% locked
+unproven_bar_sizes: [15m, 5m]         # labelled UNPROVEN on the dashboard
+min_months_for_funnel: 12             # stored history before a bar size qualifies
+```
+
+`study_tickers` is the Arena's current NSE set. The per-client watchlist
+lives in Postgres rather than in the repo, so it cannot be pinned here; add
+a ticker to this list when you want it studied.
+
+`CASH` in `safe_candidates` is deliberate and is not a ticker. It means
+holding rupees, and it never resolves on a data source.
+
+---
+
+## 3. Repo map
 
 Reuse these. Do not create a parallel copy of any of them.
 
@@ -103,12 +143,16 @@ Reuse these. Do not create a parallel copy of any of them.
 | Persistence | `backend/arena/store.py` — arena state per client id, Postgres with a JSON-file fallback · `backend/storage.py` — watchlist and intraday |
 | Scheduler | `.github/workflows/arena-runner.yml` + `backend/run_daily.py` — the scheduled runner that actually advances the arena · `backend/scheduler.py` — the in-process APScheduler · `backend/arena/runner.py` — which of the two is in charge (`ARENA_RUNNER`) |
 | Market calendar | `backend/market_calendar.py` + `backend/nse_holidays.json` (NSE) · `backend/arena/markets.py` (other venues) · `backend/timeutil.py` (one source of truth for time) |
+| Settings | `backend/settings.py` reads §2 above. `python3.13 -m settings` prints and checks it |
+| Ticker check | `backend/ticker_check.py` — resolves every ticker; flags, never drops |
+| History archive | `backend/bar_archive.py`, `backend/archive_bars.py`, `.github/workflows/bar-archive.yml` |
+| Fingerprint | `backend/fingerprint.py` — one comparable line per phase |
 | Dashboard | `frontend/arena.js`, `frontend/app.js`, `frontend/index.html`, `frontend/style.css` |
 | API | `backend/main.py` — FastAPI routes, including `/api/arena/*` |
 
 ---
 
-## 3. Conventions
+## 4. Conventions
 
 - **Tests.** Backend: `cd backend && python3.13 -m pytest -q`. Frontend:
   `cd frontend && node --test app.helpers.test.js arena.helpers.test.js`.
@@ -126,7 +170,7 @@ Reuse these. Do not create a parallel copy of any of them.
 
 ---
 
-## 4. Known rule violations
+## 5. Known rule violations
 
 Open gaps against §1, recorded so they are fixed deliberately rather than
 discovered by surprise.
@@ -135,4 +179,7 @@ discovered by surprise.
 | --- | --- | --- |
 | §1.3 next-open fills | `engine._maybe_enter` fills at the signal bar's close; signal exits likewise | Every Arena result to date is optimistic by up to one bar |
 | §1.4 2x cost | `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]` | No result is currently stress-tested at double cost |
+| Folder naming | `backend/data/` holds **live** JSON state despite the name, which is backwards from the `data/` (frozen research) vs `data_live/` convention | Confusing; moving it would restart the running store, so it is flagged rather than renamed mid-flight |
+| Top-level `tests/` | Not created. `backend/tests/` already holds the suite; a second empty `tests/` at the root would be a trap for whoever adds the next test | None, as long as nobody adds one |
+| Arena is UNPROVEN | The Arena trades 5m bars, and Yahoo keeps ~60 days of those | Every Arena result is labelled UNPROVEN until the archive has 12 months |
 | §1.7 determinism | `fingerprint.py` exists and Phase 0 prints a line, but the simulation declares no seed and emits no fingerprint | Two Arena runs still cannot be compared mechanically |

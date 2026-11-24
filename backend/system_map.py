@@ -41,6 +41,14 @@ MODULES = [
     {"role": "Market calendar",
      "modules": ["market_calendar.py", "nse_holidays.json", "timeutil.py"],
      "note": "One source of truth for sessions, holidays and time."},
+    {"role": "Settings",
+     "modules": ["settings.py", "AGENTS.md"],
+     "note": "Parsed from AGENTS.md §2. No phase hardcodes a number."},
+    {"role": "History archive",
+     "modules": ["bar_archive.py", "archive_bars.py",
+                 ".github/workflows/bar-archive.yml"],
+     "note": "Appends intraday bars to Postgres nightly, because Yahoo's "
+             "60-day intraday window slides."},
     {"role": "Dashboard",
      "modules": ["frontend/arena.js", "frontend/app.js"],
      "note": "View only. It never advances a simulation."},
@@ -81,8 +89,81 @@ def compliance() -> dict:
             "total": len(RULES)}
 
 
+# Which part of the system runs on which bar size. The Arena is the one
+# that matters here: it trades 5-minute bars exclusively, so under the
+# settings block every Arena result is UNPROVEN until enough history is
+# stored. That is uncomfortable and it is the point - it is the difference
+# between a result and a result you can rely on.
+USED_BY = {"5m": "Strategy Arena", "1d": "Watchlist backtest"}
+
+UNPROVEN_LABEL = "UNPROVEN (insufficient history)"
+
+
+def bars() -> list[dict]:
+    """Per bar size: is a result on it provable yet, and why not."""
+    import settings
+
+    cfg = settings.load()
+    try:
+        import bar_archive
+
+        cover = bar_archive.coverage()
+    except Exception:
+        # No database configured, or it is unreachable. The eligibility
+        # rules still apply; only the stored-months figure is unknown.
+        cover = {}
+    try:
+        import bar_archive
+
+        verdicts = bar_archive.eligible(cfg, cover)
+    except Exception:
+        verdicts = {}
+
+    out = []
+    for bar_size in cfg["bar_sizes"]:
+        verdict = verdicts.get(bar_size, {})
+        unproven = settings.is_unproven(cfg, bar_size) and not verdict.get("eligible")
+        out.append({
+            "bar_size": bar_size,
+            "unproven": unproven,
+            "label": UNPROVEN_LABEL if unproven else "proven",
+            "months": verdict.get("months"),
+            "why": verdict.get("why", ""),
+            "used_by": USED_BY.get(bar_size, ""),
+        })
+    return out
+
+
+def settings_summary() -> dict:
+    import settings
+
+    cfg = settings.load()
+    train, locked = cfg["train_window_daily"], cfg["locked_window_daily"]
+    return {
+        "market": cfg["market"],
+        "session": "%s-%s IST, square-off %s"
+                   % (cfg["session_open"], cfg["session_close"], cfg["square_off"]),
+        "daily_capital_inr": cfg["daily_capital_inr"],
+        "swing_capital_inr": cfg["swing_capital_inr"],
+        "train_window": "%s .. %s" % (train[0], train[1]),
+        "locked_window": "%s .. %s" % (locked[0], locked[1]),
+        "kill_line_multiple": cfg["kill_line_multiple"],
+        "study_tickers": cfg["study_tickers"],
+        "engine_candidates": cfg["engine_candidates"],
+        "safe_candidates": cfg["safe_candidates"],
+    }
+
+
 def view() -> dict:
-    return {"modules": MODULES, "rules": RULES, "compliance": compliance()}
+    out = {"modules": MODULES, "rules": RULES, "compliance": compliance()}
+    try:
+        out["settings"] = settings_summary()
+        out["bars"] = bars()
+    except Exception as exc:
+        # The panel is diagnostics; a broken settings block must not take
+        # the dashboard down with it. It says so instead.
+        out["settings_error"] = "%s: %s" % (type(exc).__name__, exc)
+    return out
 
 
 def fingerprint_values() -> dict:

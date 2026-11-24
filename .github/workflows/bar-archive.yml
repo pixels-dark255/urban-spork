@@ -1,0 +1,71 @@
+# Accumulates intraday history, because Yahoo will not keep it.
+#
+# Yahoo serves roughly 60 days of 5m/15m bars and about two years of 1h.
+# Sixty days cannot prove an intraday strategy, and worse, the window
+# slides: a backtest run next month silently covers different sessions
+# than the same backtest run today. So this appends each day's bars to
+# Neon while they are still available, and history accumulates.
+#
+# Once a bar size has >= min_months_for_funnel months stored (see the
+# settings block in AGENTS.md) it becomes eligible for the funnel. Until
+# then every result on it is labelled UNPROVEN on the dashboard.
+#
+# SETUP: the same DATABASE_URL secret the arena runner uses. Without it
+# this refuses to run rather than writing to a file that gets wiped.
+
+name: Bar archive
+
+on:
+  schedule:
+    # 10:41 UTC is 16:11 IST, after the 15:30 close, on weekdays only.
+    # The NSE holiday list is not consulted here on purpose: a holiday run
+    # simply finds no new bars and writes nothing, which is cheaper than
+    # keeping a second copy of the calendar in a cron expression.
+    - cron: "41 10 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      bar_sizes:
+        description: "Comma separated (blank = every intraday size)"
+        required: false
+        default: ""
+        type: string
+      check_tickers:
+        description: "Also resolve every ticker in the settings block"
+        required: false
+        default: true
+        type: boolean
+
+# Two runs would fetch the same bars and race on the same primary key.
+# The insert is ON CONFLICT DO NOTHING so it would be harmless, just wasteful.
+concurrency:
+  group: bar-archive
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Append today's bars
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: |
+          python archive_bars.py \
+            --bar-sizes "${{ inputs.bar_sizes }}" \
+            ${{ (github.event_name == 'schedule' || inputs.check_tickers) && '--check-tickers' || '' }}

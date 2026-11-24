@@ -71,7 +71,8 @@ function loadArenaHelpers() {
                       "renderMarketTabs", "leverageWarning", "regulatoryNote",
                       "renderSlippageSweep", "presetButtons", "isValidClientId",
                       "runnerLine", "streakText", "sparkline", "picksPanel",
-                      "systemPanel"]) {
+                      "systemPanel", "unprovenBanner", "barTable",
+                      "settingsTable"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -632,4 +633,65 @@ test("rule text from the server is escaped, not injected", () => {
   assert.ok(!html.includes("<img"));
   assert.ok(!html.includes("<script>"));
   assert.ok(html.includes("&lt;img"));
+});
+
+// ---------------------------------------------------------------------------
+// UNPROVEN labelling - the Arena runs on 5m bars, which cannot be proved yet
+// ---------------------------------------------------------------------------
+
+const BARS = {
+  bars: [
+    { bar_size: "1d", unproven: false, label: "proven", months: null,
+      why: "long history available from the source", used_by: "Watchlist backtest" },
+    { bar_size: "5m", unproven: true, label: "UNPROVEN (insufficient history)",
+      months: 2.0, why: "2.0 of 12 months stored", used_by: "Strategy Arena" },
+  ],
+  settings: {
+    market: "NSE", session: "09:15-15:30 IST, square-off 15:15",
+    daily_capital_inr: 10000, swing_capital_inr: 100000,
+    train_window: "2022-01-01 .. 2024-12-31",
+    locked_window: "2025-01-01 .. 2026-11-24",
+    kill_line_multiple: 2, study_tickers: ["RELIANCE.NS"],
+    engine_candidates: ["NIFTYBEES.NS"], safe_candidates: ["GOLDBEES.NS", "CASH"],
+  },
+};
+
+test("the arena's own bar size being unproven is said above the table", () => {
+  const html = arena.unprovenBanner(BARS);
+  assert.ok(html.includes("UNPROVEN (insufficient history)"));
+  assert.ok(html.includes("2.0 of 12 months stored"));
+  assert.ok(html.includes("5m"));
+});
+
+test("the banner clears itself once the bar size is proven", () => {
+  const proven = { bars: [{ ...BARS.bars[1], unproven: false, label: "proven" }] };
+  assert.strictEqual(arena.unprovenBanner(proven), "");
+});
+
+test("the banner says nothing when no bar size drives the arena", () => {
+  assert.strictEqual(arena.unprovenBanner({ bars: [BARS.bars[0]] }), "");
+  assert.strictEqual(arena.unprovenBanner(null), "");
+  assert.strictEqual(arena.unprovenBanner({}), "");
+});
+
+test("each bar size gets a row saying whether it can be proved", () => {
+  const html = arena.barTable(BARS);
+  assert.ok(html.includes("1d") && html.includes("5m"));
+  assert.ok(html.includes("used by Strategy Arena"));
+  const rows = html.split("<tr").slice(1);
+  assert.ok(rows.find((r) => r.includes("1d")).includes("sys-ok"));
+  assert.ok(rows.find((r) => r.includes("5m")).includes("sys-gap"));
+});
+
+test("the settings in force are shown, so a run's assumptions are visible", () => {
+  const html = arena.settingsTable(BARS);
+  assert.ok(html.includes("2022-01-01 .. 2024-12-31"));
+  assert.ok(html.includes("2x worst tested drawdown"));
+  assert.ok(html.includes("GOLDBEES.NS, CASH"));
+});
+
+test("the bar and settings tables are absent until the payload arrives", () => {
+  assert.strictEqual(arena.barTable(null), "");
+  assert.strictEqual(arena.settingsTable(null), "");
+  assert.strictEqual(arena.settingsTable({}), "");
 });
