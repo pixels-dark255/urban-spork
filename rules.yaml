@@ -1,0 +1,246 @@
+# The Arena's strategies, written out in the 7-part exact-rule schema.
+#
+# This WRAPS arena/strategies.py; it does not replace it. The Python there
+# is still the one signal module (AGENTS.md §1.2). This file states each
+# rule precisely enough to be argued with, and marks the ones that cannot
+# yet be stated that way at all.
+#
+# The seven parts: market, setup, filter, entry, exit, stop, size.
+#
+# TWO THINGS ARE SPECIFIED HERE BUT NOT YET EXECUTED BY THE ENGINE:
+#
+#   filter  Not one existing strategy consults the daily regime. Every
+#           `filter: none` below is a description of today, not a choice
+#           that was made. signals/regime.py now computes the regime;
+#           nothing reads it yet.
+#   entry   Every rule says "next open" because AGENTS.md §1.3 requires it.
+#           engine._maybe_enter still fills at the signal bar's close. The
+#           rules are the intent; the engine is the known gap.
+#
+# `testable: false` means a part cannot be expressed in the required form,
+# so the rule cannot enter the funnel as written. The commonest cause is a
+# stop that is ATR- or structure-based rather than a percentage.
+
+schema_version: 1
+
+defaults:
+  market: nse
+  entry: next session open after the signal bar closes
+  size:
+    base: equal share of capital across open slots (25% at the default 4 slots)
+    risk_cap: position is cut so the loss at the stop fits risk_per_trade_pct
+    volatile_multiple: 0.5   # Phase 2: half size when the regime is volatile
+
+strategies:
+
+  - id: orb
+    name: Opening-range breakout
+    testable: true
+    market: nse
+    setup: close of a 5-minute bar above the high of the first 15 minutes, where the previous close was not above it
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: the opening-range low, or 1.5% below entry, whichever is nearer
+      pct: 1.5
+      kind: percent_bounded
+    size: equal slot share, halved when volatile
+    target: 2x the risk
+
+  - id: orb_both
+    name: Opening-range breakout (long + short)
+    testable: true
+    market: nse
+    setup: close above the first-15-minute high (long) or below its low (short), crossing it on this bar
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: the other side of the opening range, or 1.5% from entry, whichever is nearer
+      pct: 1.5
+      kind: percent_bounded
+    size: equal slot share, halved when volatile
+    target: 2x the risk
+
+  - id: score4
+    name: 4-signal score (original)
+    testable: true
+    market: nse
+    setup: the 4-signal score (SMA5 vs SMA20, RSI14, close vs VWAP, close vs opening range) crosses up into +2 or better
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: score falls to -2 or worse, stop, target, or square-off at 15:15
+    stop:
+      rule: 1.5% below entry
+      pct: 1.5
+      kind: percent
+    size: equal slot share, halved when volatile
+    target: 2.5% above entry
+
+  - id: benchmark
+    name: "Benchmark: buy first bar, hold to close"
+    testable: true
+    market: nse
+    setup: the first bar of the session
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: square-off at 15:15
+    stop:
+      rule: 10% below entry, a catastrophe stop only; the point is to hold the day
+      pct: 10.0
+      kind: percent
+    size: equal slot share, halved when volatile
+    target: 50% above entry, effectively never reached
+
+  # ---------------------------------------------------------------------
+  # Not testable as written. Each has a complete setup, entry and exit, but
+  # its stop is a distance in ATR or a price structure, which cannot be
+  # written as a percentage of entry. They are not broken and not deleted:
+  # they are simply outside the schema until either they are given a
+  # percentage stop or the schema is widened to accept an ATR distance.
+  # ---------------------------------------------------------------------
+
+  - id: vwap_reclaim
+    name: VWAP reclaim
+    testable: false
+    not_testable_because: stop is 0.5 ATR below the lower of the bar low and VWAP, not a percentage
+    market: nse
+    setup: close crosses back above the day's VWAP, with volume above its 20-bar average
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: close falls 0.2% below VWAP, stop, target, or square-off at 15:15
+    stop:
+      rule: 0.5 ATR(14) below min(bar low, VWAP)
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile
+    target: 2x the risk
+
+  - id: ema_cross
+    name: EMA 9/21 crossover
+    testable: false
+    not_testable_because: stop is 1.5 ATR, not a percentage
+    market: nse
+    setup: the 9-EMA crosses above the 21-EMA on the close
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: 9-EMA crosses back below the 21-EMA, stop, target, or square-off at 15:15
+    stop:
+      rule: 1.5 ATR(14) below entry
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile
+    target: 3 ATR above entry
+
+  - id: rsi_reversion
+    name: RSI oversold bounce
+    testable: false
+    not_testable_because: stop is 1.5 ATR, not a percentage
+    market: nse
+    setup: RSI(14) closes back above 30 having been below it on the previous bar
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: RSI(14) above 55, stop, target, or square-off at 15:15
+    stop:
+      rule: 1.5 ATR(14) below entry
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile
+    target: 2 ATR above entry
+
+  - id: bb_breakout
+    name: Bollinger volume breakout
+    testable: false
+    not_testable_because: stop is 1.5 ATR, not a percentage
+    market: nse
+    setup: close above the upper Bollinger band on at least 1.5x the 20-bar average volume
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: close back below the middle band, stop, target, or square-off at 15:15
+    stop:
+      rule: 1.5 ATR(14) below entry
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile
+    target: 3 ATR above entry
+
+  - id: supertrend
+    name: SuperTrend (10, 3) flip
+    testable: false
+    not_testable_because: the stop is the SuperTrend line itself, a moving level rather than a percentage
+    market: nse
+    setup: the SuperTrend(10, 3) direction flips, long on a flip up and short on a flip down
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: the direction flips against the position, stop, target, or square-off at 15:15
+    stop:
+      rule: the SuperTrend line
+      pct: null
+      kind: structure
+    size: equal slot share, halved when volatile
+    target: 2x the risk
+
+  - id: vwap_bands
+    name: VWAP band mean-reversion
+    testable: false
+    not_testable_because: stop is a swing extreme offset by 0.5 ATR, not a percentage
+    market: nse
+    setup: previous close more than 2 standard deviations below VWAP, this bar turns up, RSI(14) under 35 (mirrored for shorts at 2 sigma above with RSI over 65)
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: 0.5 ATR(14) beyond the lower of this bar's and the previous bar's low
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile
+    target: VWAP itself
+
+  - id: trend_pullback
+    name: Trend pullback to EMA 21
+    testable: false
+    not_testable_because: stop is the last 5-bar swing extreme, a structure rather than a percentage
+    market: nse
+    setup: price above VWAP with EMA21 above EMA50, previous bar's low touched the EMA21, this bar closes back above it and above the previous high (mirrored for shorts)
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: the lower of the 5-bar swing low and this bar's low
+      pct: null
+      kind: structure
+    size: equal slot share, halved when volatile
+    target: 2x the risk
+
+  - id: gap_fade
+    name: Gap fade (gap-fill)
+    testable: false
+    not_testable_because: stop is the day's extreme offset by 0.2 ATR, not a percentage
+    market: nse
+    setup: session opens 0.6% or more from the previous close, and between bars 3 and 9 price closes back inside the opening range against the gap
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: 0.2 ATR(14) beyond the day's high (short) or low (long)
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile
+    target: the previous session's close
+
+  - id: intraday_momentum
+    name: "Intraday momentum (first 30 min → last hour)"
+    testable: false
+    not_testable_because: stop is the lower of VWAP and 1.5 ATR, not a percentage
+    market: nse
+    setup: with 75 minutes left in the session, the day is up 0.5% or more as of 09:45 and price is above VWAP (mirrored for shorts)
+    filter: none
+    entry: next session open after the signal bar closes
+    exit: square-off at 15:15
+    stop:
+      rule: min(VWAP, 1.5 ATR(14) below entry)
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile
+    target: held to the square-off

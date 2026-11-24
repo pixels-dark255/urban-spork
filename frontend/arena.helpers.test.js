@@ -73,7 +73,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -806,4 +806,57 @@ test("the plain-English line is escaped", () => {
   const html = arena.assetStudyPanel(nasty);
   assert.ok(!html.includes("<script>"));
   assert.ok(html.includes("&lt;script&gt;"));
+});
+
+// ---------------------------------------------------------------------------
+// Strategy rules (Phase 2)
+// ---------------------------------------------------------------------------
+
+const SPEC = {
+  testable: 1, not_testable: 1,
+  strategies: [
+    { id: "orb", name: "Opening-range breakout", testable: true, why: "",
+      setup: "close above the first 15 minutes' high", filter: "none",
+      entry: "next session open", exit: "stop, target or square-off",
+      stop: "range low or 1.5%", stop_pct: 1.5, size: "equal slot share" },
+    { id: "ema_cross", name: "EMA 9/21 crossover", testable: false,
+      why: "stop is 1.5 ATR, not a percentage",
+      setup: "9-EMA crosses above 21-EMA", filter: "none",
+      entry: "next session open", exit: "cross back",
+      stop: "1.5 ATR(14) below entry", stop_pct: null, size: "equal slot share" },
+  ],
+};
+
+test("a strategy that fits the schema is marked OK", () => {
+  const row = arena.ruleTable(SPEC).split("<tr").find((r) => r.includes("Opening-range"));
+  assert.ok(row.includes("sys-ok") && row.includes(">OK<"));
+  assert.ok(row.includes("1.5%"));
+});
+
+test("one that does not fit says why, in place of its setup", () => {
+  // The reason is the useful thing on that row; the setup is not the
+  // problem, the stop is.
+  const row = arena.ruleTable(SPEC).split("<tr").find((r) => r.includes("EMA 9/21"));
+  assert.ok(row.includes("sys-gap") && row.includes("NOT YET"));
+  assert.ok(row.includes("1.5 ATR, not a percentage"));
+  assert.ok(!row.includes("crosses above"));
+});
+
+test("an ATR stop is shown as its rule, not as a missing percentage", () => {
+  const row = arena.ruleTable(SPEC).split("<tr").find((r) => r.includes("EMA 9/21"));
+  assert.ok(row.includes("1.5 ATR(14) below entry"));
+  assert.ok(!row.includes("null"));
+});
+
+test("the panel counts how many rules fit the schema", () => {
+  assert.ok(arena.ruleTable(SPEC).includes("1 of 2 strategies"));
+});
+
+test("the panel says the filters are not wired up yet", () => {
+  assert.ok(arena.ruleTable(SPEC).includes("nothing consults it yet"));
+});
+
+test("no rule spec means no panel, not an empty table", () => {
+  assert.strictEqual(arena.ruleTable(null), "");
+  assert.strictEqual(arena.ruleTable({ strategies: [] }), "");
 });

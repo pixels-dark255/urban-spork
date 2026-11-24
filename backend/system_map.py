@@ -41,6 +41,14 @@ MODULES = [
     {"role": "Market calendar",
      "modules": ["market_calendar.py", "nse_holidays.json", "timeutil.py"],
      "note": "One source of truth for sessions, holidays and time."},
+    {"role": "Regime",
+     "modules": ["signals/regime.py"],
+     "note": "Trend and volatility per bar. One definition, shared with "
+             "asset_study.py so a filter cannot disagree with the study."},
+    {"role": "Rule spec",
+     "modules": ["rules.yaml", "signals/rules.py"],
+     "note": "The 7-part schema. Wraps arena/strategies.py; a test refuses "
+             "to let the two drift apart."},
     {"role": "Settings",
      "modules": ["settings.py", "AGENTS.md"],
      "note": "Parsed from AGENTS.md §2. No phase hardcodes a number."},
@@ -75,6 +83,15 @@ RULES = [
     {"id": "double-cost", "rule": "Every result also reported at 2x cost",
      "status": GAP,
      "detail": "The slippage sweep runs 0x, 0.5x and 1x. No 2x case."},
+    {"id": "regime-wired", "rule": "Strategies filter on the regime",
+     "status": GAP,
+     "detail": "signals/regime.py computes trend and volatility, but no "
+               "strategy consults it: every filter in rules.yaml is "
+               "`none`, and the engine never asks."},
+    {"id": "half-size-volatile", "rule": "Half size on volatile bars",
+     "status": GAP,
+     "detail": "regime.size_multiple is written and tested, and every rule "
+               "declares it, but engine sizing does not call it yet."},
     {"id": "determinism", "rule": "Deterministic output with a fingerprint",
      "status": GAP,
      "detail": "fingerprint.py exists and Phase 0 prints one, but the "
@@ -154,8 +171,32 @@ def settings_summary() -> dict:
     }
 
 
+def rule_spec() -> dict:
+    """The 7-part strategy table, for the dashboard."""
+    from signals import rules as rules_mod
+
+    doc = rules_mod.load()
+    return {
+        "strategies": [
+            {"id": r["id"], "name": r["name"], "testable": bool(r["testable"]),
+             "why": r.get("not_testable_because", ""),
+             "setup": r["setup"], "filter": str(r["filter"]),
+             "entry": r["entry"], "exit": r["exit"],
+             "stop": r["stop"]["rule"] if isinstance(r["stop"], dict) else str(r["stop"]),
+             "stop_pct": r["stop"].get("pct") if isinstance(r["stop"], dict) else None,
+             "size": r["size"]}
+            for r in doc["strategies"]],
+        "testable": len(rules_mod.testable(doc)),
+        "not_testable": len(rules_mod.not_testable(doc)),
+    }
+
+
 def view() -> dict:
     out = {"modules": MODULES, "rules": RULES, "compliance": compliance()}
+    try:
+        out["rule_spec"] = rule_spec()
+    except Exception as exc:
+        out["rule_spec_error"] = "%s: %s" % (type(exc).__name__, exc)
     try:
         out["settings"] = settings_summary()
         out["bars"] = bars()

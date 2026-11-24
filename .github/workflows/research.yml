@@ -12,7 +12,7 @@ on:
         required: true
         default: "1"
         type: choice
-        options: ["0", "1"]
+        options: ["0", "1", "2"]
 
 # A phase writes its own result row; two at once would race on it.
 concurrency:
@@ -45,6 +45,13 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TZ: Asia/Kolkata
         run: python -m settings
+
+      - name: Phase 2 rule table
+        if: inputs.phase == '2'
+        working-directory: backend
+        env:
+          TZ: Asia/Kolkata
+        run: python -m signals.rules
 
       - name: Phase 1 asset study
         if: inputs.phase == '1'

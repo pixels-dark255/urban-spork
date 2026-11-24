@@ -20,3 +20,9 @@ apscheduler==3.10.4
 psycopg2-binary==2.9.13
 python-dotenv==1.0.1
 pytz==2024.1
+# rules.yaml is the 7-part strategy spec every phase reads. PyYAML was
+# already installed as a transitive dependency of uvicorn[standard]; it is
+# declared here because the project now imports it directly, and relying on
+# someone else's dependency is how a working install breaks on an upgrade
+# that has nothing to do with us.
+PyYAML>=6.0,<7

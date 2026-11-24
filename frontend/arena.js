@@ -495,6 +495,36 @@ function settingsTable(sys) {
     </details>`;
 }
 
+// ---------- Strategy rules (Phase 2) ----------
+// The seven parts of every Arena rule. "Not testable yet" is the useful
+// column: it names the strategies that cannot enter the funnel as written,
+// which is a queue of work rather than a verdict on the strategy.
+function ruleTable(spec) {
+  if (!spec || !spec.strategies || !spec.strategies.length) return "";
+  const rows = spec.strategies.map((r) => `
+      <tr class="${r.testable ? "sys-ok" : "sys-gap"}">
+        <td class="arena-name">${escapeHtml(r.name)}</td>
+        <td class="sys-status">${r.testable ? "OK" : "NOT YET"}</td>
+        <td class="sys-detail">${escapeHtml(r.testable ? r.setup : r.why)}</td>
+        <td class="study-num">${r.stop_pct === null || r.stop_pct === undefined
+          ? `<span class="arena-sub">${escapeHtml(r.stop)}</span>`
+          : `${r.stop_pct}%`}</td>
+      </tr>`).join("");
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 2</span>
+      <h2 style="font-size:17px;">Strategy rules</h2></div>
+    <p class="arena-hint">${spec.testable} of ${spec.testable + spec.not_testable} strategies can be stated in all seven parts.
+      The rest have a stop measured in ATR or
+      chart structure rather than a percentage, so they cannot enter the funnel as written.
+      Every filter is currently <code>none</code>: the regime layer exists, nothing consults it yet.</p>
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Strategy</th><th>7 parts</th><th>Setup, or why not</th><th>Stop</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 // ---------- Asset Study (Phase 1) ----------
 // How each ticker actually moves, labelled over the training window. The
 // labels matter less than the counts beside them: "keeps going (4)" is a
@@ -677,6 +707,8 @@ function renderArena(data) {
     <div id="arenaBacktest"><p class="muted">Replays real past 5-minute bars (Yahoo keeps ~60 days) through the same engine, so you get results today instead of after weeks of live paper trading.</p></div>
 
     ${assetStudyPanel(arenaStudy)}
+
+    ${ruleTable(arenaSystem && arenaSystem.rule_spec)}
 
     ${systemPanel(arenaSystem)}
 

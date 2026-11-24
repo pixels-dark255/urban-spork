@@ -36,6 +36,7 @@ import numpy as np
 import pandas as pd
 
 import indicators
+from signals import regime
 
 # Thresholds from the Phase 1 brief. A label needs enough events to be more
 # than an anecdote; "it worked both times" is not evidence.
@@ -48,9 +49,11 @@ REVERSION_RSI_MAX = 10.0
 REVERSION_HORIZON = 5
 REVERSION_MIN_EVENTS = 12
 
-TREND_WINDOW = 200
-VOL_WINDOW = 20
-VOL_MEDIAN_WINDOW = 252
+# Windows come from the regime layer so the study and the filters cannot
+# disagree about what "200-day" or "volatile" means.
+TREND_WINDOW = regime.TREND_WINDOW
+VOL_WINDOW = regime.VOL_WINDOW
+VOL_MEDIAN_WINDOW = regime.VOL_MEDIAN_WINDOW
 
 # "Does not simply move with the engines." Above this, a ticker that looks
 # calm is mostly just the index in disguise.
@@ -70,15 +73,17 @@ def prepare(daily: pd.DataFrame) -> pd.DataFrame:
     out["open"] = pd.to_numeric(daily.get("Open", daily["Close"]), errors="coerce")
     out["ret"] = out["close"].pct_change()
 
-    out["sma200"] = out["close"].rolling(TREND_WINDOW, min_periods=TREND_WINDOW).mean()
+    # One definition of "uptrend" and "volatile", shared with the regime
+    # layer a strategy filters on. Two copies that drift apart is how a
+    # filter starts disagreeing with the study that justified it.
+    out["sma200"] = regime.trend_average(out["close"])
     out["above"] = out["close"] > out["sma200"]
     out["high50"] = out["close"].rolling(
         MOMENTUM_LOOKBACK, min_periods=MOMENTUM_LOOKBACK).max()
     out["rsi2"] = indicators.rsi(out["close"], REVERSION_RSI)
 
-    out["vol20"] = out["ret"].rolling(VOL_WINDOW, min_periods=VOL_WINDOW).std()
-    out["vol_median"] = out["vol20"].rolling(
-        VOL_MEDIAN_WINDOW, min_periods=VOL_WINDOW).median()
+    out["vol20"] = regime.realised_vol(out["close"])
+    out["vol_median"] = regime.vol_median(out["vol20"])
 
     entry = out["open"].shift(-1)                 # tomorrow's open
     for horizon in (MOMENTUM_HORIZON, REVERSION_HORIZON):
