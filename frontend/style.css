@@ -922,3 +922,53 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 }
 .sys-modules { margin-top: 10px; border-top: none; padding-top: 0; }
 .sys-modules summary { font-size: 13px; font-weight: 500; color: var(--mist); }
+
+/* ---------- Asset study (Phase 1) ---------- */
+/* A label is a claim; the count beside it is the evidence. They are styled
+   as one chip so the two are never read apart. */
+.study-chip {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--hairline);
+  margin: 0 4px 3px 0;
+  white-space: nowrap;
+}
+.study-on { color: #7fd19b; border-color: rgba(60, 154, 92, 0.55); background: rgba(60, 154, 92, 0.1); }
+.study-off { color: var(--mist); opacity: 0.75; }
+
+.study-table td { vertical-align: middle; }
+.study-num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.study-table .pos { color: #7fd19b; }
+.study-table .neg { color: var(--signal-red); }
+.study-table .neu { color: var(--mist); }
+
+/* Two stacked bars, drawn against the larger of the pair. No axis: the
+   shape is the message, and the ratio is printed beside it. */
+.study-bars {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 54px;
+  vertical-align: middle;
+}
+.study-bars i { display: block; height: 5px; border-radius: 2px; min-width: 2px; }
+.study-calm { background: var(--mist); opacity: 0.55; }
+.study-vol { background: var(--brass); }
+
+.study-heatmap { font-size: 10.5px; }
+.study-heatmap th, .study-heatmap td { padding: 4px 6px; text-align: center; }
+.study-heat { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+.study-rowhead {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: right !important;
+  color: var(--mist);
+  white-space: nowrap;
+}
+.study-rot { font-family: var(--font-mono); font-size: 10px; color: var(--mist); }
+
+.study-lines { margin: 6px 0 0; padding-left: 18px; }
+.study-lines li { font-size: 12.5px; line-height: 1.6; color: var(--bone); margin-bottom: 6px; }

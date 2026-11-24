@@ -1,0 +1,55 @@
+# Runs a research phase, in CI, because that is where the data source is
+# reachable. Each phase prints its CHECK block and its fingerprint into the
+# run summary, and stores its result where the dashboard can read it.
+
+name: Research
+
+on:
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: "Which phase to run"
+        required: true
+        default: "1"
+        type: choice
+        options: ["0", "1"]
+
+# A phase writes its own result row; two at once would race on it.
+concurrency:
+  group: research
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  phase:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Phase 0 check
+        if: inputs.phase == '0'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: python -m settings
+
+      - name: Phase 1 asset study
+        if: inputs.phase == '1'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: python run_asset_study.py

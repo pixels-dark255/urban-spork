@@ -11,6 +11,7 @@ const ARENA_LEVEL_CLASS = {
 let arenaData = null;
 let arenaMarkets = null;
 let arenaSystem = null;
+let arenaStudy = null;
 
 // Which market's arena is on screen. One arena per market, so every call
 // carries it; the server keys storage by it and defaults to India.
@@ -76,10 +77,11 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes, systemRes] = await Promise.all([
+    const [res, marketsRes, systemRes, studyRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
       apiFetch(`${API}/api/system`).catch(() => null),
+      apiFetch(`${API}/api/asset-study`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
@@ -88,6 +90,9 @@ async function loadArena(silent = false) {
     }
     if (systemRes && systemRes.ok) {
       arenaSystem = await systemRes.json().catch(() => null);
+    }
+    if (studyRes && studyRes.ok) {
+      arenaStudy = await studyRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -490,6 +495,112 @@ function settingsTable(sys) {
     </details>`;
 }
 
+// ---------- Asset Study (Phase 1) ----------
+// How each ticker actually moves, labelled over the training window. The
+// labels matter less than the counts beside them: "keeps going (4)" is a
+// story, "keeps going (31)" is a finding, and showing the number stops the
+// badge being read as proof.
+
+function labelChip(on, text, count) {
+  const n = count === undefined || count === null ? "" : ` (${count})`;
+  return `<span class="study-chip ${on ? "study-on" : "study-off"}">${escapeHtml(text)}${n}</span>`;
+}
+
+// A bar pair: how big the average move is in calm versus volatile stretches.
+// Drawn relative to the larger of the two, so the shape reads at a glance
+// without needing an axis.
+function calmVolBars(cv) {
+  if (!cv || cv.calm === null || cv.volatile === null) return '<span class="arena-sub">n/a</span>';
+  const max = Math.max(cv.calm, cv.volatile) || 1;
+  const bar = (v, cls) => `<i class="${cls}" style="width:${Math.round((v / max) * 100)}%"></i>`;
+  return `<span class="study-bars" title="calm ${(cv.calm * 100).toFixed(2)}% vs volatile ${(cv.volatile * 100).toFixed(2)}%">
+    ${bar(cv.calm, "study-calm")}${bar(cv.volatile, "study-vol")}
+  </span><span class="arena-sub"> ${cv.ratio ? cv.ratio.toFixed(1) + "x" : ""}</span>`;
+}
+
+function pctCell(value, digits = 3) {
+  if (value === null || value === undefined) return '<span class="arena-sub">n/a</span>';
+  const cls = value > 0 ? "pos" : value < 0 ? "neg" : "neu";
+  return `<span class="${cls}">${value > 0 ? "+" : ""}${(value * 100).toFixed(digits)}%</span>`;
+}
+
+// Correlation heatmap. Green is independent, red is "this is the same bet
+// twice" - which is the thing a diversified book is trying to avoid.
+function heatColor(v) {
+  if (v === null || v === undefined) return "transparent";
+  const x = Math.max(-1, Math.min(1, v));
+  if (x >= 0) return `rgba(193, 68, 60, ${(0.08 + 0.72 * x).toFixed(3)})`;
+  return `rgba(60, 154, 92, ${(0.08 + 0.72 * -x).toFixed(3)})`;
+}
+
+function heatmapTable(heat) {
+  if (!heat || !heat.tickers || heat.tickers.length < 2) return "";
+  const names = heat.tickers;
+  const head = names.map((n) => `<th class="study-rot">${escapeHtml(shortSymbol(n))}</th>`).join("");
+  const rows = names.map((name, i) => {
+    const cells = heat.matrix[i].map((v) => {
+      const text = v === null || v === undefined ? "" : v.toFixed(2);
+      return `<td class="study-heat" style="background:${heatColor(v)}">${text}</td>`;
+    }).join("");
+    return `<tr><th class="study-rowhead">${escapeHtml(shortSymbol(name))}</th>${cells}</tr>`;
+  }).join("");
+  return `
+    <details class="arena-settings sys-modules" open>
+      <summary>Correlation heatmap</summary>
+      <p class="arena-hint">Red is a pair that moves together, so holding both is one bet twice over.
+        Green is a pair that does not.</p>
+      <div class="table-scroll">
+        <table class="backtest-table study-heatmap">
+          <thead><tr><th></th>${head}</tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </details>`;
+}
+
+function assetStudyPanel(payload) {
+  if (!payload) return "";
+  if (!payload.ok) {
+    return `
+      <div class="section-heading"><span class="eyebrow">phase 1</span>
+        <h2 style="font-size:17px;">Asset study</h2></div>
+      <p class="arena-hint">${escapeHtml(payload.reason || "Not run yet.")}</p>`;
+  }
+  const st = payload.study || {};
+  const rows = (st.rows || []).map((r) => `
+      <tr>
+        <td class="arena-name">${escapeHtml(shortSymbol(r.ticker))}</td>
+        <td>${labelChip(r.momentum.labelled, "keeps going", r.momentum.events)}
+            ${labelChip(r.reversion.labelled, "snaps back", r.reversion.events)}
+            ${labelChip(r.safety.labelled, "safe")}</td>
+        <td class="study-num">${pctCell(r.trend_gap.gap)}</td>
+        <td class="study-num">${calmVolBars(r.calm_vs_volatile)}</td>
+      </tr>`).join("");
+  const missing = (st.missing || []).length
+    ? `<p class="arena-warn">No data for ${st.missing.map(escapeHtml).join(", ")}. These are not dropped: fix or remove them in the settings block.</p>`
+    : "";
+  const lines = (st.rows || []).map((r) => `<li>${escapeHtml(r.summary)}</li>`).join("");
+  const w = st.window || {};
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 1</span>
+      <h2 style="font-size:17px;">Asset study</h2></div>
+    <p class="arena-hint">How each ticker moved over the training window
+      ${escapeHtml(w.start || "")} to ${escapeHtml(w.end || "")}, on daily bars.
+      A label needs enough events to be more than an anecdote, so the count is shown beside it.</p>
+    ${missing}
+    <div class="table-scroll">
+      <table class="backtest-table study-table">
+        <thead><tr><th>Ticker</th><th>Labels</th><th>Trend gap</th><th>Calm vs volatile</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>
+    ${heatmapTable(st.heatmap)}
+    <details class="arena-settings sys-modules">
+      <summary>In plain English</summary>
+      <ul class="study-lines">${lines}</ul>
+    </details>`;
+}
+
 // ---------- System panel (Phase 0) ----------
 // What the system is made of, and which of its own hard rules it does not
 // meet yet. The gaps matter more than the map: a result produced under a
@@ -564,6 +675,8 @@ function renderArena(data) {
       <button class="add-watchlist-btn arena-btn" id="arenaRunBt">Run backtest</button>
     </div>
     <div id="arenaBacktest"><p class="muted">Replays real past 5-minute bars (Yahoo keeps ~60 days) through the same engine, so you get results today instead of after weeks of live paper trading.</p></div>
+
+    ${assetStudyPanel(arenaStudy)}
 
     ${systemPanel(arenaSystem)}
 

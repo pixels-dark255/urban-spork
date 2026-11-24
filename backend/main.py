@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 import jsonsafe
 import market_calendar
+import research_store
 import system_map
 import storage
 import timeutil
@@ -636,6 +637,21 @@ def api_arena_backtest(req: ArenaBacktestRequest, request: Request,
 @app.get("/api/arena/backtest")
 def api_arena_last_backtest(request: Request, market: str | None = None):
     return {"backtest": arena_service.last_backtest(arena_key(request, market))}
+
+
+@app.get("/api/asset-study")
+def api_asset_study():
+    """Phase 1's labels, as last computed by the research runner.
+
+    Read-only: the study is produced by run_asset_study.py in CI, where the
+    data source is reachable, and this only serves what it stored.
+    """
+    result = research_store.load("1")
+    if not result:
+        return {"ok": False,
+                "reason": "The asset study has not been run yet. "
+                          "Trigger the Research workflow to produce it."}
+    return {"ok": True, "study": result}
 
 
 @app.get("/api/system")

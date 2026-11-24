@@ -72,7 +72,8 @@ function loadArenaHelpers() {
                       "renderSlippageSweep", "presetButtons", "isValidClientId",
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
-                      "settingsTable"]) {
+                      "settingsTable", "assetStudyPanel", "labelChip",
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -694,4 +695,115 @@ test("the bar and settings tables are absent until the payload arrives", () => {
   assert.strictEqual(arena.barTable(null), "");
   assert.strictEqual(arena.settingsTable(null), "");
   assert.strictEqual(arena.settingsTable({}), "");
+});
+
+// ---------------------------------------------------------------------------
+// Asset study (Phase 1)
+// ---------------------------------------------------------------------------
+
+function studyRow(ticker, { mom = false, momN = 3, rev = false, revN = 4,
+                            safe = false, gap = 0.001, calm = 0.01,
+                            vol = 0.02 } = {}) {
+  return {
+    ticker, bars: 500,
+    momentum: { labelled: mom, events: momN, edge: 0.01, horizon: 20 },
+    reversion: { labelled: rev, events: revN, edge: 0.01, horizon: 5 },
+    safety: { labelled: safe, max_correlation: 0.3, why: "x" },
+    trend_gap: { gap },
+    calm_vs_volatile: { calm, volatile: vol, ratio: vol / calm },
+    labels: [], summary: `${ticker} does things.`,
+  };
+}
+
+const STUDY = {
+  ok: true,
+  study: {
+    window: { start: "2022-01-01", end: "2024-12-31" },
+    rows: [studyRow("RELIANCE.NS", { mom: true, momN: 31 }),
+           studyRow("TCS.NS", { rev: true, revN: 18, gap: -0.002 })],
+    missing: [],
+    heatmap: { tickers: ["RELIANCE.NS", "TCS.NS"], matrix: [[1, 0.42], [0.42, 1]] },
+  },
+};
+
+test("a label always carries its event count, so it is not read as proof", () => {
+  assert.ok(arena.labelChip(true, "keeps going", 31).includes("keeps going (31)"));
+  assert.ok(arena.labelChip(false, "keeps going", 3).includes("keeps going (3)"));
+});
+
+test("an unlabelled finding is styled as off, not hidden", () => {
+  // Hiding it would make "no edge here" indistinguishable from "not tested".
+  assert.ok(arena.labelChip(false, "snaps back", 2).includes("study-off"));
+  assert.ok(arena.labelChip(true, "snaps back", 20).includes("study-on"));
+});
+
+test("the safe chip carries no count, because it is not an event tally", () => {
+  const chip = arena.labelChip(true, "safe");
+  assert.ok(chip.includes(">safe<"));
+  assert.ok(!chip.includes("("));
+});
+
+test("a trend gap is signed and coloured", () => {
+  assert.ok(arena.pctCell(0.0012).includes("+0.120%"));
+  assert.ok(arena.pctCell(0.0012).includes("pos"));
+  assert.ok(arena.pctCell(-0.0012).includes("neg"));
+  assert.ok(arena.pctCell(null).includes("n/a"));
+});
+
+test("calm and volatile bars are drawn against the larger of the pair", () => {
+  const html = arena.calmVolBars({ calm: 0.01, volatile: 0.02, ratio: 2 });
+  assert.ok(html.includes("width:50%"));   // calm is half of volatile
+  assert.ok(html.includes("width:100%"));
+  assert.ok(html.includes("2.0x"));
+});
+
+test("missing volatility data says n/a rather than drawing a zero bar", () => {
+  assert.ok(arena.calmVolBars({ calm: null, volatile: null }).includes("n/a"));
+  assert.ok(arena.calmVolBars(null).includes("n/a"));
+});
+
+test("the heatmap colours correlation by direction", () => {
+  assert.ok(arena.heatColor(0.9).startsWith("rgba(193"));     // together: red
+  assert.ok(arena.heatColor(-0.9).startsWith("rgba(60"));     // apart: green
+  assert.strictEqual(arena.heatColor(null), "transparent");
+});
+
+test("a one-ticker heatmap is not drawn", () => {
+  assert.strictEqual(arena.heatmapTable({ tickers: ["A"], matrix: [[1]] }), "");
+  assert.strictEqual(arena.heatmapTable(null), "");
+});
+
+test("the heatmap labels both axes with short symbols", () => {
+  const html = arena.heatmapTable(STUDY.study.heatmap);
+  assert.ok(html.includes(">RELIANCE<"));
+  assert.ok(!html.includes("RELIANCE.NS"));
+  assert.ok(html.includes("0.42"));
+});
+
+test("the panel shows every ticker with its window", () => {
+  const html = arena.assetStudyPanel(STUDY);
+  assert.ok(html.includes("2022-01-01") && html.includes("2024-12-31"));
+  assert.ok(html.includes("keeps going (31)"));
+  assert.ok(html.includes("snaps back (18)"));
+});
+
+test("a ticker with no data is named, not quietly absent", () => {
+  const missing = { ok: true, study: { ...STUDY.study, missing: ["GILT5YBEES.NS"] } };
+  const html = arena.assetStudyPanel(missing);
+  assert.ok(html.includes("GILT5YBEES.NS"));
+  assert.ok(html.includes("not dropped"));
+});
+
+test("before the study has run the panel says so instead of showing nothing", () => {
+  const html = arena.assetStudyPanel({ ok: false, reason: "has not been run yet" });
+  assert.ok(html.includes("has not been run yet"));
+  assert.strictEqual(arena.assetStudyPanel(null), "");
+});
+
+test("the plain-English line is escaped", () => {
+  const nasty = { ok: true, study: { ...STUDY.study,
+    rows: [{ ...studyRow("X.NS"), summary: "<script>bad()</script>" }] } };
+  const html = arena.assetStudyPanel(nasty);
+  assert.ok(!html.includes("<script>"));
+  assert.ok(html.includes("&lt;script&gt;"));
 });
