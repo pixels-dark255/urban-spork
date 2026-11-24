@@ -10,6 +10,7 @@ const ARENA_LEVEL_CLASS = {
 };
 let arenaData = null;
 let arenaMarkets = null;
+let arenaSystem = null;
 
 // Which market's arena is on screen. One arena per market, so every call
 // carries it; the server keys storage by it and defaults to India.
@@ -75,14 +76,18 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes] = await Promise.all([
+    const [res, marketsRes, systemRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
+      apiFetch(`${API}/api/system`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
     if (marketsRes && marketsRes.ok) {
       arenaMarkets = await marketsRes.json().catch(() => null);
+    }
+    if (systemRes && systemRes.ok) {
+      arenaSystem = await systemRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -426,6 +431,47 @@ function arenaLiveHtml(data) {
     ${renderDayHistory(data.history, data.strategies, data.currency)}`;
 }
 
+// ---------- System panel (Phase 0) ----------
+// What the system is made of, and which of its own hard rules it does not
+// meet yet. The gaps matter more than the map: a result produced under a
+// known-broken fill model should be read as optimistic, and the only way
+// anyone remembers that is if it is written next to the results.
+function systemPanel(sys) {
+  if (!sys || !sys.rules || !sys.modules) return "";
+  const c = sys.compliance || { ok: 0, gap: 0, total: 0 };
+  const rules = sys.rules.map((r) => `
+      <tr class="${r.status === "gap" ? "sys-gap" : "sys-ok"}">
+        <td class="sys-status">${r.status === "gap" ? "GAP" : "OK"}</td>
+        <td class="arena-name">${escapeHtml(r.rule)}</td>
+        <td class="sys-detail">${escapeHtml(r.detail)}</td>
+      </tr>`).join("");
+  const modules = sys.modules.map((m) => `
+      <tr>
+        <td class="arena-name">${escapeHtml(m.role)}</td>
+        <td class="sys-detail"><code>${m.modules.map(escapeHtml).join("</code> <code>")}</code></td>
+      </tr>`).join("");
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 0</span>
+      <h2 style="font-size:17px;">System</h2></div>
+    <p class="arena-hint">${c.ok} of ${c.total} hard rules met${c.gap ? `, ${c.gap} open` : ""}.
+      Open gaps are listed first because they change how today's numbers should be read.</p>
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Status</th><th>Rule</th><th>Detail</th></tr></thead>
+        <tbody>${rules}</tbody>
+      </table>
+    </div>
+    <details class="arena-settings sys-modules">
+      <summary>Module map</summary>
+      <div class="table-scroll">
+        <table class="backtest-table">
+          <thead><tr><th>Role</th><th>Modules</th></tr></thead>
+          <tbody>${modules}</tbody>
+        </table>
+      </div>
+    </details>`;
+}
+
 function renderArena(data) {
   const c = data.config;
   const strategyChecks = data.strategies.map((s) => `
@@ -455,6 +501,8 @@ function renderArena(data) {
       <button class="add-watchlist-btn arena-btn" id="arenaRunBt">Run backtest</button>
     </div>
     <div id="arenaBacktest"><p class="muted">Replays real past 5-minute bars (Yahoo keeps ~60 days) through the same engine, so you get results today instead of after weeks of live paper trading.</p></div>
+
+    ${systemPanel(arenaSystem)}
 
     <details id="arenaSettings" class="arena-settings">
       <summary>Settings</summary>

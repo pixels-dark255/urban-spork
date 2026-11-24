@@ -1,0 +1,138 @@
+# AGENTS.md — house rules for TickerBoard
+
+Read this before writing code. It binds humans and agents equally.
+
+The project is a paper-trading research system for Indian intraday equities:
+a FastAPI backend, a vanilla-JS PWA dashboard, and a Strategy Arena that runs
+many strategies side by side on simulated money.
+
+---
+
+## 1. Hard rules
+
+These are not preferences. A change that breaks one of them is wrong even if
+the tests pass and the numbers look good.
+
+### 1.1 Paper trading only
+No live broker order placement, ever. No order-routing library, no broker
+session, no "just a dry-run flag that could be flipped". The simulator may
+produce an order *ticket* as data; nothing may send one.
+
+Never read, print, or log `.env`. Secrets are typed into `.env` by a human and
+by nobody else. `.env` is git-ignored and stays that way. `.env.example`
+carries the variable names with empty values, and nothing else.
+
+### 1.2 One signal module
+The backtest and the live paper runner import the SAME signal functions from
+`backend/arena/strategies.py`. There is no second copy of a rule. If a
+backtest needs a rule the runner does not have, the rule goes in the shared
+module and both use it.
+
+Today this holds: `engine.replay()` drives `start_day` / `process_bars` /
+`settle_day`, which is the identical code path the live runner takes. Keep it
+that way. A backtest that re-implements a rule is a bug, not an optimisation.
+
+### 1.3 Next-open fills
+A strategy decides on a **completed** bar and fills at the **next** bar's
+open. Never fill at the bar that produced the signal.
+
+> **Not yet true.** `engine._maybe_enter()` fills at `row["Close"]` — the
+> close of the signal bar — and signal-based exits do the same. This is a
+> known, logged violation; see §4. Every Arena number produced before it is
+> fixed carries up to one bar of look-ahead and should be treated as
+> optimistic. Fixing it is its own phase, because it changes every result.
+
+### 1.4 Costs are always on
+Every fill pays the Indian cost model in `backend/arena/costs.py`: brokerage
+(0.03% capped at ₹20), STT, exchange transaction, SEBI, GST, stamp duty, plus
+slippage. Non-Indian markets use their own `CostModel` in
+`backend/arena/markets.py`.
+
+There is no "costs off" mode and no result quoted gross. **Every result is
+also reported at 2x cost.** The sweep lives in `engine.SLIPPAGE_MULTIPLES`.
+
+> **Not yet true.** `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]` has no 2x entry.
+
+### 1.5 No rule changes because of recent results
+Losing last week is not a reason to touch a rule. Tuning a threshold because
+of what just happened is how a backtest becomes a memory of the past.
+
+A rule change is a **new idea** with a new id, and it goes through the full
+funnel. The old rule keeps running until the new one has earned its place.
+
+### 1.6 The locked window is run ONCE
+Each idea gets exactly one run on the locked test window, after every choice
+about it has already been made. If it fails, the idea is out. There is no
+"tweak and rerun" — that is the same as having no test at all.
+
+Every locked-window run is appended to `results/locked_test_log.csv`
+(`idea_id, date_run, result, notes`) so that a rerun is visible to anyone
+reading the file. An idea appearing twice is a red flag, not a detail.
+
+### 1.7 Deterministic output
+Same input, same bytes out. Fixed seeds, sorted iteration over every dict and
+set that reaches a result, no reliance on insertion order or wall-clock time
+inside a computation.
+
+Each phase prints a **fingerprint**: a short hash of its key result numbers,
+so two runs can be compared at a glance.
+
+### 1.8 What finishes a phase
+A phase is done when all three are true:
+1. tests pass (backend and frontend),
+2. a small table or chart for it exists on the dashboard,
+3. a one-paragraph plain-English summary says what was built, what was
+   chosen, and what was deliberately left undone.
+
+---
+
+## 2. Repo map
+
+Reuse these. Do not create a parallel copy of any of them.
+
+| Role | Module |
+| --- | --- |
+| Data download | `backend/data_sources.py` — every external fetch (yfinance, news), caching, symbol search, `_yf_download` |
+| | `backend/arena/universe.py` — daily bars for screening (`fetch_daily`), per-process cache |
+| Indicators | `backend/indicators.py` — SMA, EMA, RSI, MACD, Bollinger, volatility (pure pandas) |
+| **Signals** | `backend/arena/strategies.py` — `enrich()` plus every `Strategy` class and `catalog()`. **The one signal module** (§1.2) |
+| Arena strategies | same file: ORB both ways, SuperTrend flip, VWAP band reversion, EMA pullback, gap fade, intraday momentum, VWAP reclaim, EMA crossover, RSI reversion, Bollinger breakout, legacy score, buy-at-open benchmark |
+| Cost model | `backend/arena/costs.py` (India) · `backend/arena/markets.py` (`CostModel`, `USCostModel`, `ForexCostModel`, `CryptoCostModel`) |
+| Paper fills | `backend/arena/engine.py` — `_maybe_enter`, `_exit_price`, `process_bar(s)`, position sizing, square-off |
+| Backtest | `backend/arena/engine.py::replay` — the live path over past sessions. (`backend/backtest.py` is **not** this: it is the watchlist predictor's 90-day weight refinement) |
+| Persistence | `backend/arena/store.py` — arena state per client id, Postgres with a JSON-file fallback · `backend/storage.py` — watchlist and intraday |
+| Scheduler | `.github/workflows/arena-runner.yml` + `backend/run_daily.py` — the scheduled runner that actually advances the arena · `backend/scheduler.py` — the in-process APScheduler · `backend/arena/runner.py` — which of the two is in charge (`ARENA_RUNNER`) |
+| Market calendar | `backend/market_calendar.py` + `backend/nse_holidays.json` (NSE) · `backend/arena/markets.py` (other venues) · `backend/timeutil.py` (one source of truth for time) |
+| Dashboard | `frontend/arena.js`, `frontend/app.js`, `frontend/index.html`, `frontend/style.css` |
+| API | `backend/main.py` — FastAPI routes, including `/api/arena/*` |
+
+---
+
+## 3. Conventions
+
+- **Tests.** Backend: `cd backend && python3.13 -m pytest -q`. Frontend:
+  `cd frontend && node --test app.helpers.test.js arena.helpers.test.js`.
+  Both must pass before a commit.
+- **Money.** Indian results are in rupees (`₹`). A market with another quote
+  currency carries its own symbol and an INR conversion; never mix them in
+  one column without labelling.
+- **Time.** Always IST for the NSE, via `timeutil` / `market_calendar`. Never
+  `datetime.now()` without a zone.
+- **Holidays.** `backend/nse_holidays.json` is the single source. Anything
+  needing the NSE calendar reads it rather than hard-coding dates.
+- **Comments** explain *why*, not *what*. The repo's existing comments are the
+  standard to match.
+- **No secrets in source**, in commits, or in logs.
+
+---
+
+## 4. Known rule violations
+
+Open gaps against §1, recorded so they are fixed deliberately rather than
+discovered by surprise.
+
+| Rule | Gap | Impact |
+| --- | --- | --- |
+| §1.3 next-open fills | `engine._maybe_enter` fills at the signal bar's close; signal exits likewise | Every Arena result to date is optimistic by up to one bar |
+| §1.4 2x cost | `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]` | No result is currently stress-tested at double cost |
+| §1.7 determinism | `fingerprint.py` exists and Phase 0 prints a line, but the simulation declares no seed and emits no fingerprint | Two Arena runs still cannot be compared mechanically |

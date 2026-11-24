@@ -70,7 +70,8 @@ function loadArenaHelpers() {
                       "storageWarning", "freshnessLine", "sessionLine",
                       "renderMarketTabs", "leverageWarning", "regulatoryNote",
                       "renderSlippageSweep", "presetButtons", "isValidClientId",
-                      "runnerLine", "streakText", "sparkline", "picksPanel"]) {
+                      "runnerLine", "streakText", "sparkline", "picksPanel",
+                      "systemPanel"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -564,4 +565,71 @@ test("a screened arena before its first screen says so rather than looking empty
     symbols_live: [], picked: null,
   });
   assert.ok(html.includes("has not run for this session yet"), html);
+});
+
+// ---------------------------------------------------------------------------
+// The system panel (Phase 0) - the compliance table on the dashboard
+// ---------------------------------------------------------------------------
+
+const SYS = {
+  compliance: { ok: 3, gap: 3, total: 6 },
+  rules: [
+    { id: "paper-only", rule: "Paper trading only", status: "ok",
+      detail: "No broker-order module exists." },
+    { id: "next-open-fills", rule: "Fill on the next bar's open", status: "gap",
+      detail: "Entries fill at the signal bar's close." },
+  ],
+  modules: [
+    { role: "Signals", modules: ["arena/strategies.py"], note: "one module" },
+  ],
+};
+
+test("the system panel renders nothing before the payload arrives", () => {
+  // It is fetched alongside the arena and is allowed to fail on its own;
+  // when it does, the rest of the dashboard must still render.
+  assert.strictEqual(arena.systemPanel(null), "");
+  assert.strictEqual(arena.systemPanel(undefined), "");
+  assert.strictEqual(arena.systemPanel({}), "");
+});
+
+test("a gap is marked GAP and an upheld rule OK", () => {
+  const html = arena.systemPanel(SYS);
+  const rows = html.split("<tr").slice(1);
+  const paper = rows.find((r) => r.includes("Paper trading only"));
+  const fills = rows.find((r) => r.includes("next bar"));
+  assert.ok(paper.includes("sys-ok") && paper.includes(">OK<"));
+  assert.ok(fills.includes("sys-gap") && fills.includes(">GAP<"));
+});
+
+test("the panel counts the open gaps in words", () => {
+  const html = arena.systemPanel(SYS);
+  assert.ok(html.includes("3 of 6 hard rules met"));
+  assert.ok(html.includes("3 open"));
+});
+
+test("no open gaps reads cleanly rather than saying '0 open'", () => {
+  const clean = { ...SYS, compliance: { ok: 6, gap: 0, total: 6 },
+                  rules: [SYS.rules[0]] };
+  const html = arena.systemPanel(clean);
+  assert.ok(html.includes("6 of 6 hard rules met"));
+  assert.ok(!html.includes("0 open"));
+});
+
+test("the module map lists each role's modules as code", () => {
+  const html = arena.systemPanel(SYS);
+  assert.ok(html.includes("<code>arena/strategies.py</code>"));
+  assert.ok(html.includes("Module map"));
+});
+
+test("rule text from the server is escaped, not injected", () => {
+  // The payload is ours, but it reaches the DOM through innerHTML; a rule
+  // detail is prose and must never be able to close a tag.
+  const nasty = { compliance: { ok: 0, gap: 1, total: 1 },
+                  rules: [{ id: "x", rule: "<img src=x onerror=1>",
+                            status: "gap", detail: "</td><script>bad()</script>" }],
+                  modules: [] };
+  const html = arena.systemPanel(nasty);
+  assert.ok(!html.includes("<img"));
+  assert.ok(!html.includes("<script>"));
+  assert.ok(html.includes("&lt;img"));
 });

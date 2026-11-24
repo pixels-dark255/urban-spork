@@ -886,3 +886,39 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 .arena-spark i.up { background: var(--brass); }
 .arena-spark i.down { background: var(--signal-red); }
 .arena-spark i.flat { background: var(--hairline); }
+
+/* ---------- System panel (Phase 0) ---------- */
+/* A gap is not a warning the user can dismiss: it says the numbers above
+   are measured under a rule the system does not keep yet. So it is tinted
+   like the loss colour, not like a hint. */
+.sys-table td { vertical-align: top; }
+.sys-status {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  white-space: nowrap;
+}
+.sys-ok .sys-status { color: #3c9a5c; }
+.sys-gap .sys-status { color: var(--signal-red); }
+.sys-gap { background: rgba(193, 68, 60, 0.07); }
+.sys-detail {
+  font-family: var(--font-body);
+  font-size: 12px;
+  color: var(--mist);
+  line-height: 1.5;
+  white-space: normal;
+  min-width: 220px;
+}
+.sys-detail code {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--bone);
+  background: var(--paper-raised);
+  border-radius: 4px;
+  padding: 1px 5px;
+  margin-right: 3px;
+  display: inline-block;
+}
+.sys-modules { margin-top: 10px; border-top: none; padding-top: 0; }
+.sys-modules summary { font-size: 13px; font-weight: 500; color: var(--mist); }

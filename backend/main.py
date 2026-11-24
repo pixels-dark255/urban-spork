@@ -10,6 +10,7 @@ from pydantic import BaseModel
 
 import jsonsafe
 import market_calendar
+import system_map
 import storage
 import timeutil
 from data_sources import (
@@ -635,6 +636,14 @@ def api_arena_backtest(req: ArenaBacktestRequest, request: Request,
 @app.get("/api/arena/backtest")
 def api_arena_last_backtest(request: Request, market: str | None = None):
     return {"backtest": arena_service.last_backtest(arena_key(request, market))}
+
+
+@app.get("/api/system")
+def api_system():
+    """What the system is made of, and which of its own hard rules it does
+    not yet meet. Read-only and computed from one declared map, so the
+    dashboard and AGENTS.md cannot disagree about open gaps."""
+    return system_map.view()
 
 
 # ---------- Serve the PWA frontend ----------
