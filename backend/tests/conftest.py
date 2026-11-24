@@ -100,7 +100,11 @@ def fake_yf(monkeypatch):
     responses: dict = {}
     default = {"frame": None}
 
-    def fake_download(symbol, period, interval):
+    def fake_download(symbol, period, interval, timeout=None, flatten=True):
+        # Mirrors data_sources._yf_download exactly. A stub with a narrower
+        # signature passes until the real one grows an argument, and then
+        # fails everywhere at once for a reason that has nothing to do with
+        # the thing under test.
         calls.append((symbol, period, interval))
         if (symbol, period, interval) in responses:
             return responses[(symbol, period, interval)].copy()

@@ -35,7 +35,7 @@ def test_empty_frames_are_never_cached(fake_yf, monkeypatch):
     import data_sources
 
     monkeypatch.setattr(data_sources, "_yf_download",
-                        lambda *a: fake_yf.calls.append(a) or pd.DataFrame())
+                        lambda *a, **kw: fake_yf.calls.append(a) or pd.DataFrame())
     for _ in range(3):
         data_sources._yf_download_cached("EMPTY.NS", "5d", "5m")
     assert len(fake_yf.calls) == 3

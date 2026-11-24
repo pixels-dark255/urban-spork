@@ -29,6 +29,9 @@ TABLE = "intraday_bars"
 # error, it just returns what it has.
 FETCH_PERIOD = {"5m": "1mo", "15m": "1mo", "1h": "6mo", "1d": "2y"}
 
+# Bounded, so one unanswered symbol cannot eat the job's whole budget.
+FETCH_TIMEOUT = 45.0
+
 DDL = """
 CREATE TABLE IF NOT EXISTS intraday_bars (
     symbol    TEXT        NOT NULL,
@@ -181,7 +184,8 @@ def run(cfg: dict | None = None, bar_sizes: list[str] | None = None) -> dict:
         for symbol in sorted(cfg["study_tickers"]):
             try:
                 frame = data_sources._yf_download(
-                    symbol, FETCH_PERIOD.get(bar_size, "1mo"), bar_size)
+                    symbol, FETCH_PERIOD.get(bar_size, "1mo"), bar_size,
+                    timeout=FETCH_TIMEOUT)
                 total += append(symbol, bar_size, frame)
             except Exception as exc:
                 failed["%s/%s" % (symbol, bar_size)] = "%s: %s" % (

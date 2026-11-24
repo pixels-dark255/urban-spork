@@ -222,13 +222,20 @@ def clear_caches():
         _weather_cache.clear()
 
 
-def _yf_download_cached(symbol: str, period: str, interval: str) -> pd.DataFrame:
+def _yf_download_cached(symbol: str, period: str, interval: str,
+                        timeout: float | None = None) -> pd.DataFrame:
     """Cached front door to _yf_download.
 
     Empty frames are never cached: an empty result usually means a transient
     Yahoo failure, and caching it would turn a blip into minutes of a blank
     screen. Callers get a copy so a mutation downstream cannot corrupt the
     cached frame for everyone else.
+
+    `timeout` is not part of the cache key: it bounds how long THIS call
+    may wait, and says nothing about the identity of the data. A batch job
+    fetching dozens of symbols should always pass one. Without it a single
+    unanswered request blocks the whole run - which is exactly how the first
+    bar-archive run spent fifteen minutes on one symbol and was killed.
     """
     key = (symbol, period, interval)
     ttl = _CACHE_TTL_BY_INTERVAL.get(interval, _DEFAULT_CACHE_TTL)
@@ -236,7 +243,7 @@ def _yf_download_cached(symbol: str, period: str, interval: str) -> pd.DataFrame
     if hit is not None:
         return hit.copy()
 
-    frame = _yf_download(symbol, period, interval)
+    frame = _yf_download(symbol, period, interval, timeout=timeout)
     if frame is not None and not frame.empty:
         _cache_put(_price_cache, key, frame)
         return frame.copy()
@@ -378,10 +385,14 @@ def price_at_time(yf_symbol: str, target_at, made_at=None) -> float | None:
     return None
 
 
-def fetch_daily_history(yf_symbol: str, period: str = "2y") -> pd.DataFrame:
+def fetch_daily_history(yf_symbol: str, period: str = "2y",
+                        timeout: float | None = None) -> pd.DataFrame:
     """Single fetch of long daily history, used by the backtest engine
-    (which then slices it locally rather than hitting Yahoo 90+ times)."""
-    return _yf_download_cached(yf_symbol, period, "1d")
+    (which then slices it locally rather than hitting Yahoo 90+ times).
+
+    Batch callers should pass a timeout; see _yf_download_cached.
+    """
+    return _yf_download_cached(yf_symbol, period, "1d", timeout=timeout)
 
 
 def fetch_company_news(company_name: str, max_articles: int = 15) -> list[dict]:

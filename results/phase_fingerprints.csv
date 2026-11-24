@@ -1,2 +1,4 @@
 phase,date_run,sha,notes
 0,2026-11-24,60efacae7150,"repo map + AGENTS.md + .env.example; 3 of 6 hard rules met"
+0,2026-11-24,082821143177,"settings block + ticker check + bar archive; 3 of 6 hard rules met"
+1,2026-11-24,4320662e1e5b,"asset study, 11 of 12 study tickers (TATAMOTORS.NS delisted), train 2022-01-01..2024-12-31"

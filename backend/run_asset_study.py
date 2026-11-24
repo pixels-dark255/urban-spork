@@ -20,13 +20,15 @@ EXIT_NO_DATA = 3
 # Daily bars back far enough to cover the training window plus the 200-day
 # warm-up the labels need before the window even opens.
 FETCH_PERIOD = "5y"
+FETCH_TIMEOUT = 45.0
 
 
 def fetch(tickers: list[str], period: str = FETCH_PERIOD) -> tuple[dict, dict]:
     frames, failed = {}, {}
     for ticker in sorted(tickers):
         try:
-            frame = data_sources.fetch_daily_history(ticker, period=period)
+            frame = data_sources.fetch_daily_history(
+                ticker, period=period, timeout=FETCH_TIMEOUT)
         except Exception as exc:
             failed[ticker] = "%s: %s" % (type(exc).__name__, exc)
             continue

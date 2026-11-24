@@ -107,3 +107,15 @@ def test_archiving_without_a_database_refuses_loudly(monkeypatch):
     monkeypatch.setattr(bar_archive.storage, "_pg_pool", None)
     with pytest.raises(bar_archive.NoDatabase, match="nowhere durable"):
         bar_archive.ensure_table()
+
+
+def test_every_bar_fetch_is_bounded_by_a_timeout(monkeypatch):
+    """One symbol that never answers must not cost the whole run."""
+    seen = []
+    monkeypatch.setattr(bar_archive, "ensure_table", lambda: None)
+    monkeypatch.setattr(bar_archive, "append", lambda *a: 0)
+    monkeypatch.setattr(bar_archive, "coverage", lambda: {})
+    monkeypatch.setattr(bar_archive.data_sources, "_yf_download",
+                        lambda sym, period, size, timeout=None: seen.append(timeout) or frame([1.0]))
+    bar_archive.run(CFG, ["5m"])
+    assert seen and all(t == bar_archive.FETCH_TIMEOUT for t in seen)

@@ -19,13 +19,20 @@ import settings
 PROBE_PERIOD = "1mo"
 MIN_BARS = 3
 
+# Every probe is bounded. An unanswered request is indistinguishable from a
+# slow one until it has already cost the whole job: the first archive run
+# sat on a single symbol for fifteen minutes and was killed by the step
+# timeout, having checked nothing.
+PROBE_TIMEOUT = 20.0
+
 
 def probe(ticker: str) -> dict:
     """One symbol's result: resolved, bars seen, last close, and why not."""
     row = {"ticker": ticker, "ok": False, "bars": 0,
            "last_close": None, "last_date": None, "reason": ""}
     try:
-        frame = data_sources.fetch_daily_history(ticker, period=PROBE_PERIOD)
+        frame = data_sources.fetch_daily_history(
+            ticker, period=PROBE_PERIOD, timeout=PROBE_TIMEOUT)
     except Exception as exc:                      # network, parse, anything
         row["reason"] = "%s: %s" % (type(exc).__name__, exc)
         return row

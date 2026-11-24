@@ -185,6 +185,8 @@ discovered by surprise.
 | --- | --- | --- |
 | §1.3 next-open fills | `engine._maybe_enter` fills at the signal bar's close; signal exits likewise | Every Arena result to date is optimistic by up to one bar |
 | §1.4 2x cost | `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]` | No result is currently stress-tested at double cost |
+| `TATAMOTORS.NS` is dead | Yahoo answers "No data found, symbol may be delisted". It is still in `study_tickers` AND in the Arena's `default_symbols` in `arena/markets.py` | Phase 1 studied 11 tickers, not 12. The live Arena has been trying to trade a symbol that returns nothing. Not replaced by guesswork: the successor symbol is a deliberate choice |
+| Overlapping events | A new 50-day high can occur on consecutive days, so one trend contributes many "events". Phase 1's counts are not independent observations | A label with 86 events may rest on far fewer distinct episodes, so the 6 / 12 thresholds are weaker evidence than they look |
 | Folder naming | `backend/data/` holds **live** JSON state despite the name, which is backwards from the `data/` (frozen research) vs `data_live/` convention | Confusing; moving it would restart the running store, so it is flagged rather than renamed mid-flight |
 | Top-level `tests/` | Not created. `backend/tests/` already holds the suite; a second empty `tests/` at the root would be a trap for whoever adds the next test | None, as long as nobody adds one |
 | Arena is UNPROVEN | The Arena trades 5m bars, and Yahoo keeps ~60 days of those | Every Arena result is labelled UNPROVEN until the archive has 12 months |
