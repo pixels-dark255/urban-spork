@@ -124,6 +124,12 @@ a ticker to this list when you want it studied.
 `CASH` in `safe_candidates` is deliberate and is not a ticker. It means
 holding rupees, and it never resolves on a data source.
 
+**The check.** `cd backend && python3.13 -m settings` prints the parsed
+settings, resolves every ticker, lists the open hard rules and prints the
+phase fingerprint. Add `--offline` to skip the ticker probe where there is
+no network. The same probe runs in CI on the Bar archive workflow, which is
+the only place with reliable access to the data source.
+
 ---
 
 ## 3. Repo map

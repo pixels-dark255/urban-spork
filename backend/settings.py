@@ -295,5 +295,19 @@ if __name__ == "__main__":
         result = ticker_check.check(cfg)
         print(ticker_check.report(result))
         values["unresolved"] = len(result["unresolved"])
+    # The phase's fingerprint covers everything the phase decided: the
+    # settings, how many tickers failed to resolve, and which hard rules
+    # are met. One line, so two runs can be compared at a glance.
+    import system_map
+
+    for rule in system_map.RULES:
+        values["rule:" + rule["id"]] = rule["status"]
+    counts = system_map.compliance()
+    values["rules_ok"], values["rules_gap"] = counts["ok"], counts["gap"]
+
+    print("Hard rules: %d met, %d open" % (counts["ok"], counts["gap"]))
+    for rule in system_map.RULES:
+        if rule["status"] == system_map.GAP:
+            print("  GAP  %s - %s" % (rule["rule"], rule["detail"]))
     print()
     print(_fp.line(0, values))

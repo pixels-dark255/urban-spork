@@ -440,8 +440,8 @@ function unprovenBanner(sys) {
   const live = bars.find((b) => b.used_by === "Strategy Arena");
   if (!live || !live.unproven) return "";
   return `<div class="arena-warn">
-    <b>${escapeHtml(live.label)}</b> &mdash; these results run on ${escapeHtml(live.bar_size)} bars,
-    and only ${escapeHtml(live.why)} of history. Treat the table below as a work in progress, not a verdict.
+    <b>${escapeHtml(live.label)}</b>. These results run on ${escapeHtml(live.bar_size)} bars,
+    with ${escapeHtml(live.why)}. Treat the table below as a work in progress, not a verdict.
     The bar archive is accumulating history daily; this notice clears itself once there is enough.
   </div>`;
 }
