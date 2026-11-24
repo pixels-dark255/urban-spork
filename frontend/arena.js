@@ -441,7 +441,7 @@ function unprovenBanner(sys) {
   if (!live || !live.unproven) return "";
   return `<div class="arena-warn">
     <b>${escapeHtml(live.label)}</b> &mdash; these results run on ${escapeHtml(live.bar_size)} bars,
-    and only ${escapeHtml(live.why)}. Treat the table below as a work in progress, not a verdict.
+    and only ${escapeHtml(live.why)} of history. Treat the table below as a work in progress, not a verdict.
     The bar archive is accumulating history daily; this notice clears itself once there is enough.
   </div>`;
 }
