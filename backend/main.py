@@ -654,6 +654,15 @@ def api_asset_study():
     return {"ok": True, "study": result}
 
 
+@app.get("/api/ai")
+def api_ai():
+    """Phase 7: the AI layer's replay, and whether it may be turned on."""
+    result = research_store.load("7")
+    if not result:
+        return {"ok": False, "reason": "The AI layer has not been replayed yet."}
+    return {"ok": True, "ai": result}
+
+
 @app.get("/api/harness")
 def api_harness():
     """Phase 6: the last harness check - steps, risk limits, rerun safety."""

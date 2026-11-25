@@ -12,3 +12,7 @@ backend/data/
 # Secrets
 .env
 .env.local
+
+# Recorded model calls are run artefacts, not source. The example
+# document file is tracked; the calls themselves are not.
+ai_calls/call-*.json

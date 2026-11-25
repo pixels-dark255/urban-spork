@@ -222,9 +222,15 @@ def summarise(equity: pd.Series, capital: float) -> dict:
         "return_pct": round(total, 3),
         "cagr_pct": round(cagr, 3),
         "max_drawdown_pct": round(dd, 3),
-        # The number that matters: return earned per unit of pain. A
-        # strategy returning 20% with a 40% drawdown is worse than one
-        # returning 10% with a 5% drawdown, whatever the headline says.
-        "return_over_drawdown": round(abs(cagr / dd), 3) if dd else None,
+        # Return earned per unit of pain. A strategy returning 20% with a
+        # 40% drawdown is worse than one returning 10% with a 5%, whatever
+        # the headline says.
+        #
+        # Only the DRAWDOWN is made positive. Taking abs() of the whole
+        # ratio was a real bug: it made a loss of 5.7% against a 13.5%
+        # drawdown score 0.198, better than a loss of 1.9% against 11.2%,
+        # so the worse result ranked first. A losing strategy must score
+        # negative here, or this number rewards losing bigger.
+        "return_over_drawdown": round(cagr / abs(dd), 3) if dd else None,
         "final": round(final, 2),
     }

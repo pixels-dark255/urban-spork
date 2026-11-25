@@ -73,7 +73,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -1159,4 +1159,75 @@ test("before the harness has run the panel says so", () => {
   assert.ok(arena.harnessPanel({ ok: false, reason: "has not been run yet" })
             .includes("has not been run yet"));
   assert.strictEqual(arena.harnessPanel(null), "");
+});
+
+// ---------------------------------------------------------------------------
+// AI layer (Phase 7)
+// ---------------------------------------------------------------------------
+
+const AI = {
+  ok: true,
+  ai: {
+    label: "replay, not a clean test", demo_documents: true,
+    recorded_calls: 6, mask_leaks: [],
+    core: { return_pct: -1.863, max_drawdown_pct: -11.201, return_over_drawdown: -0.077 },
+    visible: { return_pct: -5.727, max_drawdown_pct: -13.539, return_over_drawdown: -0.198 },
+    masked: { return_pct: -5.727, max_drawdown_pct: -13.539, return_over_drawdown: -0.198 },
+    decisions: [{ effective_from: "2024-04-05", call: "safe_for_10d",
+                  reason: "language tightened" }],
+    verdict: { enable: false, masked_beat_core: false,
+               reasons: ["the core this layer would modulate failed its own gates"] },
+  },
+};
+
+test("the panel leads with OFF rather than burying it", () => {
+  const html = arena.aiPanel(AI);
+  assert.ok(html.indexOf("OFF") < html.indexOf("Core alone"));
+});
+
+test("the replay caveat travels with the table", () => {
+  // A replay of documents a model was trained on is not evidence.
+  assert.ok(arena.aiPanel(AI).includes("replay, not a clean test"));
+  assert.ok(arena.aiPanel(AI).includes("only the masked run counts"));
+});
+
+test("synthetic documents are called out", () => {
+  assert.ok(arena.aiPanel(AI).includes("synthetic demo documents"));
+  const real = JSON.parse(JSON.stringify(AI));
+  real.ai.demo_documents = false;
+  assert.ok(!arena.aiPanel(real).includes("synthetic demo documents"));
+});
+
+test("the visible run is marked as not counting", () => {
+  // Match the row label, not the prose above the table, which also
+  // contains the phrase "dates visible".
+  const row = arena.aiPanel(AI).split("<tr")
+    .find((r) => r.includes(">+ AI, dates visible<"));
+  assert.ok(row.includes("does not count"));
+});
+
+test("every reason the layer is off is listed", () => {
+  assert.ok(arena.aiPanel(AI).includes("failed its own gates"));
+  assert.ok(arena.aiPanel(AI).includes("Not turned on because"));
+});
+
+test("an enabled layer shows no blocking reasons", () => {
+  const on = JSON.parse(JSON.stringify(AI));
+  on.ai.verdict = { enable: true, masked_beat_core: true, reasons: [] };
+  const html = arena.aiPanel(on);
+  assert.ok(html.includes("ENABLED"));
+  assert.ok(!html.includes("Not turned on because"));
+});
+
+test("a masking leak is named rather than glossed over", () => {
+  const leaky = JSON.parse(JSON.stringify(AI));
+  leaky.ai.mask_leaks = ["2024", "March"];
+  assert.ok(arena.aiPanel(leaky).includes("2024, March"));
+  assert.ok(arena.aiPanel(AI).includes("nothing that could date"));
+});
+
+test("before the replay has run the panel says so", () => {
+  assert.ok(arena.aiPanel({ ok: false, reason: "not been replayed yet" })
+            .includes("not been replayed yet"));
+  assert.strictEqual(arena.aiPanel(null), "");
 });

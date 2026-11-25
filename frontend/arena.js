@@ -16,6 +16,7 @@ let arenaProof = null;
 let arenaFunnel = null;
 let arenaSwing = null;
 let arenaHarness = null;
+let arenaAi = null;
 
 // Which market's arena is on screen. One arena per market, so every call
 // carries it; the server keys storage by it and defaults to India.
@@ -81,7 +82,7 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes, harnessRes] = await Promise.all([
+    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes, harnessRes, aiRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
       apiFetch(`${API}/api/system`).catch(() => null),
@@ -90,6 +91,7 @@ async function loadArena(silent = false) {
       apiFetch(`${API}/api/funnel`).catch(() => null),
       apiFetch(`${API}/api/swing`).catch(() => null),
       apiFetch(`${API}/api/harness`).catch(() => null),
+      apiFetch(`${API}/api/ai`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
@@ -113,6 +115,9 @@ async function loadArena(silent = false) {
     }
     if (harnessRes && harnessRes.ok) {
       arenaHarness = await harnessRes.json().catch(() => null);
+    }
+    if (aiRes && aiRes.ok) {
+      arenaAi = await aiRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -510,6 +515,71 @@ function settingsTable(sys) {
             ${row("Engine candidates", (st.engine_candidates || []).join(", "))}
             ${row("Safe candidates", (st.safe_candidates || []).join(", "))}
           </tbody>
+        </table>
+      </div>
+    </details>`;
+}
+
+// ---------- AI layer (Phase 7) ----------
+// Off, and the panel says why in the first line rather than burying it.
+// The headline number here is a replay, and a replay of documents a model
+// was trained on is not evidence, so the caveat travels with the table.
+function aiPanel(payload) {
+  if (!payload) return "";
+  if (!payload.ok) {
+    return `
+      <div class="section-heading"><span class="eyebrow">phase 7</span>
+        <h2 style="font-size:17px;">AI layer</h2></div>
+      <p class="arena-hint">${escapeHtml(payload.reason || "Not run yet.")}</p>`;
+  }
+  const a = payload.ai || {};
+  const v = a.verdict || {};
+  const row = (label, m, note) => `
+      <tr class="${note === "only this one counts" ? "sys-ok" : ""}">
+        <td class="arena-name">${escapeHtml(label)}</td>
+        <td class="study-num">${m && m.return_pct != null ? pct3(m.return_pct) : "n/a"}</td>
+        <td class="study-num neg">${m && m.max_drawdown_pct != null ? pct3(m.max_drawdown_pct) : "n/a"}</td>
+        <td class="study-num">${m && m.return_over_drawdown != null ? m.return_over_drawdown : "n/a"}</td>
+        <td class="sys-detail">${escapeHtml(note || "")}</td>
+      </tr>`;
+  const decisions = (a.decisions || []).map((d) => `
+      <tr>
+        <td class="arena-name">${escapeHtml(d.effective_from)}</td>
+        <td><span class="study-chip study-off">${escapeHtml(d.call)}</span></td>
+        <td class="sys-detail">${escapeHtml(d.reason || "")}</td>
+      </tr>`).join("");
+  const reasons = (v.reasons || []).map((r) => `<li>${escapeHtml(r)}</li>`).join("");
+
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 7</span>
+      <h2 style="font-size:17px;">AI layer</h2></div>
+    <div class="arena-warn">
+      <b>${v.enable ? "ENABLED" : "OFF"}</b> &mdash; ${escapeHtml(a.label || "")}.
+      ${a.demo_documents ? "Run on <b>synthetic demo documents</b>: no real policy statement was supplied." : ""}
+    </div>
+    <p class="arena-hint">The layer may touch the core only, never intraday or sleeves.
+      The replay runs twice; with dates visible a model may be recalling what the market did
+      next rather than reading the document, so <b>only the masked run counts</b>.</p>
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Run</th><th>Return</th><th>Max DD</th><th>Ret/DD</th><th></th></tr></thead>
+        <tbody>
+          ${row("Core alone", a.core, "the thing to beat")}
+          ${row("+ AI, dates visible", a.visible, "does not count")}
+          ${row("+ AI, dates masked", a.masked, "only this one counts")}
+        </tbody>
+      </table>
+    </div>
+    <p class="arena-hint">Masking left ${(a.mask_leaks || []).length === 0
+      ? "nothing that could date the document" : escapeHtml((a.mask_leaks || []).join(", "))}.
+      ${a.recorded_calls || 0} call(s) recorded, append only.</p>
+    ${reasons ? `<div class="arena-warn"><b>Not turned on because:</b><ul class="study-lines">${reasons}</ul></div>` : ""}
+    <details class="arena-settings sys-modules">
+      <summary>The calls it made</summary>
+      <div class="table-scroll">
+        <table class="backtest-table sys-table">
+          <thead><tr><th>From</th><th>Call</th><th>Reason</th></tr></thead>
+          <tbody>${decisions}</tbody>
         </table>
       </div>
     </details>`;
@@ -1068,6 +1138,8 @@ function renderArena(data) {
     ${swingPanel(arenaSwing)}
 
     ${harnessPanel(arenaHarness)}
+
+    ${aiPanel(arenaAi)}
 
     ${systemPanel(arenaSystem)}
 

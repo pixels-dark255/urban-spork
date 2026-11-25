@@ -71,6 +71,11 @@ MODULES = [
                  "harness/alerts.py", ".github/workflows/harness.yml"],
      "note": "Phase 6. Lock, trading day, reconcile, fresh data, plan, "
              "risk gate, paper fills, alerts. Any step may stop the run."},
+    {"role": "AI layer",
+     "modules": ["ai/calls.py", "ai/mask.py", "ai/judge.py", "ai/replay.py"],
+     "note": "Phase 7, OFF. Core only; four calls; recorded before it can "
+             "act; enabling needs clean hard rules, a core that passed, "
+             "and a masked replay that beat it."},
     {"role": "Settings",
      "modules": ["settings.py", "AGENTS.md"],
      "note": "Parsed from AGENTS.md §2. No phase hardcodes a number."},

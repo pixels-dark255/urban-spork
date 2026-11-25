@@ -370,3 +370,24 @@ def test_the_swing_package_does_not_touch_the_arena_engine():
 
 
 import pathlib      # noqa: E402  (used above)
+
+
+def test_a_bigger_loss_never_outranks_a_smaller_one():
+    """Regression: return over drawdown used to take abs() of the ratio.
+
+    The Phase 7 replay surfaced it. A loss of 5.73% against a 13.54%
+    drawdown scored 0.198 while a loss of 1.86% against 11.20% scored
+    0.077, so the worse result ranked first and the number rewarded
+    losing bigger.
+    """
+    worse = round(-5.727 / abs(-13.539), 3)
+    better = round(-1.863 / abs(-11.201), 3)
+    assert better > worse
+    assert worse < 0 and better < 0
+
+
+def test_a_losing_strategy_scores_negative():
+    equity = pd.Series([100.0, 120.0, 60.0, 80.0])
+    out = core.summarise(equity, 100.0)
+    assert out["return_pct"] < 0
+    assert out["return_over_drawdown"] < 0

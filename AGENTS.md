@@ -155,6 +155,7 @@ Reuse these. Do not create a parallel copy of any of them.
 | Fingerprint | `backend/fingerprint.py` — one comparable line per phase |
 | Regime | `backend/signals/regime.py` — trend and vol per bar; one definition, shared with the study |
 | Rule spec | `rules.yaml` + `backend/signals/rules.py` — the 7-part schema. `python3.13 -m signals.rules` prints the table |
+| AI layer | `backend/ai/` + `ai_calls/` — Phase 7, **off**. `python -m ai.cli` runs the two replays and prints the enable verdict. Core only; four calls; every call recorded before it can act |
 | Harness | `backend/harness/` + `.github/workflows/harness.yml` — Phase 6. `python -m harness.cli` prints the dry run, the risk limits and the rerun check. Paper only; the trust ladder's top rung writes a paper fill and nothing else |
 | Swing account | `backend/swing/` — Phase 5. `python -m swing.cli` runs the core rotation, the quarterly picker and the sleeves. Delivery costs, separate from the Arena's intraday book |
 | Funnel | `backend/funnel/` + `bench.yaml` — Phase 4's seven gates. `python -m funnel.cli` runs them all; `python -m tools.test_idea <idea.yaml>` runs one |
@@ -200,6 +201,7 @@ discovered by surprise.
 
 | Rule | Gap | Impact |
 | --- | --- | --- |
+| AI layer cannot be enabled | Phase 7 (fingerprint `e8a5000d1c16`). Three conditions must hold and none does: six §1 rules are open, the core failed its own gates, and the masked replay did not beat core alone | The layer is built, tested and sealed off. `replay.may_enable` refuses even when the replay is flattering, because improving a core that failed its gates proves nothing worth acting on |
 | §1.3 next-open fills | `engine._maybe_enter` fills at the signal bar's close; signal exits likewise | Every Arena result to date is optimistic by up to one bar |
 | §1.4 2x cost | `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]` | No result is currently stress-tested at double cost |
 | Core rotation fails its gates | Phase 5 on real bars (fingerprint `caaf2427ec36`): engine `ITBEES.NS`, safe `GOLDBEES.NS`, SMA200 returns **+0.70%/yr against a −28.52% drawdown** (ret/dd 0.03). **Neighbours FAIL** — SMA150 loses 8.06% while SMA100 makes 28% and SMA250 makes 59% — and **2x cost FAILS** at −5.73% | The locked window was deliberately **not** spent: the idea is already out, and §1.6 allows one run per idea. Switching to SMA250 because it scored best is forbidden by §1.5 and would be a new idea needing the full funnel |
