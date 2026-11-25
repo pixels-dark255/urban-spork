@@ -654,6 +654,20 @@ def api_asset_study():
     return {"ok": True, "study": result}
 
 
+@app.get("/api/proof")
+def api_proof():
+    """Phase 3: whether the backtester has been shown to tell the truth.
+
+    Read-only. The proof is produced by run_proof.py; this serves what it
+    stored, so the dashboard shows a measured result rather than a claim.
+    """
+    result = research_store.load("3")
+    if not result:
+        return {"ok": False, "reason": "The backtester proof has not been "
+                                       "run yet. Trigger the Research workflow."}
+    return {"ok": True, "proof": result}
+
+
 @app.get("/api/system")
 def api_system():
     """What the system is made of, and which of its own hard rules it does

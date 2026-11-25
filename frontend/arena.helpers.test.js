@@ -73,7 +73,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -859,4 +859,63 @@ test("the panel says the filters are not wired up yet", () => {
 test("no rule spec means no panel, not an empty table", () => {
   assert.strictEqual(arena.ruleTable(null), "");
   assert.strictEqual(arena.ruleTable({ strategies: [] }), "");
+});
+
+// ---------------------------------------------------------------------------
+// Backtester proof (Phase 3)
+// ---------------------------------------------------------------------------
+
+const PROOF = {
+  ok: true,
+  proof: {
+    fingerprint: "19aa0e3a25da",
+    bands: { planted_min: 0.6, planted_max: 1.2, noise_tolerance: 0.15 },
+    planted: { avg_net_pct: 0.832, avg_gross_pct: 0.982, trades: 341 },
+    noise: { avg_net_pct: -0.206, avg_gross_pct: -0.018, trades: 341 },
+    noise_expected: -0.188,
+    results: { planted_ok: true, noise_ok: true, guard_ok: true,
+               strategies_ok: true, samecode_ok: true },
+    guard: { failed: [] },
+    samecode: { replay_trades: 113, live_trades: 113, match: true },
+  },
+};
+
+test("the measured number is shown beside the band it had to land in", () => {
+  // "It passed" is a claim. The number next to the band is checkable.
+  const html = arena.proofPanel(PROOF);
+  assert.ok(html.includes("+0.832%"));
+  assert.ok(html.includes("0.6% to 1.2%"));
+});
+
+test("the panel says the bands were written first", () => {
+  assert.ok(arena.proofPanel(PROOF).includes("written before the backtester was built"));
+});
+
+test("a failing check is marked FAIL, not quietly omitted", () => {
+  const bad = JSON.parse(JSON.stringify(PROOF));
+  bad.proof.results.noise_ok = false;
+  bad.proof.noise.avg_net_pct = 0.4;
+  const row = arena.proofPanel(bad).split("<tr").find((r) => r.includes("Pure noise"));
+  assert.ok(row.includes("sys-gap") && row.includes("FAIL"));
+  assert.ok(row.includes("+0.400%"));
+});
+
+test("a strategy caught reading the future is named and shown as disabled", () => {
+  const bad = JSON.parse(JSON.stringify(PROOF));
+  bad.proof.guard.failed = ["gap_fade"];
+  bad.proof.results.strategies_ok = false;
+  const html = arena.proofPanel(bad);
+  assert.ok(html.includes("Disabled for reading the future: gap_fade"));
+  assert.ok(html.includes("1 failed"));
+});
+
+test("percentages carry a sign so a loss cannot be misread", () => {
+  assert.strictEqual(arena.pct3(0.832), "+0.832%");
+  assert.strictEqual(arena.pct3(-0.206), "-0.206%");
+});
+
+test("before the proof has run the panel says so", () => {
+  const html = arena.proofPanel({ ok: false, reason: "has not been run yet" });
+  assert.ok(html.includes("has not been run yet"));
+  assert.strictEqual(arena.proofPanel(null), "");
 });

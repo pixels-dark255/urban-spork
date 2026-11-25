@@ -49,6 +49,13 @@ MODULES = [
      "modules": ["rules.yaml", "signals/rules.py"],
      "note": "The 7-part schema. Wraps arena/strategies.py; a test refuses "
              "to let the two drift apart."},
+    {"role": "Proof",
+     "modules": ["validation/synthetic.py", "validation/lookahead.py",
+                 "validation/arena_guard.py", "validation/samecode.py",
+                 "run_proof.py"],
+     "note": "Phase 3. A planted edge, pure noise, a truncation guard with "
+             "a deliberate cheat as its control, and replay vs the live "
+             "drip-feed."},
     {"role": "Settings",
      "modules": ["settings.py", "AGENTS.md"],
      "note": "Parsed from AGENTS.md §2. No phase hardcodes a number."},

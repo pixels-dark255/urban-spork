@@ -146,3 +146,72 @@ def test_the_guard_is_deterministic():
     first = lookahead.check(synthetic.cheating_signal, frame, **kwargs)
     second = lookahead.check(synthetic.cheating_signal, frame, **kwargs)
     assert first["mismatches"] == second["mismatches"]
+
+
+# ------------------------------------- 4. the guard on the real strategies
+
+@pytest.fixture(scope="module")
+def guard_report():
+    from validation import arena_guard
+    return arena_guard.run(sessions=12, dates=GUARD_DATES, seed=SEED)
+
+
+def test_the_guard_can_fail(guard_report):
+    """The control. Without this, "every strategy passed" is not evidence.
+
+    A harness that cannot detect a cheat would report a clean sweep on a
+    codebase riddled with look-ahead, and the clean sweep would be
+    believed.
+    """
+    assert guard_report["control"]["caught"], (
+        "a signal built from a session high that includes future bars "
+        "passed the guard, so the guard proves nothing")
+
+
+def test_no_arena_strategy_reads_the_future(guard_report):
+    failed = guard_report["failed"]
+    assert failed == [], (
+        "these strategies changed their signal when the future was "
+        "removed and must be disabled: %s" % failed)
+
+
+def test_every_strategy_was_actually_checked(guard_report):
+    from arena.strategies import STRATEGIES
+    checked = {s["id"] for s in guard_report["strategies"]}
+    assert checked == set(STRATEGIES)
+    for row in guard_report["strategies"]:
+        assert row["checked"] > 0, "%s was sampled zero times" % row["id"]
+
+
+def test_the_regime_layer_is_causal(guard_report):
+    assert guard_report["regime"]["ok"]
+    assert guard_report["regime"]["checked"] > 0
+
+
+# ------------------------------------------------ 5. the same-code proof
+
+@pytest.fixture(scope="module")
+def same_code():
+    from arena import markets as markets_mod
+    from arena.strategies import enrich
+    from validation import arena_guard, samecode
+
+    bars = arena_guard.intraday_bars(sessions=10, seed=SEED)
+    enriched = {"TEST.NS": enrich(bars, market=markets_mod.get("nse"))}
+    config = {"market": "nse", "symbols": ["TEST.NS"]}
+    return samecode.compare(config, enriched, days=10)
+
+
+def test_the_two_paths_produce_the_same_trades(same_code):
+    assert same_code["match"], (
+        "replay and the live drip-feed disagree: %r" % same_code["differences"][:2])
+
+
+def test_the_proof_actually_traded_something(same_code):
+    # Two paths that both do nothing also "match". That is not a proof.
+    assert same_code["replay_trades"] > 0
+    assert same_code["replay_trades"] == same_code["live_trades"]
+
+
+def test_the_proof_covered_several_sessions(same_code):
+    assert same_code["sessions"] >= 5

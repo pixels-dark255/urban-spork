@@ -155,6 +155,7 @@ Reuse these. Do not create a parallel copy of any of them.
 | Fingerprint | `backend/fingerprint.py` — one comparable line per phase |
 | Regime | `backend/signals/regime.py` — trend and vol per bar; one definition, shared with the study |
 | Rule spec | `rules.yaml` + `backend/signals/rules.py` — the 7-part schema. `python3.13 -m signals.rules` prints the table |
+| Proof | `backend/validation/` + `backend/run_proof.py` — Phase 3. `python3.13 run_proof.py` prints the three synthetic results against the bands, the guard per strategy, and the fingerprint |
 | Dashboard | `frontend/arena.js`, `frontend/app.js`, `frontend/index.html`, `frontend/style.css` |
 | API | `backend/main.py` — FastAPI routes, including `/api/arena/*` |
 

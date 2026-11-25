@@ -12,7 +12,7 @@ on:
         required: true
         default: "1"
         type: choice
-        options: ["0", "1", "2"]
+        options: ["0", "1", "2", "3"]
 
 # A phase writes its own result row; two at once would race on it.
 concurrency:
@@ -45,6 +45,14 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TZ: Asia/Kolkata
         run: python -m settings
+
+      - name: Phase 3 backtester proof
+        if: inputs.phase == '3'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: python run_proof.py
 
       - name: Phase 2 rule table
         if: inputs.phase == '2'

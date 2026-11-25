@@ -12,6 +12,7 @@ let arenaData = null;
 let arenaMarkets = null;
 let arenaSystem = null;
 let arenaStudy = null;
+let arenaProof = null;
 
 // Which market's arena is on screen. One arena per market, so every call
 // carries it; the server keys storage by it and defaults to India.
@@ -77,11 +78,12 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes, systemRes, studyRes] = await Promise.all([
+    const [res, marketsRes, systemRes, studyRes, proofRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
       apiFetch(`${API}/api/system`).catch(() => null),
       apiFetch(`${API}/api/asset-study`).catch(() => null),
+      apiFetch(`${API}/api/proof`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
@@ -93,6 +95,9 @@ async function loadArena(silent = false) {
     }
     if (studyRes && studyRes.ok) {
       arenaStudy = await studyRes.json().catch(() => null);
+    }
+    if (proofRes && proofRes.ok) {
+      arenaProof = await proofRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -495,6 +500,64 @@ function settingsTable(sys) {
     </details>`;
 }
 
+// ---------- Backtester proof (Phase 3) ----------
+// The bands were written before the backtester was built. Showing the
+// measured number next to the band it had to land in is the difference
+// between "it passed" and something a reader can check.
+function proofRow(label, measured, band, ok) {
+  return `
+      <tr class="${ok ? "sys-ok" : "sys-gap"}">
+        <td class="arena-name">${escapeHtml(label)}</td>
+        <td class="sys-status">${ok ? "PASS" : "FAIL"}</td>
+        <td class="study-num">${escapeHtml(measured)}</td>
+        <td class="sys-detail">${escapeHtml(band)}</td>
+      </tr>`;
+}
+
+function pct3(v) { return `${v > 0 ? "+" : ""}${Number(v).toFixed(3)}%`; }
+
+function proofPanel(payload) {
+  if (!payload) return "";
+  if (!payload.ok) {
+    return `
+      <div class="section-heading"><span class="eyebrow">phase 3</span>
+        <h2 style="font-size:17px;">Backtester proof</h2></div>
+      <p class="arena-hint">${escapeHtml(payload.reason || "Not run yet.")}</p>`;
+  }
+  const p = payload.proof || {};
+  const b = p.bands || {}, r = p.results || {}, g = p.guard || {}, sc = p.samecode || {};
+  const failed = (g.failed || []);
+  const rows = [
+    proofRow("Planted 1.0% edge", pct3(p.planted.avg_net_pct),
+             `${b.planted_min}% to ${b.planted_max}% after costs`, r.planted_ok),
+    proofRow("Pure noise", pct3(p.noise.avg_net_pct),
+             `${pct3(p.noise_expected)} ± ${b.noise_tolerance}%, never positive`, r.noise_ok),
+    proofRow("Look-ahead guard", "honest clean, cheat caught",
+             "a planted cheat must be detected", r.guard_ok),
+    proofRow("Every Arena strategy", failed.length ? `${failed.length} failed` : "all causal",
+             "no signal may change when the future is removed", r.strategies_ok),
+    proofRow("Same-code proof", `${sc.replay_trades} trades, ${sc.match ? "identical" : "DIFFERENT"}`,
+             "replay and the live drip-feed must agree 1:1", r.samecode_ok),
+  ].join("");
+  const disabled = failed.length
+    ? `<p class="arena-warn">Disabled for reading the future: ${failed.map(escapeHtml).join(", ")}</p>`
+    : "";
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 3</span>
+      <h2 style="font-size:17px;">Backtester proof</h2></div>
+    <p class="arena-hint">Every band here was written before the backtester was built,
+      so the comparison is a test rather than a description.
+      A deliberate cheat is run through the same guard as a control: if that were ever to pass,
+      nothing else on this table would mean anything.</p>
+    ${disabled}
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Check</th><th>Result</th><th>Measured</th><th>Band, written first</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 // ---------- Strategy rules (Phase 2) ----------
 // The seven parts of every Arena rule. "Not testable yet" is the useful
 // column: it names the strategies that cannot enter the funnel as written,
@@ -709,6 +772,8 @@ function renderArena(data) {
     ${assetStudyPanel(arenaStudy)}
 
     ${ruleTable(arenaSystem && arenaSystem.rule_spec)}
+
+    ${proofPanel(arenaProof)}
 
     ${systemPanel(arenaSystem)}
 
