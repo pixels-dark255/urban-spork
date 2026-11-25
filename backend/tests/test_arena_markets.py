@@ -507,7 +507,8 @@ def test_the_slippage_sweep_scales_the_markets_own_cost():
                                   market_id="forex")
     sweep = engine.replay_slippage_sweep(cfg, enriched, days=len(dates), fx=fx)
 
-    assert [lv["label"] for lv in sweep["levels"]] == ["0×", "0.5×", "1×"]
+    assert [lv["label"] for lv in sweep["levels"]] == [
+        "%g×" % m for m in engine.SLIPPAGE_MULTIPLES]
     assert sweep["levels"][0]["describes"] == "perfect fills, no cost"
     assert "pips" in sweep["levels"][2]["describes"]
     assert sweep["currency"] == "USD"

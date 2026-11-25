@@ -36,11 +36,16 @@ that way. A backtest that re-implements a rule is a bug, not an optimisation.
 A strategy decides on a **completed** bar and fills at the **next** bar's
 open. Never fill at the bar that produced the signal.
 
-> **Not yet true.** `engine._maybe_enter()` fills at `row["Close"]` — the
-> close of the signal bar — and signal-based exits do the same. This is a
-> known, logged violation; see §5. Every Arena number produced before it is
-> fixed carries up to one bar of look-ahead and should be treated as
-> optimistic. Fixing it is its own phase, because it changes every result.
+**True since Phase 9.** `_maybe_enter` parks the signal and `_fill_pending`
+fills it at the next bar's open. Stops, targets and the square-off keep
+their intrabar logic, because those are events rather than decisions, and
+a gap through a stop fills at the open.
+
+Two consequences worth knowing. A signal on the session's last tradeable
+bar has no next open, so it is not taken and is counted as `no_next_bar`.
+An open beyond the signal's own stop invalidates the setup, so it is
+dropped as `gapped_through` rather than booked as a trade that was stopped
+at birth.
 
 ### 1.4 Costs are always on
 Every fill pays the Indian cost model in `backend/arena/costs.py`: brokerage
@@ -51,7 +56,9 @@ slippage. Non-Indian markets use their own `CostModel` in
 There is no "costs off" mode and no result quoted gross. **Every result is
 also reported at 2x cost.** The sweep lives in `engine.SLIPPAGE_MULTIPLES`.
 
-> **Not yet true.** `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]` has no 2x entry.
+**True since Phase 9.** `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0, 2.0]`, and the
+funnel's gate 6 reads the top of that list rather than carrying its own
+number, so the two cannot drift apart.
 
 ### 1.5 No rule changes because of recent results
 Losing last week is not a reason to touch a rule. Tuning a threshold because
@@ -203,8 +210,6 @@ discovered by surprise.
 | Rule | Gap | Impact |
 | --- | --- | --- |
 | AI layer cannot be enabled | Phase 7 (fingerprint `e8a5000d1c16`). Three conditions must hold and none does: six §1 rules are open, the core failed its own gates, and the masked replay did not beat core alone | The layer is built, tested and sealed off. `replay.may_enable` refuses even when the replay is flattering, because improving a core that failed its gates proves nothing worth acting on |
-| §1.3 next-open fills | `engine._maybe_enter` fills at the signal bar's close; signal exits likewise | Every Arena result to date is optimistic by up to one bar |
-| §1.4 2x cost | `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]` | No result is currently stress-tested at double cost |
 | Core rotation fails its gates | Phase 5 on real bars (fingerprint `caaf2427ec36`): engine `ITBEES.NS`, safe `GOLDBEES.NS`, SMA200 returns **+0.70%/yr against a −28.52% drawdown** (ret/dd 0.03). **Neighbours FAIL** — SMA150 loses 8.06% while SMA100 makes 28% and SMA250 makes 59% — and **2x cost FAILS** at −5.73% | The locked window was deliberately **not** spent: the idea is already out, and §1.6 allows one run per idea. Switching to SMA250 because it scored best is forbidden by §1.5 and would be a new idea needing the full funnel |
 | Nothing has earned capital | Phase 4 on real NSE 5m bars (40 sessions, fingerprint `04dcaf3a560a`): 13 ideas in, **0 survivors**. Ten of the eleven that reached gate 2 lost money after costs; `gap_fade` was profitable but on 7 trades against a 40-trade minimum | `bench.yaml` has an empty `survivors` list. Every strategy is observe-only, with no capital, until one clears the gates |
 | Gate 5 is partial | Indicator windows (the 9 and 21 in `ema9`/`ema21`, the 20 in the Bollinger bands) are computed once in `enrich()` for every strategy at once, so varying one per strategy would mean re-enriching per variant. Gate 5 varies the rule parameters only | A single-spike optimum hiding in an indicator window would not be caught |

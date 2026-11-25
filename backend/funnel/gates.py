@@ -37,7 +37,12 @@ TRADE_MINIMUMS = {
 INTRADAY_FLOOR = TRADE_MINIMUMS["1h"]
 
 MIN_PROFIT_FACTOR = 1.3
-DOUBLE_COST = 2.0
+
+# Gate 6 reads the engine's own sweep rather than carrying its own
+# number, so the two cannot drift apart and quietly test different
+# things under the same name.
+from arena import engine as _engine                     # noqa: E402
+DOUBLE_COST = max(_engine.SLIPPAGE_MULTIPLES)
 
 
 def load_labels(path: pathlib.Path | None = None) -> dict:

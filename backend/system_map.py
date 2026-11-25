@@ -108,14 +108,18 @@ RULES = [
      "detail": "engine.replay() drives the same start_day / process_bars / "
                "settle_day path the live runner uses."},
     {"id": "next-open-fills", "rule": "Fill on the next bar's open",
-     "status": GAP,
-     "detail": "Entries fill at the signal bar's close, so every result "
-               "carries up to one bar of look-ahead and reads optimistic."},
+     "status": OK,
+     "detail": "A signal is parked on the bar that produced it and filled "
+               "at the next bar's open. Stops, targets and the square-off "
+               "stay intrabar, because those are events rather than "
+               "decisions."},
     {"id": "costs-on", "rule": "Costs always on", "status": OK,
      "detail": "Every fill pays the full Indian cost model plus slippage."},
     {"id": "double-cost", "rule": "Every result also reported at 2x cost",
-     "status": GAP,
-     "detail": "The slippage sweep runs 0x, 0.5x and 1x. No 2x case."},
+     "status": OK,
+     "detail": "SLIPPAGE_MULTIPLES runs 0x, 0.5x, 1x and 2x, and the "
+               "funnel's gate 6 reads the top of that list rather than "
+               "carrying its own number."},
     {"id": "regime-wired", "rule": "Strategies filter on the regime",
      "status": GAP,
      "detail": "signals/regime.py computes trend and volatility, but no "

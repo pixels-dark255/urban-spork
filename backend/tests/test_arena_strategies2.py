@@ -69,9 +69,12 @@ def test_short_trade_cash_and_pnl_add_up():
     real = STRATEGIES["orb_both"]
     STRATEGIES["orb_both"] = Shorty()
     try:
-        ts = pd.Timestamp("2026-09-01 10:00", tz=IST)
+        # Two bars, not one. The first produces the signal; the second is
+        # where it fills, at that bar's open (AGENTS.md §1.3).
         row = pd.Series({"Open": 100.0, "High": 100.1, "Low": 99.9, "Close": 100.0, "minute": 600, "bar_no": 9})
-        engine.process_bar(st, "T.NS", ts, row, row, 1)
+        engine.process_bar(st, "T.NS", pd.Timestamp("2026-09-01 10:00", tz=IST), row, row, 1)
+        assert "T.NS" not in book["positions"], "a signal must not fill on its own bar"
+        engine.process_bar(st, "T.NS", pd.Timestamp("2026-09-01 10:05", tz=IST), row, row, 1)
         pos = book["positions"]["T.NS"]
         assert pos["side"] == "SHORT"
         # price falls 2%: the short should be worth more than it cost
@@ -151,7 +154,10 @@ def test_intraday_momentum_enters_at_1415_only():
     engine.settle_day(st)
     t = st["books"]["intraday_momentum"]["trades"]
     assert len(t) == 1 and t[0]["side"] == "LONG"
-    assert "T14:15" in t[0]["entry_at"]
+    # The rule decides at 14:15 and the fill is the NEXT bar's open, so the
+    # trade is stamped 14:20. Asserting 14:15 would be asserting the
+    # look-ahead this engine no longer takes.
+    assert "T14:20" in t[0]["entry_at"], t[0]["entry_at"]
 
 
 def test_new_strategies_never_crash_on_random_data():
@@ -182,3 +188,87 @@ def test_brand_new_arena_has_everything_and_nothing_to_adopt():
     st = engine.new_state()
     assert engine.adopt_new_strategies(st) == []
     assert set(st["config"]["strategies"]) == set(STRATEGIES)
+
+
+# ---------------------------------------------------------------------------
+# AGENTS.md §1.3: a decision on a closed bar fills at the NEXT bar's open
+# ---------------------------------------------------------------------------
+
+def _always_long():
+    class Always(S.Strategy):
+        id = "orb"
+        def entry(self, row, prev):
+            return {"stop": row["Close"] * 0.97, "target": row["Close"] * 1.05,
+                    "reason": "t"}
+    return Always()
+
+
+def _bar(o, h, l, c, minute=600, bar_no=9):
+    return pd.Series({"Open": o, "High": h, "Low": l, "Close": c,
+                      "minute": minute, "bar_no": bar_no})
+
+
+def test_the_fill_price_is_the_next_bars_open_not_the_signal_close():
+    st = engine.new_state(cfg(["orb"]))
+    engine.start_day(st, "2026-09-01")
+    real = STRATEGIES["orb"]
+    STRATEGIES["orb"] = _always_long()
+    try:
+        signal = _bar(100.0, 100.5, 99.5, 100.0)
+        nxt = _bar(102.0, 102.5, 101.5, 102.2)
+        engine.process_bar(st, "T.NS", pd.Timestamp("2026-09-01 10:00", tz=IST), signal, signal, 1)
+        engine.process_bar(st, "T.NS", pd.Timestamp("2026-09-01 10:05", tz=IST), nxt, signal, 1)
+    finally:
+        STRATEGIES["orb"] = real
+    pos = st["books"]["orb"]["positions"]["T.NS"]
+    # 102 plus slippage, never 100. Two rupees of a two-rupee move is
+    # exactly the look-ahead this rule exists to remove.
+    assert pos["entry_price"] > 102.0, pos["entry_price"]
+
+
+def test_a_signal_on_the_last_tradeable_bar_is_not_taken():
+    st = engine.new_state(cfg(["orb"]))
+    engine.start_day(st, "2026-09-01")
+    real = STRATEGIES["orb"]
+    STRATEGIES["orb"] = _always_long()
+    try:
+        # mins_left inside the square-off window: there is no next bar to
+        # fill on, so the signal is counted and dropped.
+        late = _bar(100.0, 100.5, 99.5, 100.0, minute=15 * 60 + 10, bar_no=74)
+        engine.process_bar(st, "T.NS", pd.Timestamp("2026-09-01 15:10", tz=IST), late, late, 1)
+        engine.settle_day(st)
+    finally:
+        STRATEGIES["orb"] = real
+    book = st["books"]["orb"]
+    assert book["positions"] == {}
+    assert book["day_history"][-1]["skipped"]["no_next_bar"] >= 1
+
+
+def test_an_open_beyond_the_stop_drops_the_setup_rather_than_booking_it():
+    """A gap through the stop invalidates the setup before it is entered.
+
+    Entering anyway would book a trade that was stopped at birth and
+    charge it two legs of costs for the privilege.
+    """
+    st = engine.new_state(cfg(["orb"]))
+    engine.start_day(st, "2026-09-01")
+    real = STRATEGIES["orb"]
+    STRATEGIES["orb"] = _always_long()
+    try:
+        signal = _bar(100.0, 100.5, 99.5, 100.0)          # stop at 97
+        gapped = _bar(95.0, 95.5, 94.0, 94.5)             # opens below it
+        engine.process_bar(st, "T.NS", pd.Timestamp("2026-09-01 10:00", tz=IST), signal, signal, 1)
+        engine.process_bar(st, "T.NS", pd.Timestamp("2026-09-01 10:05", tz=IST), gapped, signal, 1)
+    finally:
+        STRATEGIES["orb"] = real
+    book = st["books"]["orb"]
+    assert book["positions"] == {}
+    assert book["day"]["skipped"]["gapped_through"] == 1
+
+
+def test_a_parked_signal_does_not_survive_the_night():
+    st = engine.new_state(cfg(["orb"]))
+    engine.start_day(st, "2026-09-01")
+    engine._park(st, "orb", "T.NS", {"kind": "entry", "signal": {}})
+    engine.start_day(st, "2026-09-02")
+    assert st["pending"] == {}

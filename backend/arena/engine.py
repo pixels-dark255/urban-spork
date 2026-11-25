@@ -312,6 +312,13 @@ def _new_state(config: dict | None = None) -> dict:
         "fx": None,
         # The screener's picks for the current session, and its workings.
         "picked": None,
+        # Signals waiting for the next bar's open. §1.3 forbids acting on
+        # the bar that produced a signal, so a decision made on a closed
+        # bar is parked here and filled at the next open. Keyed
+        # strategy -> symbol, cleared at the start of every session: a
+        # pending order cannot survive a night it was never going to be
+        # held through.
+        "pending": {},
         "created_at": timeutil.iso_now(),
     }
 
@@ -339,7 +346,17 @@ def _new_book(sid: str, capital: float) -> dict:
 
 def _blank_day() -> dict:
     return {"trades": 0, "net": 0.0, "stopped": False, "stop_reason": None,
-            "per_symbol": {}, "skipped": {"too_expensive": 0, "costs_exceed_target": 0}}
+            "per_symbol": {},
+            "skipped": {"too_expensive": 0, "costs_exceed_target": 0,
+                        # A signal on the last tradeable bar of the session
+                        # has no next bar to fill on, so it is not taken
+                        # (AGENTS.md §1.3).
+                        "no_next_bar": 0,
+                        # The next bar opened beyond the signal's own stop,
+                        # so the setup was invalid before it could be
+                        # entered. Entering anyway would book a trade that
+                        # was stopped at birth.
+                        "gapped_through": 0}}
 
 
 def inr_per_unit(state: dict) -> float | None:
@@ -421,6 +438,7 @@ def start_day(state: dict, date: str, caught_up: bool = False,
         book["day"] = _blank_day()
     state["day"] = date
     state["day_settled"] = False
+    state["pending"] = {}
 
 
 def settle_day(state: dict, caught_up: bool = False,
@@ -435,6 +453,19 @@ def settle_day(state: dict, caught_up: bool = False,
     if not state["day"] or state["day_settled"]:
         return None
     cfg, risk = state["config"], state["config"]["risk"]
+
+    # A signal parked on the session's last bar never got a next open to
+    # fill on, so it was not taken. Counted rather than dropped silently:
+    # "the rule fired and we could not act on it" is a different fact from
+    # "the rule did not fire" (AGENTS.md §1.3).
+    for sid, by_symbol in (state.get("pending") or {}).items():
+        book = state["books"].get(sid)
+        if not book or not book.get("day"):
+            continue
+        for order in by_symbol.values():
+            if order.get("kind") == "entry":
+                book["day"]["skipped"]["no_next_bar"] += 1
+    state["pending"] = {}
     fx = state.get("fx") or {}
     # Symbols whose bars could not be downloaded for this session. The day
     # is still settled on what did arrive - refusing would lose the session
@@ -584,6 +615,19 @@ def _mins_left(row) -> float:
 
 
 def process_bar(state: dict, sym: str, ts, row, prev, n_symbols: int) -> None:
+    """One bar, for every strategy.
+
+    The order inside this function is the whole of AGENTS.md §1.3:
+
+      1. fill anything decided on the PREVIOUS bar, at this bar's open;
+      2. then judge this bar for stops, targets and the square-off;
+      3. then look for a new signal, which fills on the NEXT bar.
+
+    Step 1 comes first so that a signal exit parked yesterday is honoured
+    at the open before this bar's own high and low are consulted. Doing it
+    the other way round would let a stop that was hit after the exit
+    should have happened rewrite history in the book's favour.
+    """
     cfg, risk = state["config"], state["config"]["risk"]
     market = market_of(state)
     ccfg = market.costs.merged(cfg["costs"])
@@ -596,15 +640,65 @@ def process_bar(state: dict, sym: str, ts, row, prev, n_symbols: int) -> None:
         strat = STRATEGIES.get(sid)
         if book is None or strat is None:
             continue
+
+        _fill_pending(state, book, strat, sym, row, left, at, risk, ccfg,
+                      n_symbols, market)
+
         pos = book["positions"].get(sym)
         if pos:
             price, reason = _exit_decision(strat, row, prev, pos, left, market)
             if reason:
-                _close(state, book, sym, price, reason, at, ccfg)
+                if reason.startswith("signal:"):
+                    # A rule-based exit is a decision, so it waits for the
+                    # next open like any other. A stop, a target or the
+                    # square-off is an event, and those fill on this bar.
+                    _park(state, sid, sym, {"kind": "exit", "reason": reason})
+                else:
+                    _close(state, book, sym, price, reason, at, ccfg)
         elif not book["day"]["stopped"]:
             _maybe_enter(book, strat, sym, row, prev, left, at, risk, ccfg,
                          n_symbols, market, state)
         _check_daily_loss(state, book, risk, at, ccfg)
+
+
+def _park(state: dict, sid: str, sym: str, order: dict) -> None:
+    state.setdefault("pending", {}).setdefault(sid, {})[sym] = order
+
+
+def _take_pending(state: dict, sid: str, sym: str) -> dict | None:
+    return (state.get("pending", {}).get(sid) or {}).pop(sym, None)
+
+
+def _fill_pending(state, book, strat, sym, row, left, at, risk, ccfg,
+                  n_symbols, market) -> None:
+    """Execute whatever the previous bar decided, at this bar's open."""
+    order = _take_pending(state, book["id"], sym)
+    if not order:
+        return
+    open_price = float(row["Open"])
+
+    if order["kind"] == "exit":
+        if book["positions"].get(sym):
+            _close(state, book, sym, open_price, order["reason"], at, ccfg)
+        return
+
+    # An entry. Everything that made it invalid at signal time can have
+    # changed overnight or over the bar, so it is all re-checked here.
+    if book["day"]["stopped"] or book["positions"].get(sym):
+        return
+    if left <= market.square_off_before_end:
+        book["day"]["skipped"]["no_next_bar"] += 1
+        return
+    # The limits are re-checked here, not only at signal time. Several
+    # symbols can park a signal on the same bar, and filling them all
+    # would run past max_trades_per_day in a single tick.
+    day = book["day"]
+    if (len(book["positions"]) >= open_slots(state["config"]) and not strat.benchmark) \
+            or day["trades"] >= risk["max_trades_per_day"] \
+            or day["per_symbol"].get(sym, 0) >= strat.max_trades_per_symbol_per_day:
+        return
+    _enter(book, strat, sym, order["signal"], open_price, left, at, risk,
+           ccfg, n_symbols, market, state)
 
 
 def _exit_decision(strat, row, prev, pos, mins_left, market):
@@ -653,20 +747,38 @@ def _maybe_enter(book, strat, sym, row, prev, mins_left, at, risk, ccfg,
     sig = strat.entry(row, prev)
     if not sig:
         return
+    stop, target = sig.get("stop"), sig.get("target")
+    if not (math.isfinite(float(stop or float("nan")))
+            and math.isfinite(float(target or float("nan")))):
+        return
+    # Decided on a closed bar, filled on the next one's open (§1.3). The
+    # levels travel with the signal unchanged: recomputing them at the
+    # fill price would be a different rule from the one that was tested.
+    _park(state, book["id"], sym, {"kind": "entry", "signal": dict(sig)})
 
+
+def _enter(book, strat, sym, sig, price, mins_left, at, risk, ccfg,
+           n_symbols, market, state) -> None:
+    """Fill a parked signal at `price`, which is the next bar's open."""
     # Shorts (intraday MIS) sell first and buy back later. Margin is kept at
     # 1x - the full notional is set aside - so a short can't size bigger
     # than a long would, and leverage never flatters the comparison.
+    day = book["day"]
     side = "SHORT" if sig.get("side") == "SHORT" else "LONG"
     entry_leg = "SELL" if side == "SHORT" else "BUY"
     scale = _scale_for(state, sym)
-    fill = market.costs.fill_price(entry_leg, float(row["Close"]), ccfg, sym, scale)
+    fill = market.costs.fill_price(entry_leg, float(price), ccfg, sym, scale)
     stop, target = float(sig["stop"]), float(sig["target"])
     if not (math.isfinite(stop) and math.isfinite(target)):
         return
+    # The open can land beyond the stop the signal set. That is a setup
+    # invalidated before it could be taken, not a trade that opens already
+    # losing, so it is dropped and counted rather than booked.
     if side == "LONG" and (stop >= fill or target <= fill):
+        book["day"]["skipped"]["gapped_through"] += 1
         return
     if side == "SHORT" and (stop <= fill or target >= fill):
+        book["day"]["skipped"]["gapped_through"] += 1
         return
     risk_per_share = abs(fill - stop)
     if risk_per_share <= 0 or fill <= 0:
@@ -1018,7 +1130,11 @@ def replay(config: dict, enriched: dict[str, pd.DataFrame], days: int = 30,
 # of it separates "has an edge" from "has an edge only if fills are free".
 # Expressed as multiples of the market's own assumption, because that cost
 # is a percentage on equities and crypto but a spread in pips on forex.
-SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]
+# 2x is not decoration: AGENTS.md §1.4 requires every result to be
+# reported at double cost, and a strategy whose edge is thinner than
+# its own fill assumption is a strategy that exists only in the
+# backtest.
+SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0, 2.0]
 
 
 def _scaled_cost_overrides(market, base_costs: dict, multiple: float) -> dict:

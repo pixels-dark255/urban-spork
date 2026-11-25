@@ -367,7 +367,10 @@ def test_slippage_sweep_runs_the_same_sessions_at_each_assumption():
     # sweep means something on a market whose cost is a spread in pips
     # rather than a percentage.
     labels = [lv["label"] for lv in sweep["levels"]]
-    assert labels == ["0×", "0.5×", "1×"]
+    # Derived, not hardcoded: the sweep gained a 2x level for §1.4 and
+    # a literal list here would have to be edited every time it changes.
+    assert labels == ["%g×" % m for m in engine.SLIPPAGE_MULTIPLES]
+    assert "2×" in labels, "§1.4 requires a double-cost level"
     assert sweep["levels"][0]["describes"] == "perfect fills, no cost"
     assert sweep["levels"][2]["describes"] == "0.05% a side"   # the NSE default
     bench = next(r for r in sweep["rows"] if r["id"] == "benchmark")

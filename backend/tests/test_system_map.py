@@ -25,20 +25,27 @@ def _rule(rule_id):
 
 # ----------------------------------------------------------- the gaps
 
-def test_next_open_fill_gap_is_real():
-    """Entries still fill at the signal bar's close."""
-    assert 'fill_price(entry_leg, float(row["Close"])' in ENGINE_SRC, (
-        "Entries no longer fill at the signal bar's close. If fills now "
-        "happen at the next bar's open, mark next-open-fills as ok in "
-        "system_map.py and update AGENTS.md §1.3 and §4.")
-    assert _rule("next-open-fills")["status"] == system_map.GAP
+def test_entries_do_not_fill_on_the_signal_bar():
+    """The §1.3 gap is closed, and this now guards the fix.
+
+    It used to assert the opposite. Closing the gap failed this test,
+    which is what forced system_map.py and AGENTS.md to be updated in the
+    same change rather than drifting behind the code.
+    """
+    assert 'fill_price(entry_leg, float(row["Close"])' not in ENGINE_SRC, (
+        "an entry is filling at the signal bar's close again")
+    assert "_park(state, book[\"id\"], sym, {\"kind\": \"entry\"" in ENGINE_SRC
+    assert _rule("next-open-fills")["status"] == system_map.OK
 
 
-def test_double_cost_gap_is_real():
-    assert 2.0 not in engine.SLIPPAGE_MULTIPLES, (
-        "A 2x cost case now exists. Mark double-cost as ok in system_map.py "
-        "and update AGENTS.md §1.4 and §4.")
-    assert _rule("double-cost")["status"] == system_map.GAP
+def test_every_result_is_also_reported_at_double_cost():
+    assert 2.0 in engine.SLIPPAGE_MULTIPLES
+    assert _rule("double-cost")["status"] == system_map.OK
+
+
+def test_the_funnel_reads_the_engine_sweep_rather_than_its_own_number():
+    from funnel import gates
+    assert gates.DOUBLE_COST == max(engine.SLIPPAGE_MULTIPLES)
 
 
 # --------------------------------------------------- the rules that hold
