@@ -62,6 +62,19 @@ jobs:
           TZ: Asia/Kolkata
         run: python -m funnel.cli --source yahoo --sessions 40
 
+      # The artifact is the record, but a log line is readable from anywhere
+      # the artifact store is not, so the table goes into the run summary too.
+      - name: Show the funnel table
+        if: inputs.phase == '4'
+        run: |
+          cat results/funnel.csv
+          {
+            echo '### funnel.csv'
+            echo '```'
+            cat results/funnel.csv
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Keep the funnel's outputs
         if: inputs.phase == '4'
         uses: actions/upload-artifact@v4
