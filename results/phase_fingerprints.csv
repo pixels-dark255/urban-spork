@@ -4,3 +4,4 @@ phase,date_run,sha,notes
 1,2026-11-24,4320662e1e5b,"asset study, 11 of 12 study tickers (TATAMOTORS.NS delisted), train 2022-01-01..2024-12-31"
 2,2026-11-24,0a610c762100,"regime layer + 7-part rules.yaml; 4 of 13 strategies testable, 9 have non-percentage stops"
 3,2026-11-25,19aa0e3a25da,"backtester proof: planted +0.832% net in 0.6-1.2% band, noise -0.206% vs -0.188% expected, 13/13 strategies causal, control caught, replay==live"
+4,2026-11-25,04dcaf3a560a,"funnel on real NSE 5m bars (40 sessions): 13 ideas in, 0 survivors; 10 of 11 lost money after costs, gap_fade profitable on only 7 trades"

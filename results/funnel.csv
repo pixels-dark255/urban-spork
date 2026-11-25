@@ -1,14 +1,14 @@
-id,name,kind,bar_size,survivor,failed_at,trades,net,profit_factor,max_drawdown,return_pct,net_2x,neighbours_tested,neighbours_losing,why
-bb_breakout,Bollinger volume breakout,breakout,5m,no,2. Profitable in training,13,-315.5721,0.36,-411.44,-0.631,,,0,net -315.57 after costs over 13 trades
-benchmark,"Benchmark: buy first bar, hold to close",benchmark,5m,no,1. Fits the asset,,,,,,,,0,"a yardstick, not an idea: never given capital"
-ema_cross,EMA 9/21 crossover,momentum,5m,no,4. Profit factor >= 1.3,23,100.9863,1.2,-259.43,0.202,,,0,"profit factor 1.20, needs 1.30"
-gap_fade,Gap fade (gap-fill),reversion,5m,no,2. Profitable in training,5,-269.2067,0.15,-269.21,-0.538,,,0,net -269.21 after costs over 5 trades
-intraday_momentum,Intraday momentum (first 30 min → last hour),momentum,5m,no,2. Profitable in training,5,-187.4687,0.21,-187.47,-0.375,,,0,net -187.47 after costs over 5 trades
-orb,Opening-range breakout,breakout,5m,no,2. Profitable in training,20,-584.1691,0.44,-781.51,-1.168,,,0,net -584.17 after costs over 20 trades
-orb_both,Opening-range breakout (long + short),breakout,5m,no,2. Profitable in training,26,-659.538,0.48,-659.54,-1.319,,,0,net -659.54 after costs over 26 trades
-rsi_reversion,RSI oversold bounce,reversion,5m,no,2. Profitable in training,7,-103.5931,0.5,-202.45,-0.207,,,0,net -103.59 after costs over 7 trades
-score4,4-signal score (original),mixed,5m,no,1. Fits the asset,,,,,,,,0,"kind 'mixed' matches no asset label, so there is no set of assets this idea is entitled to trade"
-supertrend,"SuperTrend (10, 3) flip",momentum,5m,no,2. Profitable in training,43,-379.1297,0.77,-843.72,-0.758,,,0,net -379.13 after costs over 43 trades
-trend_pullback,Trend pullback to EMA 21,momentum,5m,no,2. Profitable in training,36,-1419.0416,0.26,-1419.04,-2.838,,,0,net -1419.04 after costs over 36 trades
-vwap_bands,VWAP band mean-reversion,reversion,5m,no,2. Profitable in training,61,-1411.9973,0.37,-1456.4,-2.824,,,0,net -1412.00 after costs over 61 trades
-vwap_reclaim,VWAP reclaim,reversion,5m,no,2. Profitable in training,57,-859.3649,0.59,-1143.86,-1.719,,,0,net -859.36 after costs over 57 trades
+source,id,name,kind,bar_size,survivor,failed_at,trades,net,profit_factor,max_drawdown,return_pct,net_2x,neighbours_tested,neighbours_losing,why
+synthetic,bb_breakout,Bollinger volume breakout,breakout,5m,no,2. Profitable in training,13,-315.5721,0.36,-411.44,-0.631,,,0,net -315.57 after costs over 13 trades
+synthetic,benchmark,"Benchmark: buy first bar, hold to close",benchmark,5m,no,1. Fits the asset,,,,,,,,0,"a yardstick, not an idea: never given capital"
+synthetic,ema_cross,EMA 9/21 crossover,momentum,5m,no,4. Profit factor >= 1.3,23,100.9863,1.2,-259.43,0.202,,,0,"profit factor 1.20, needs 1.30"
+synthetic,gap_fade,Gap fade (gap-fill),reversion,5m,no,2. Profitable in training,5,-269.2067,0.15,-269.21,-0.538,,,0,net -269.21 after costs over 5 trades
+synthetic,intraday_momentum,Intraday momentum (first 30 min → last hour),momentum,5m,no,2. Profitable in training,5,-187.4687,0.21,-187.47,-0.375,,,0,net -187.47 after costs over 5 trades
+synthetic,orb,Opening-range breakout,breakout,5m,no,2. Profitable in training,20,-584.1691,0.44,-781.51,-1.168,,,0,net -584.17 after costs over 20 trades
+synthetic,orb_both,Opening-range breakout (long + short),breakout,5m,no,2. Profitable in training,26,-659.538,0.48,-659.54,-1.319,,,0,net -659.54 after costs over 26 trades
+synthetic,rsi_reversion,RSI oversold bounce,reversion,5m,no,2. Profitable in training,7,-103.5931,0.5,-202.45,-0.207,,,0,net -103.59 after costs over 7 trades
+synthetic,score4,4-signal score (original),mixed,5m,no,1. Fits the asset,,,,,,,,0,"kind 'mixed' matches no asset label, so there is no set of assets this idea is entitled to trade"
+synthetic,supertrend,"SuperTrend (10, 3) flip",momentum,5m,no,2. Profitable in training,43,-379.1297,0.77,-843.72,-0.758,,,0,net -379.13 after costs over 43 trades
+synthetic,trend_pullback,Trend pullback to EMA 21,momentum,5m,no,2. Profitable in training,36,-1419.0416,0.26,-1419.04,-2.838,,,0,net -1419.04 after costs over 36 trades
+synthetic,vwap_bands,VWAP band mean-reversion,reversion,5m,no,2. Profitable in training,61,-1411.9973,0.37,-1456.4,-2.824,,,0,net -1412.00 after costs over 61 trades
+synthetic,vwap_reclaim,VWAP reclaim,reversion,5m,no,2. Profitable in training,57,-859.3649,0.59,-1143.86,-1.719,,,0,net -859.36 after costs over 57 trades

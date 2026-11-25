@@ -54,6 +54,16 @@ jobs:
           TZ: Asia/Kolkata
         run: python -m funnel.cli --source yahoo --sessions 40
 
+      - name: Keep the funnel's outputs
+        if: inputs.phase == '4'
+        uses: actions/upload-artifact@v4
+        with:
+          name: funnel-outputs
+          path: |
+            results/funnel.csv
+            bench.yaml
+          if-no-files-found: error
+
       - name: Phase 3 backtester proof
         if: inputs.phase == '3'
         working-directory: backend
