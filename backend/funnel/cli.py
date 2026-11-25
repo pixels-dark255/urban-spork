@@ -29,6 +29,42 @@ def load_bars(source: str, sessions: int, symbols: list[str]) -> dict:
     return out
 
 
+def bars_summary(enriched: dict, wanted: list[str]) -> dict:
+    """What the funnel actually ran on.
+
+    Yahoo is not a fixed input: a 5-minute window rolls, and a symbol can
+    fail to download on one run and succeed on the next. Two runs of the
+    same code can then disagree, which looks like a changed rule. These
+    counts travel with the result so a reader can tell the two apart.
+    """
+    rows = []
+    sessions = set()
+    for sym in sorted(enriched):
+        frame = enriched[sym]
+        days = sorted({d for d in frame["session"].unique() if d})
+        sessions.update(days)
+        rows.append({"symbol": sym, "bars": int(len(frame)), "sessions": len(days),
+                     "first": days[0] if days else "", "last": days[-1] if days else ""})
+    return {"symbols": rows,
+            "missing": sorted(set(wanted) - set(enriched)),
+            "first": min(sessions) if sessions else "",
+            "last": max(sessions) if sessions else ""}
+
+
+def bars_table(summary: dict) -> str:
+    lines = ["What it ran on", "-" * 58,
+             "  %d symbols, sessions %s to %s"
+             % (len(summary["symbols"]), summary["first"] or "?", summary["last"] or "?")]
+    for row in summary["symbols"]:
+        lines.append("  %-18s %6d bars  %3d sessions  %s to %s"
+                     % (row["symbol"], row["bars"], row["sessions"],
+                        row["first"], row["last"]))
+    if summary["missing"]:
+        lines.append("  MISSING: %s (no bars came back, so these were not traded)"
+                     % ", ".join(summary["missing"]))
+    return "\n".join(lines)
+
+
 def table(report: dict) -> str:
     counts = report["counts"]
     lines = ["Phase 4: the funnel", "",
@@ -72,6 +108,11 @@ def fingerprint_values(report: dict) -> dict:
     values = {"ideas_in": report["counts"]["ideas_in"],
               "survivors": report["counts"]["survivors"],
               "bar_size": report["bar_size"], "sessions": report["sessions"]}
+    # The input is part of the result. Without this two runs on different
+    # downloads can share a fingerprint, or differ on it for a reason no
+    # reader can see.
+    for row in (report.get("bars") or {}).get("symbols", []):
+        values["bars:%s" % row["symbol"]] = row["bars"]
     for key in gates.ORDER:
         c = report["counts"][key]
         values["gate:%s:passed" % key] = c["passed"]
@@ -107,7 +148,8 @@ def main(argv=None) -> int:
 
     report = run_mod.run_all(enriched, labels, days=args.sessions)
     report["source"] = args.source
-    text = table(report)
+    report["bars"] = bars_summary(enriched, symbols)
+    text = table(report) + "\n\n" + bars_table(report["bars"])
     print(text)
 
     csv_path = run_mod.to_csv(report)

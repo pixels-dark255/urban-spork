@@ -168,6 +168,7 @@ Reuse these. Do not create a parallel copy of any of them.
 | Swing account | `backend/swing/` — Phase 5. `python -m swing.cli` runs the core rotation, the quarterly picker and the sleeves. Delivery costs, separate from the Arena's intraday book |
 | Funnel | `backend/funnel/` + `bench.yaml` — Phase 4's seven gates. `python -m funnel.cli` runs them all; `python -m tools.test_idea <idea.yaml>` runs one |
 | Asset labels | `results/asset_labels.json` — Phase 1's output, committed so gate 1 is reproducible |
+| Fill rule | `backend/validation/fills.py` + `backend/run_phase9.py` — Phase 9. `python3.13 run_phase9.py` recomputes every entry from the bars and prints the two drop reasons and the slippage sweep |
 | Proof | `backend/validation/` + `backend/run_proof.py` — Phase 3. `python3.13 run_proof.py` prints the three synthetic results against the bands, the guard per strategy, and the fingerprint |
 | Dashboard | `frontend/arena.js`, `frontend/app.js`, `frontend/index.html`, `frontend/style.css` |
 | API | `backend/main.py` — FastAPI routes, including `/api/arena/*` |
@@ -221,3 +222,4 @@ discovered by surprise.
 | Top-level `tests/` | Not created. `backend/tests/` already holds the suite; a second empty `tests/` at the root would be a trap for whoever adds the next test | None, as long as nobody adds one |
 | Arena is UNPROVEN | The Arena trades 5m bars, and Yahoo keeps ~60 days of those | Every Arena result is labelled UNPROVEN until the archive has 12 months |
 | §1.7 determinism | `fingerprint.py` exists and Phase 0 prints a line, but the simulation declares no seed and emits no fingerprint | Two Arena runs still cannot be compared mechanically |
+| §1.7 on real bars | The funnel's Yahoo input is not fixed: the 5-minute window rolls and a symbol can fail to download on one run and not the next. Two Phase 4 runs five minutes apart differed on six of eleven ideas | Since Phase 9 the run prints the bars per symbol and hashes them into the fingerprint, so data drift is visible. It is not removed: only the bar archive can do that |

@@ -1145,6 +1145,36 @@ function assetStudyPanel(payload) {
 // meet yet. The gaps matter more than the map: a result produced under a
 // known-broken fill model should be read as optimistic, and the only way
 // anyone remembers that is if it is written next to the results.
+const FILL_REASONS = [
+  ["no_next_bar", "signal on the last tradeable bar, so there was no next open"],
+  ["gapped_through", "next open was already past the signal's own stop"],
+  ["too_expensive", "the book could not afford one whole unit"],
+  ["costs_exceed_target", "costs alone ate the target"],
+];
+
+function fillRulePanel(fr) {
+  if (!fr || !fr.skipped) return "";
+  const rows = FILL_REASONS.map(([key, why]) => `
+      <tr>
+        <td class="arena-name">${escapeHtml(key.replace(/_/g, " "))}</td>
+        <td class="num">${fr.skipped[key] || 0}</td>
+        <td class="sys-detail">${escapeHtml(why)}</td>
+      </tr>`).join("");
+  const mult = (fr.slippage_multiples || []).map((m) => `${m}x`).join(", ");
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 9</span>
+      <h2 style="font-size:17px;">Fill rule</h2></div>
+    <p class="arena-hint">Every entry is decided on a completed bar and filled at the
+      next bar's open. ${fr.filled} ${fr.filled === 1 ? "fill" : "fills"} so far,
+      ${fr.parked_now} waiting for the next open. Costs are swept at ${escapeHtml(mult)}.</p>
+    <div class="table-scroll">
+      <table class="backtest-table">
+        <thead><tr><th>Dropped</th><th class="num">Count</th><th>Why</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+    </div>`;
+}
+
 function systemPanel(sys) {
   if (!sys || !sys.rules || !sys.modules) return "";
   const c = sys.compliance || { ok: 0, gap: 0, total: 0 };
@@ -1201,6 +1231,8 @@ function renderArena(data) {
     ${unprovenBanner(arenaSystem)}
 
     <div id="arenaLive">${arenaLiveHtml(data)}</div>
+
+    ${fillRulePanel(data.fill_rule)}
 
     <div class="section-heading"><span class="eyebrow">the record so far</span>
       <h2 style="font-size:17px;">Scoreboard</h2></div>

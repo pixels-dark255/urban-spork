@@ -1033,6 +1033,32 @@ def skipped_unaffordable(state: dict) -> int:
     return total
 
 
+def fill_rule(state: dict) -> dict:
+    """What the next-open fill rule did, in numbers.
+
+    AGENTS.md §1.3 is invisible from the leaderboard: a book that fills at
+    the next open and a book that cheats on the signal bar both just show
+    trades. These are the counters that tell them apart - how many signals
+    were parked and filled, and how many were dropped for the two reasons
+    only a next-open rule can produce.
+    """
+    counts = {"too_expensive": 0, "costs_exceed_target": 0,
+              "no_next_bar": 0, "gapped_through": 0}
+    filled = 0
+    for sid, book in sorted(state["books"].items()):
+        if sid not in state["config"]["strategies"]:
+            continue
+        filled += book["stats"]["trades"]
+        days = [book["day"]["skipped"]] + [
+            (day.get("skipped") or {}) for day in book["day_history"][-30:]]
+        for skipped in days:
+            for reason in counts:
+                counts[reason] += skipped.get(reason, 0)
+    pending = sum(len(orders) for orders in (state.get("pending") or {}).values())
+    return {"filled": filled, "parked_now": pending, "skipped": counts,
+            "slippage_multiples": list(SLIPPAGE_MULTIPLES)}
+
+
 def verdict(state: dict) -> dict:
     """One-line answer to 'is anything working?'."""
     board = [r for r in leaderboard(state) if not r["benchmark"]]

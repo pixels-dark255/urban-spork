@@ -56,6 +56,7 @@ function loadArenaHelpers() {
   vm.runInContext(extractConst(SOURCE, "UUID_RE"), context);
   vm.runInContext(extractConst(SOURCE, "DAY_NAMES"), context);
   vm.runInContext(extractConst(SOURCE, "STATUS_CLASS"), context);
+  vm.runInContext(extractConst(SOURCE, "FILL_REASONS"), context);
 
   // escapeHtml goes through a DOM node in the real app; the arena helpers
   // only care that it is called, so a string version keeps this hermetic.
@@ -74,7 +75,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel", "adaptPanel", "killBar"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel", "adaptPanel", "killBar", "fillRulePanel"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -1320,4 +1321,28 @@ test("before the review has run the panel says so", () => {
   assert.ok(arena.adaptPanel({ ok: false, reason: "has not run yet" })
             .includes("has not run yet"));
   assert.strictEqual(arena.adaptPanel(null), "");
+});
+
+
+// ---------------------------------------------------------------------------
+// Phase 9: the fill rule is only visible through its counters
+// ---------------------------------------------------------------------------
+
+test("the fill rule panel names both next-open-only drop reasons", () => {
+  const html = arena.fillRulePanel({
+    filled: 12, parked_now: 1,
+    skipped: { no_next_bar: 3, gapped_through: 2, too_expensive: 0, costs_exceed_target: 0 },
+    slippage_multiples: [0, 0.5, 1, 2],
+  });
+  assert.match(html, /next bar's open/);
+  assert.match(html, /no next bar/);
+  assert.match(html, /gapped through/);
+  // The sweep's top multiple is what AGENTS.md §1.4 calls the 2x stress.
+  assert.match(html, /0x, 0\.5x, 1x, 2x/);
+  assert.match(html, /12 fills/);
+});
+
+test("the fill rule panel is nothing at all before the first session", () => {
+  assert.strictEqual(arena.fillRulePanel(null), "");
+  assert.strictEqual(arena.fillRulePanel({}), "");
 });

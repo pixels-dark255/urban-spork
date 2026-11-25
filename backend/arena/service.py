@@ -515,6 +515,8 @@ def view(ip: str) -> dict:
         # being asleep is the thing worth a banner.
         "runner": runner_mod.status(state),
         "verdict": engine.verdict(state),
+        # The next-open fill rule, in numbers the dashboard can show.
+        "fill_rule": engine.fill_rule(state),
         "leaderboard": engine.leaderboard(state),
         "open_positions": engine.open_positions(state),
         "history": state["history"][-30:],
