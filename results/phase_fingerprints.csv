@@ -9,3 +9,5 @@ phase,date_run,sha,notes
 6,2026-11-25,338bf1255345,"harness: dry run clean, 3 risk limits each demonstrated, rerun places 0 second orders, gate invariant holds"
 7,2026-11-25,e8a5000d1c16,"AI layer built and SEALED OFF: 3 enable conditions, none met (6 hard rules open, core failed its gates, masked replay did not beat core). Demo documents are synthetic"
 8,2026-11-25,55d673c0c949,"adapt: kill lines 2x (core 1.5x), status keep/watch/review/out, dry-run rotate; live book empty so rows are labelled examples"
+4,2026-11-25,26d138138002,"funnel re-run on the next-open engine (40 sessions to 2026-11-25): still 13 in, 0 survivors; 7 of 10 comparable ideas worse by Rs875 in total, and gap_fade stopped being profitable"
+9,2026-11-25,6e6ec91fcf03,"next-open fills measured: 113 entries recomputed from the bars, 0 mismatches, control caught; gapped bars move all 116 fills (avg -0.0003%, worst -0.65%); 6 gapped_through, 1 no_next_bar; sweep 0/0.5/1/2x and gate 6 reads 2x from it"
