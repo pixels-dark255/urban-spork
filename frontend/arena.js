@@ -17,6 +17,7 @@ let arenaFunnel = null;
 let arenaSwing = null;
 let arenaHarness = null;
 let arenaAi = null;
+let arenaAdapt = null;
 
 // Which market's arena is on screen. One arena per market, so every call
 // carries it; the server keys storage by it and defaults to India.
@@ -82,7 +83,7 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes, harnessRes, aiRes] = await Promise.all([
+    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes, harnessRes, aiRes, adaptRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
       apiFetch(`${API}/api/system`).catch(() => null),
@@ -92,6 +93,7 @@ async function loadArena(silent = false) {
       apiFetch(`${API}/api/swing`).catch(() => null),
       apiFetch(`${API}/api/harness`).catch(() => null),
       apiFetch(`${API}/api/ai`).catch(() => null),
+      apiFetch(`${API}/api/adapt`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
@@ -118,6 +120,9 @@ async function loadArena(silent = false) {
     }
     if (aiRes && aiRes.ok) {
       arenaAi = await aiRes.json().catch(() => null);
+    }
+    if (adaptRes && adaptRes.ok) {
+      arenaAdapt = await adaptRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -517,6 +522,89 @@ function settingsTable(sys) {
           </tbody>
         </table>
       </div>
+    </details>`;
+}
+
+// ---------- Adapt (Phase 8) ----------
+// How far along its rope each strategy is. The bar fills toward the kill
+// line and keeps going past it, because "125% of the line" is a different
+// statement from "at the line" and the chart should not flatten them.
+function killBar(live, line) {
+  if (!line) return '<span class="arena-sub">no tested drawdown, so no line</span>';
+  const share = Math.min(1.5, Math.abs(live) / Math.abs(line));
+  const pct = Math.round(share * 100);
+  return `
+    <span class="kill-track" title="${pct}% of the kill line">
+      <i class="kill-fill ${share >= 1 ? "kill-over" : (share >= 0.5 ? "kill-near" : "")}"
+         style="width:${Math.min(100, share * 66.6).toFixed(1)}%"></i>
+      <i class="kill-mark"></i>
+    </span><span class="arena-sub"> ${pct}%</span>`;
+}
+
+const STATUS_CLASS = { keep: "sys-ok", watch: "", review: "", out: "sys-gap" };
+
+function adaptPanel(payload) {
+  if (!payload) return "";
+  if (!payload.ok) {
+    return `
+      <div class="section-heading"><span class="eyebrow">phase 8</span>
+        <h2 style="font-size:17px;">Adapt</h2></div>
+      <p class="arena-hint">${escapeHtml(payload.reason || "Not run yet.")}</p>`;
+  }
+  const a = payload.adapt || {};
+  const core = a.core_kill || {};
+  const kills = (a.kills || []).map((k) => `
+      <tr class="${k.crossed ? "sys-gap" : (k.half_way ? "" : "sys-ok")}">
+        <td class="arena-name">${escapeHtml(k.id)}</td>
+        <td class="study-num">${pct3(k.live_drawdown_pct)}</td>
+        <td class="study-num">${pct3(k.kill_line_pct)}</td>
+        <td>${killBar(k.live_drawdown_pct, k.kill_line_pct)}</td>
+      </tr>`).join("");
+
+  const statuses = (a.statuses || []).map((r) => `
+      <tr class="${STATUS_CLASS[r.status] || ""}">
+        <td class="arena-name">${escapeHtml(r.id)}</td>
+        <td class="sys-status">${escapeHtml(r.status.toUpperCase())}</td>
+        <td class="sys-detail">${escapeHtml(r.why || "")}</td>
+      </tr>`).join("");
+
+  const rot = a.rotate;
+  const rotation = !rot
+    ? '<p class="arena-hint">Nothing is <code>out</code>, so there is nothing to replace.</p>'
+    : `<p class="arena-hint"><b>${rot.rotate ? "Would rotate" : "No rotation"}:</b>
+         ${escapeHtml(rot.why || "")} <i>(dry run; nothing was written)</i></p>
+       ${(rot.rejected || []).length ? `<ul class="study-lines">${
+          rot.rejected.map((r) => `<li>rejected <b>${escapeHtml(r.id)}</b>: ${escapeHtml(r.why)}</li>`).join("")
+        }</ul>` : ""}`;
+
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 8</span>
+      <h2 style="font-size:17px;">Adapt</h2></div>
+    <p class="arena-hint">A kill line is ${a.kill_multiple}x a strategy's own worst tested
+      drawdown. Past it the thing running is no longer the thing that was tested, so it stops.
+      ${a.demo ? "<b>The live book is empty</b>, so these are labelled examples." : ""}</p>
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Strategy</th><th>Live DD</th><th>Kill line</th><th>How far</th></tr></thead>
+        <tbody>${kills}</tbody>
+      </table>
+    </div>
+    <p class="arena-hint">Core: live ${pct3(core.live_drawdown_pct || 0)} against a line of
+      ${pct3(core.kill_line_pct || 0)}. ${core.crossed
+        ? "<b>Past it:</b> no new sleeves. Changing the core itself is a human decision."
+        : "Within it."}</p>
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Strategy</th><th>Status</th><th>Why</th></tr></thead>
+        <tbody>${statuses}</tbody>
+      </table>
+    </div>
+    ${rotation}
+    <details class="arena-settings sys-modules">
+      <summary>This week's report</summary>
+      <ul class="study-lines">${(a.weekly || []).map((l) => `<li>${escapeHtml(l)}</li>`).join("")}</ul>
+      <p class="arena-hint">The first 3 lines go to Telegram. The review may fix a code bug;
+        it may never change a rule.</p>
     </details>`;
 }
 
@@ -1140,6 +1228,8 @@ function renderArena(data) {
     ${harnessPanel(arenaHarness)}
 
     ${aiPanel(arenaAi)}
+
+    ${adaptPanel(arenaAdapt)}
 
     ${systemPanel(arenaSystem)}
 

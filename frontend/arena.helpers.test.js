@@ -55,6 +55,7 @@ function loadArenaHelpers() {
   vm.runInContext(extractConst(SOURCE, "MARKET_LABELS"), context);
   vm.runInContext(extractConst(SOURCE, "UUID_RE"), context);
   vm.runInContext(extractConst(SOURCE, "DAY_NAMES"), context);
+  vm.runInContext(extractConst(SOURCE, "STATUS_CLASS"), context);
 
   // escapeHtml goes through a DOM node in the real app; the arena helpers
   // only care that it is called, so a string version keeps this hermetic.
@@ -73,7 +74,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel", "adaptPanel", "killBar"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -1230,4 +1231,93 @@ test("before the replay has run the panel says so", () => {
   assert.ok(arena.aiPanel({ ok: false, reason: "not been replayed yet" })
             .includes("not been replayed yet"));
   assert.strictEqual(arena.aiPanel(null), "");
+});
+
+// ---------------------------------------------------------------------------
+// Adapt (Phase 8)
+// ---------------------------------------------------------------------------
+
+const ADAPT = {
+  ok: true,
+  adapt: {
+    demo: true, kill_multiple: 2.0,
+    core_kill: { live_drawdown_pct: -12, kill_line_pct: -42.78, crossed: false },
+    kills: [
+      { id: "demo_keep", live_drawdown_pct: -3, kill_line_pct: -20,
+        crossed: false, half_way: false },
+      { id: "demo_out", live_drawdown_pct: -25, kill_line_pct: -20,
+        crossed: true, half_way: true },
+    ],
+    statuses: [
+      { id: "demo_keep", status: "keep", why: "within its tested behaviour" },
+      { id: "demo_out", status: "out", why: "past its kill line over 40 trades" },
+    ],
+    rotate: { rotate: true, why: "return over drawdown 2.8 -> 4.1 with cand_good",
+              rejected: [{ id: "cand_poor", why: "would make the account worse" }] },
+    weekly: ["TickerBoard weekly", "Paper vs backtest: clean", "Kill lines: crossed by demo_out"],
+  },
+};
+
+test("a strategy past its kill line is drawn differently from one near it", () => {
+  const near = arena.killBar(-12, -20);
+  const over = arena.killBar(-25, -20);
+  assert.ok(near.includes("kill-near") && !near.includes("kill-over"));
+  assert.ok(over.includes("kill-over"));
+});
+
+test("going past the line shows above 100 percent rather than clipping", () => {
+  assert.ok(arena.killBar(-25, -20).includes("125%"));
+});
+
+test("a strategy with no tested drawdown says so instead of drawing a bar", () => {
+  assert.ok(arena.killBar(-10, 0).includes("no tested drawdown"));
+});
+
+test("the kill line multiple is stated, not assumed", () => {
+  assert.ok(arena.adaptPanel(ADAPT).includes("2x a strategy's own worst tested"));
+});
+
+test("an out strategy is marked and a kept one is not", () => {
+  const rows = arena.adaptPanel(ADAPT).split("<tr");
+  assert.ok(rows.find((r) => r.includes("demo_out") && r.includes("OUT")));
+  assert.ok(rows.find((r) => r.includes("demo_keep") && r.includes("KEEP")));
+});
+
+test("the rotate proposal is labelled a dry run", () => {
+  const html = arena.adaptPanel(ADAPT);
+  assert.ok(html.includes("Would rotate"));
+  assert.ok(html.includes("nothing was written"));
+});
+
+test("every rejected candidate is named on the panel", () => {
+  assert.ok(arena.adaptPanel(ADAPT).includes("cand_poor"));
+  assert.ok(arena.adaptPanel(ADAPT).includes("would make the account worse"));
+});
+
+test("nothing out means the panel says there is nothing to replace", () => {
+  const none = JSON.parse(JSON.stringify(ADAPT));
+  none.adapt.rotate = null;
+  assert.ok(arena.adaptPanel(none).includes("nothing to replace"));
+});
+
+test("the core crossing its line says sleeves stop and the core is human-only", () => {
+  const crossed = JSON.parse(JSON.stringify(ADAPT));
+  crossed.adapt.core_kill.crossed = true;
+  const html = arena.adaptPanel(crossed);
+  assert.ok(html.includes("no new sleeves"));
+  assert.ok(html.includes("human decision"));
+});
+
+test("the panel repeats that a review may never change a rule", () => {
+  assert.ok(arena.adaptPanel(ADAPT).includes("never change a rule"));
+});
+
+test("an empty live book is called out", () => {
+  assert.ok(arena.adaptPanel(ADAPT).includes("live book is empty"));
+});
+
+test("before the review has run the panel says so", () => {
+  assert.ok(arena.adaptPanel({ ok: false, reason: "has not run yet" })
+            .includes("has not run yet"));
+  assert.strictEqual(arena.adaptPanel(null), "");
 });

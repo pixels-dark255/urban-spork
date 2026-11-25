@@ -8,3 +8,4 @@ phase,date_run,sha,notes
 5,2026-11-25,caaf2427ec36,"swing core ITBEES/GOLDBEES on real bars: +0.70%/yr, -28.52% maxDD, r/dd 0.03; FAILS neighbours (SMA150 -8.06%) and 2x cost (-5.73%); locked test deliberately NOT run"
 6,2026-11-25,338bf1255345,"harness: dry run clean, 3 risk limits each demonstrated, rerun places 0 second orders, gate invariant holds"
 7,2026-11-25,e8a5000d1c16,"AI layer built and SEALED OFF: 3 enable conditions, none met (6 hard rules open, core failed its gates, masked replay did not beat core). Demo documents are synthetic"
+8,2026-11-25,55d673c0c949,"adapt: kill lines 2x (core 1.5x), status keep/watch/review/out, dry-run rotate; live book empty so rows are labelled examples"

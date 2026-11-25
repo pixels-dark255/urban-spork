@@ -76,6 +76,12 @@ MODULES = [
      "note": "Phase 7, OFF. Core only; four calls; recorded before it can "
              "act; enabling needs clean hard rules, a core that passed, "
              "and a masked replay that beat it."},
+    {"role": "Adapt",
+     "modules": ["adapt/reconcile.py", "adapt/killlines.py",
+                 "adapt/status.py", "adapt/rotate.py", "adapt/review.py",
+                 "CHANGELOG_rules.md"],
+     "note": "Phase 8. Paper vs backtest, kill lines, monthly status, "
+             "rotation. The review may fix a bug, never a rule."},
     {"role": "Settings",
      "modules": ["settings.py", "AGENTS.md"],
      "note": "Parsed from AGENTS.md §2. No phase hardcodes a number."},

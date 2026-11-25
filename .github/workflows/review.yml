@@ -1,0 +1,54 @@
+# The scheduled review. Weekly on Saturday, monthly at month end, and a
+# quarterly re-pick proposal that waits for a human yes.
+#
+# The review may fix a code bug. It may never change a rule. That boundary
+# is why this is a report and a proposal rather than an action: a review
+# that could edit a rule would, sooner or later, edit the losing one.
+
+name: Review
+
+on:
+  schedule:
+    # 05:11 UTC is 10:41 IST on Saturday: the weekly report.
+    - cron: "11 5 * * 6"
+    # 05:41 UTC on the 1st: the monthly status, and quarterly where due.
+    - cron: "41 5 1 * *"
+  workflow_dispatch:
+    inputs:
+      demo:
+        description: "Use labelled example strategies (the live book is empty)"
+        required: false
+        default: true
+        type: boolean
+
+concurrency:
+  group: review
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      - name: Review
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TZ: Asia/Kolkata
+        run: python -m adapt.cli ${{ inputs.demo && '--demo' || '' }}

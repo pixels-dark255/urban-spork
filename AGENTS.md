@@ -155,6 +155,7 @@ Reuse these. Do not create a parallel copy of any of them.
 | Fingerprint | `backend/fingerprint.py` — one comparable line per phase |
 | Regime | `backend/signals/regime.py` — trend and vol per bar; one definition, shared with the study |
 | Rule spec | `rules.yaml` + `backend/signals/rules.py` — the 7-part schema. `python3.13 -m signals.rules` prints the table |
+| Adapt | `backend/adapt/` + `CHANGELOG_rules.md` — Phase 8. `python -m adapt.cli` prints the kill lines, the status table and a dry-run rotate. The scheduled review may fix a code bug, never a rule |
 | AI layer | `backend/ai/` + `ai_calls/` — Phase 7, **off**. `python -m ai.cli` runs the two replays and prints the enable verdict. Core only; four calls; every call recorded before it can act |
 | Harness | `backend/harness/` + `.github/workflows/harness.yml` — Phase 6. `python -m harness.cli` prints the dry run, the risk limits and the rerun check. Paper only; the trust ladder's top rung writes a paper fill and nothing else |
 | Swing account | `backend/swing/` — Phase 5. `python -m swing.cli` runs the core rotation, the quarterly picker and the sleeves. Delivery costs, separate from the Arena's intraday book |

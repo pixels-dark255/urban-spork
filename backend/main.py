@@ -654,6 +654,15 @@ def api_asset_study():
     return {"ok": True, "study": result}
 
 
+@app.get("/api/adapt")
+def api_adapt():
+    """Phase 8: kill lines, the status table, and the last rotate proposal."""
+    result = research_store.load("8")
+    if not result:
+        return {"ok": False, "reason": "The review has not run yet."}
+    return {"ok": True, "adapt": result}
+
+
 @app.get("/api/ai")
 def api_ai():
     """Phase 7: the AI layer's replay, and whether it may be turned on."""
