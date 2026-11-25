@@ -654,6 +654,16 @@ def api_asset_study():
     return {"ok": True, "study": result}
 
 
+@app.get("/api/funnel")
+def api_funnel():
+    """Phase 4: which ideas cleared the seven gates, and where the rest died."""
+    result = research_store.load("4")
+    if not result:
+        return {"ok": False, "reason": "The funnel has not been run yet. "
+                                       "Trigger the Research workflow."}
+    return {"ok": True, "funnel": result}
+
+
 @app.get("/api/proof")
 def api_proof():
     """Phase 3: whether the backtester has been shown to tell the truth.

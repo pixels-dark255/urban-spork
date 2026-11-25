@@ -56,6 +56,11 @@ MODULES = [
      "note": "Phase 3. A planted edge, pure noise, a truncation guard with "
              "a deliberate cheat as its control, and replay vs the live "
              "drip-feed."},
+    {"role": "Funnel",
+     "modules": ["funnel/gates.py", "funnel/run.py", "funnel/backtest.py",
+                 "funnel/cli.py", "tools/test_idea.py", "bench.yaml"],
+     "note": "Phase 4. Seven gates in order; survivors get capital, the "
+             "rest stay in the Arena as observe-only."},
     {"role": "Settings",
      "modules": ["settings.py", "AGENTS.md"],
      "note": "Parsed from AGENTS.md §2. No phase hardcodes a number."},
@@ -99,6 +104,11 @@ RULES = [
      "status": GAP,
      "detail": "regime.size_multiple is written and tested, and every rule "
                "declares it, but engine sizing does not call it yet."},
+    {"id": "funnel-neighbours",
+     "rule": "Gate 5 varies every numeric parameter", "status": GAP,
+     "detail": "Indicator windows (the 9 and 21 in ema9/ema21, the 20 in "
+               "the Bollinger bands) are computed once in enrich() for all "
+               "strategies, so gate 5 varies the rule parameters only."},
     {"id": "determinism", "rule": "Deterministic output with a fingerprint",
      "status": GAP,
      "detail": "fingerprint.py exists and Phase 0 prints one, but the "

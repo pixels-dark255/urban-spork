@@ -73,7 +73,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -918,4 +918,89 @@ test("before the proof has run the panel says so", () => {
   const html = arena.proofPanel({ ok: false, reason: "has not been run yet" });
   assert.ok(html.includes("has not been run yet"));
   assert.strictEqual(arena.proofPanel(null), "");
+});
+
+// ---------------------------------------------------------------------------
+// The funnel (Phase 4)
+// ---------------------------------------------------------------------------
+
+const GATE_ORDER = ["fits_asset", "training_profit", "enough_trades"];
+const GATE_TITLES = { fits_asset: "1. Fits the asset",
+                      training_profit: "2. Profitable in training",
+                      enough_trades: "3. Enough trades" };
+
+const FUNNEL = {
+  ok: true,
+  funnel: {
+    source: "yahoo",
+    order: GATE_ORDER, titles: GATE_TITLES,
+    counts: {
+      ideas_in: 13, survivors: 1,
+      fits_asset: { reached: 13, passed: 11, failed: 2 },
+      training_profit: { reached: 11, passed: 2, failed: 9 },
+      enough_trades: { reached: 2, passed: 1, failed: 1 },
+    },
+    rows: [
+      { id: "a", name: "Alpha", survivor: true,
+        training: { trades: 61, net: 900, profit_factor: 1.55,
+                    max_drawdown: -210.5, return_pct: 1.8 } },
+      { id: "b", name: "Beta", survivor: false, failed_at: "training_profit",
+        gates: { training_profit: { pass: false, why: "net -315.57 after costs" } } },
+    ],
+  },
+};
+
+test("the chart draws one row per gate, narrowing as ideas fall", () => {
+  const html = arena.funnelChart(FUNNEL.funnel.counts, GATE_ORDER, GATE_TITLES);
+  assert.ok(html.includes("11 of 13"));
+  assert.ok(html.includes("2 of 11"));
+  assert.ok(html.includes("1 of 2"));
+});
+
+test("the number lost at each gate is shown, not just the survivors", () => {
+  // Where the chart collapses is the finding; hiding the losses hides it.
+  const html = arena.funnelChart(FUNNEL.funnel.counts, GATE_ORDER, GATE_TITLES);
+  assert.ok(html.includes("&minus;9"));
+});
+
+test("a gate that lost nobody shows no loss marker", () => {
+  const counts = { ideas_in: 5, fits_asset: { reached: 5, passed: 5, failed: 0 } };
+  const html = arena.funnelChart(counts, ["fits_asset"], GATE_TITLES);
+  assert.ok(!html.includes("&minus;"));
+});
+
+test("survivors are listed with return and max drawdown", () => {
+  const html = arena.funnelPanel(FUNNEL);
+  assert.ok(html.includes("Alpha"));
+  assert.ok(html.includes("+1.800%"));
+  assert.ok(html.includes("1.55"));
+});
+
+test("every fallen idea names the gate that stopped it", () => {
+  const html = arena.funnelPanel(FUNNEL);
+  assert.ok(html.includes("Beta"));
+  assert.ok(html.includes("2. Profitable in training"));
+  assert.ok(html.includes("net -315.57 after costs"));
+});
+
+test("no survivors says so plainly instead of showing an empty table", () => {
+  const empty = JSON.parse(JSON.stringify(FUNNEL));
+  empty.funnel.rows = [empty.funnel.rows[1]];
+  empty.funnel.counts.survivors = 0;
+  const html = arena.funnelPanel(empty);
+  assert.ok(html.includes("No idea cleared all seven gates"));
+  assert.ok(html.includes("a result, not a"));
+});
+
+test("a synthetic run is labelled so its counts are not mistaken for a verdict", () => {
+  const synth = JSON.parse(JSON.stringify(FUNNEL));
+  synth.funnel.source = "synthetic";
+  assert.ok(arena.funnelPanel(synth).includes("Run on synthetic bars"));
+  assert.ok(!arena.funnelPanel(FUNNEL).includes("Run on synthetic bars"));
+});
+
+test("before the funnel has run the panel says so", () => {
+  assert.ok(arena.funnelPanel({ ok: false, reason: "not been run yet" })
+            .includes("not been run yet"));
+  assert.strictEqual(arena.funnelPanel(null), "");
 });

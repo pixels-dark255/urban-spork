@@ -21,6 +21,17 @@
 # so the rule cannot enter the funnel as written. The commonest cause is a
 # stop that is ATR- or structure-based rather than a percentage.
 
+# `kind` decides which assets an idea is allowed to trade (funnel gate 1):
+# breakout and momentum ideas may only trade tickers Phase 1 labelled
+# "keeps going"; reversion ideas only those labelled "snaps back".
+#
+# Two judgments worth disagreeing with out loud. `vwap_reclaim` is called
+# reversion because it buys a recovery from below VWAP, though a case
+# exists for momentum. `score4` is `mixed`: it adds a trend signal, an RSI
+# signal, a VWAP signal and an opening-range signal together, so there is
+# no single asset label that suits it, and it fails gate 1 for that reason
+# rather than being quietly assigned to one side.
+
 schema_version: 1
 
 defaults:
@@ -34,6 +45,7 @@ defaults:
 strategies:
 
   - id: orb
+    kind: breakout
     name: Opening-range breakout
     testable: true
     market: nse
@@ -49,6 +61,7 @@ strategies:
     target: 2x the risk
 
   - id: orb_both
+    kind: breakout
     name: Opening-range breakout (long + short)
     testable: true
     market: nse
@@ -64,6 +77,7 @@ strategies:
     target: 2x the risk
 
   - id: score4
+    kind: mixed
     name: 4-signal score (original)
     testable: true
     market: nse
@@ -79,6 +93,7 @@ strategies:
     target: 2.5% above entry
 
   - id: benchmark
+    kind: benchmark
     name: "Benchmark: buy first bar, hold to close"
     testable: true
     market: nse
@@ -102,6 +117,7 @@ strategies:
   # ---------------------------------------------------------------------
 
   - id: vwap_reclaim
+    kind: reversion
     name: VWAP reclaim
     testable: false
     not_testable_because: stop is 0.5 ATR below the lower of the bar low and VWAP, not a percentage
@@ -118,6 +134,7 @@ strategies:
     target: 2x the risk
 
   - id: ema_cross
+    kind: momentum
     name: EMA 9/21 crossover
     testable: false
     not_testable_because: stop is 1.5 ATR, not a percentage
@@ -134,6 +151,7 @@ strategies:
     target: 3 ATR above entry
 
   - id: rsi_reversion
+    kind: reversion
     name: RSI oversold bounce
     testable: false
     not_testable_because: stop is 1.5 ATR, not a percentage
@@ -150,6 +168,7 @@ strategies:
     target: 2 ATR above entry
 
   - id: bb_breakout
+    kind: breakout
     name: Bollinger volume breakout
     testable: false
     not_testable_because: stop is 1.5 ATR, not a percentage
@@ -166,6 +185,7 @@ strategies:
     target: 3 ATR above entry
 
   - id: supertrend
+    kind: momentum
     name: SuperTrend (10, 3) flip
     testable: false
     not_testable_because: the stop is the SuperTrend line itself, a moving level rather than a percentage
@@ -182,6 +202,7 @@ strategies:
     target: 2x the risk
 
   - id: vwap_bands
+    kind: reversion
     name: VWAP band mean-reversion
     testable: false
     not_testable_because: stop is a swing extreme offset by 0.5 ATR, not a percentage
@@ -198,6 +219,7 @@ strategies:
     target: VWAP itself
 
   - id: trend_pullback
+    kind: momentum
     name: Trend pullback to EMA 21
     testable: false
     not_testable_because: stop is the last 5-bar swing extreme, a structure rather than a percentage
@@ -214,6 +236,7 @@ strategies:
     target: 2x the risk
 
   - id: gap_fade
+    kind: reversion
     name: Gap fade (gap-fill)
     testable: false
     not_testable_because: stop is the day's extreme offset by 0.2 ATR, not a percentage
@@ -230,6 +253,7 @@ strategies:
     target: the previous session's close
 
   - id: intraday_momentum
+    kind: momentum
     name: "Intraday momentum (first 30 min → last hour)"
     testable: false
     not_testable_because: stop is the lower of VWAP and 1.5 ATR, not a percentage

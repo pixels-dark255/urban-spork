@@ -1,0 +1,125 @@
+{
+ "source": "Phase 1 asset study, run in CI",
+ "fingerprint": "4320662e1e5b",
+ "run": "https://github.com/pixels-dark255/urban-spork/actions/runs/45491155404",
+ "window": {
+  "start": "2022-01-01",
+  "end": "2024-12-31"
+ },
+ "bar_size": "1d",
+ "missing": [
+  "TATAMOTORS.NS"
+ ],
+ "labels": {
+  "AXISBANK.NS": {
+   "keeps_going": false,
+   "keeps_going_events": 66,
+   "snaps_back": false,
+   "snaps_back_events": 141,
+   "safe": false,
+   "trend_gap": -0.00231,
+   "calm_vol_ratio": 1.22,
+   "max_correlation": 0.71
+  },
+  "BHARTIARTL.NS": {
+   "keeps_going": true,
+   "keeps_going_events": 86,
+   "snaps_back": true,
+   "snaps_back_events": 134,
+   "safe": false,
+   "trend_gap": -0.00247,
+   "calm_vol_ratio": 1.04,
+   "max_correlation": 0.5
+  },
+  "HDFCBANK.NS": {
+   "keeps_going": false,
+   "keeps_going_events": 52,
+   "snaps_back": false,
+   "snaps_back_events": 95,
+   "safe": false,
+   "trend_gap": -0.00056,
+   "calm_vol_ratio": 1.06,
+   "max_correlation": 0.76
+  },
+  "HINDUNILVR.NS": {
+   "keeps_going": false,
+   "keeps_going_events": 37,
+   "snaps_back": false,
+   "snaps_back_events": 88,
+   "safe": true,
+   "trend_gap": -0.00113,
+   "calm_vol_ratio": 1.22,
+   "max_correlation": 0.4
+  },
+  "ICICIBANK.NS": {
+   "keeps_going": false,
+   "keeps_going_events": 72,
+   "snaps_back": true,
+   "snaps_back_events": 142,
+   "safe": false,
+   "trend_gap": -0.00619,
+   "calm_vol_ratio": 1.16,
+   "max_correlation": 0.8
+  },
+  "INFY.NS": {
+   "keeps_going": true,
+   "keeps_going_events": 42,
+   "snaps_back": true,
+   "snaps_back_events": 85,
+   "safe": false,
+   "trend_gap": -0.00039,
+   "calm_vol_ratio": 1.09,
+   "max_correlation": 0.89
+  },
+  "ITC.NS": {
+   "keeps_going": false,
+   "keeps_going_events": 83,
+   "snaps_back": false,
+   "snaps_back_events": 126,
+   "safe": true,
+   "trend_gap": -0.00059,
+   "calm_vol_ratio": 1.0,
+   "max_correlation": 0.43
+  },
+  "RELIANCE.NS": {
+   "keeps_going": true,
+   "keeps_going_events": 51,
+   "snaps_back": true,
+   "snaps_back_events": 82,
+   "safe": false,
+   "trend_gap": 0.00064,
+   "calm_vol_ratio": 1.18,
+   "max_correlation": 0.7
+  },
+  "SBIN.NS": {
+   "keeps_going": false,
+   "keeps_going_events": 66,
+   "snaps_back": false,
+   "snaps_back_events": 121,
+   "safe": false,
+   "trend_gap": -0.00388,
+   "calm_vol_ratio": 1.04,
+   "max_correlation": 0.73
+  },
+  "TATASTEEL.NS": {
+   "keeps_going": false,
+   "keeps_going_events": 59,
+   "snaps_back": true,
+   "snaps_back_events": 101,
+   "safe": false,
+   "trend_gap": -0.00152,
+   "calm_vol_ratio": 1.26,
+   "max_correlation": 0.56
+  },
+  "TCS.NS": {
+   "keeps_going": false,
+   "keeps_going_events": 52,
+   "snaps_back": true,
+   "snaps_back_events": 120,
+   "safe": false,
+   "trend_gap": -0.00259,
+   "calm_vol_ratio": 1.15,
+   "max_correlation": 0.86
+  }
+ }
+}

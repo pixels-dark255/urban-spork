@@ -972,3 +972,56 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
 
 .study-lines { margin: 6px 0 0; padding-left: 18px; }
 .study-lines li { font-size: 12.5px; line-height: 1.6; color: var(--bone); margin-bottom: 6px; }
+
+/* ---------- The funnel (Phase 4) ---------- */
+/* Bar width is survivors as a share of ideas in. The interesting part is
+   where it collapses: that gate is the one doing the work. */
+.funnel { margin: 10px 0 16px; }
+.funnel-row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1.1fr) minmax(0, 2fr) 42px;
+  gap: 10px;
+  align-items: center;
+  padding: 3px 0;
+}
+.funnel-label {
+  font-size: 11.5px;
+  color: var(--mist);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.funnel-track {
+  position: relative;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 4px;
+  height: 20px;
+  overflow: hidden;
+}
+.funnel-bar {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, rgba(60,154,92,0.55), rgba(60,154,92,0.28));
+}
+.funnel-count {
+  position: absolute;
+  top: 0; left: 8px; right: 8px;
+  line-height: 20px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--bone);
+  white-space: nowrap;
+}
+/* What was lost at this gate. Red, small, and never omitted when zero
+   would be misleading: a blank means nothing fell, not that nobody looked. */
+.funnel-lost {
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--signal-red);
+  text-align: right;
+}
+@media (max-width: 520px) {
+  .funnel-row { grid-template-columns: minmax(96px, 1fr) minmax(0, 1.6fr) 34px; gap: 6px; }
+  .funnel-label { font-size: 10.5px; }
+}

@@ -1,0 +1,17 @@
+# An example idea file. Copy it, change the numbers, run:
+#   cd backend && python -m tools.test_idea ../ideas/example_rsi_patient.yaml
+#
+# Rule logic is NOT defined here. `base` points at a rule that already
+# exists in arena/strategies.py, which is the one signal module
+# (AGENTS.md §1.2); this file only moves its parameters.
+id: rsi_patient
+name: RSI oversold bounce, patient exit
+kind: reversion
+bar_size: 5m
+base: rsi_reversion
+params:
+  rsi_floor: 25.0
+  rsi_exit: 60.0
+neighbours:
+  rsi_floor: [20.0, 25.0, 30.0]
+  rsi_exit: [55.0, 60.0, 65.0]

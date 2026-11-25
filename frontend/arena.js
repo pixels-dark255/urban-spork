@@ -13,6 +13,7 @@ let arenaMarkets = null;
 let arenaSystem = null;
 let arenaStudy = null;
 let arenaProof = null;
+let arenaFunnel = null;
 
 // Which market's arena is on screen. One arena per market, so every call
 // carries it; the server keys storage by it and defaults to India.
@@ -78,12 +79,13 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes, systemRes, studyRes, proofRes] = await Promise.all([
+    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
       apiFetch(`${API}/api/system`).catch(() => null),
       apiFetch(`${API}/api/asset-study`).catch(() => null),
       apiFetch(`${API}/api/proof`).catch(() => null),
+      apiFetch(`${API}/api/funnel`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
@@ -98,6 +100,9 @@ async function loadArena(silent = false) {
     }
     if (proofRes && proofRes.ok) {
       arenaProof = await proofRes.json().catch(() => null);
+    }
+    if (funnelRes && funnelRes.ok) {
+      arenaFunnel = await funnelRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -500,6 +505,86 @@ function settingsTable(sys) {
     </details>`;
 }
 
+// ---------- The funnel (Phase 4) ----------
+// A horizontal bar per gate, each as wide as the number of ideas still
+// standing. The useful reading is where the chart collapses: that is the
+// gate doing the actual work, and it names what would have to change.
+function funnelChart(counts, order, titles) {
+  const total = counts.ideas_in || 1;
+  const bars = order.map((key) => {
+    const c = counts[key] || { reached: 0, passed: 0, failed: 0 };
+    const width = Math.max(2, Math.round((c.passed / total) * 100));
+    return `
+      <div class="funnel-row">
+        <div class="funnel-label">${escapeHtml(titles[key] || key)}</div>
+        <div class="funnel-track">
+          <i class="funnel-bar" style="width:${width}%"></i>
+          <span class="funnel-count">${c.passed} of ${c.reached}</span>
+        </div>
+        <div class="funnel-lost">${c.failed ? `&minus;${c.failed}` : ""}</div>
+      </div>`;
+  }).join("");
+  return `<div class="funnel">${bars}</div>`;
+}
+
+function funnelPanel(payload) {
+  if (!payload) return "";
+  if (!payload.ok) {
+    return `
+      <div class="section-heading"><span class="eyebrow">phase 4</span>
+        <h2 style="font-size:17px;">The funnel</h2></div>
+      <p class="arena-hint">${escapeHtml(payload.reason || "Not run yet.")}</p>`;
+  }
+  const f = payload.funnel || {};
+  const counts = f.counts || {};
+  const order = f.order || [];
+  const titles = f.titles || {};
+  const rows = f.rows || [];
+  const survivors = rows.filter((r) => r.survivor);
+
+  const survivorTable = survivors.length
+    ? `<div class="table-scroll">
+        <table class="backtest-table sys-table">
+          <thead><tr><th>Survivor</th><th>Trades</th><th>Return</th><th>PF</th><th>Max drawdown</th></tr></thead>
+          <tbody>${survivors.map((r) => `
+            <tr class="sys-ok">
+              <td class="arena-name">${escapeHtml(r.name)}</td>
+              <td class="study-num">${r.training.trades}</td>
+              <td class="study-num">${r.training.return_pct === null ? "n/a" : pct3(r.training.return_pct)}</td>
+              <td class="study-num">${r.training.profit_factor === null ? "n/a" : r.training.profit_factor}</td>
+              <td class="study-num neg">${inr(r.training.max_drawdown, true)}</td>
+            </tr>`).join("")}</tbody>
+        </table>
+      </div>`
+    : `<p class="arena-warn">No idea cleared all seven gates. That is a result, not a
+        malfunction: it says none of these rules has yet earned capital.</p>`;
+
+  const fallen = rows.filter((r) => !r.survivor).map((r) => `
+      <tr class="sys-gap">
+        <td class="arena-name">${escapeHtml(r.name)}</td>
+        <td class="sys-status">${escapeHtml(titles[r.failed_at] || r.failed_at || "")}</td>
+        <td class="sys-detail">${escapeHtml((r.gates && r.gates[r.failed_at] && r.gates[r.failed_at].why) || "")}</td>
+      </tr>`).join("");
+
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 4</span>
+      <h2 style="font-size:17px;">The funnel</h2></div>
+    <p class="arena-hint">${counts.ideas_in} ideas in, ${counts.survivors} survivors.
+      Every idea that fell is listed with the gate that stopped it, because that is the part
+      you can act on.${f.source === "synthetic" ? " <b>Run on synthetic bars:</b> these counts show the funnel working, not a verdict on the strategies." : ""}</p>
+    ${funnelChart(counts, order, titles)}
+    ${survivorTable}
+    <details class="arena-settings sys-modules" open>
+      <summary>Where each idea stopped</summary>
+      <div class="table-scroll">
+        <table class="backtest-table sys-table">
+          <thead><tr><th>Idea</th><th>Stopped at</th><th>Why</th></tr></thead>
+          <tbody>${fallen}</tbody>
+        </table>
+      </div>
+    </details>`;
+}
+
 // ---------- Backtester proof (Phase 3) ----------
 // The bands were written before the backtester was built. Showing the
 // measured number next to the band it had to land in is the difference
@@ -774,6 +859,8 @@ function renderArena(data) {
     ${ruleTable(arenaSystem && arenaSystem.rule_spec)}
 
     ${proofPanel(arenaProof)}
+
+    ${funnelPanel(arenaFunnel)}
 
     ${systemPanel(arenaSystem)}
 

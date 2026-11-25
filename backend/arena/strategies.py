@@ -259,6 +259,19 @@ def _ok(*vals) -> bool:
 # ---------------------------------------------------------------------------
 
 class Strategy:
+    # Rule parameters, and the three values the funnel's neighbour gate
+    # steps through (down, default, up). Defaults must equal the literals
+    # they replaced: a parameterised strategy that trades differently from
+    # the one whose results are on the leaderboard is a new strategy.
+    #
+    # Indicator windows (the 9 and 21 in ema9/ema21, the 20 in the
+    # Bollinger bands) are NOT here. They are computed once in enrich() for
+    # every strategy at once, so varying one per strategy would mean
+    # re-enriching per variant. Gate 5 therefore covers the rule
+    # parameters and not the indicator windows; see AGENTS.md §5.
+    PARAMS: dict = {}
+    NEIGHBOURS: dict = {}
+
     id = "base"
     name = "Base"
     description = ""
@@ -269,6 +282,21 @@ class Strategy:
     # confirmation, and says so in its name rather than pretending the two
     # are the same strategy.
     volume_gated = False
+
+    def __init__(self, **overrides):
+        unknown = sorted(set(overrides) - set(self.PARAMS))
+        if unknown:
+            raise ValueError("%s has no parameter(s): %s"
+                             % (self.id, ", ".join(unknown)))
+        self.params = {**self.PARAMS, **overrides}
+
+    def p(self, name):
+        return self.params[name]
+
+    def variant(self, **overrides):
+        """The same rule with one or more parameters moved."""
+        return type(self)(**{**{k: v for k, v in self.params.items()
+                                if k != "__defaults__"}, **overrides})
 
     def display_name(self, has_volume: bool = True) -> str:
         if self.volume_gated and not has_volume:
@@ -291,6 +319,9 @@ class Strategy:
 
 
 class OpeningRangeBreakout(Strategy):
+    PARAMS = {"stop_cap_pct": 0.015, "target_r": 2.0}
+    NEIGHBOURS = {"stop_cap_pct": [0.010, 0.015, 0.020],
+                  "target_r": [1.5, 2.0, 2.5]}
     id = "orb"
     name = "Opening-range breakout"
     description = ("Buys when price closes above the high of the first 15 minutes. "
@@ -303,13 +334,18 @@ class OpeningRangeBreakout(Strategy):
         if row["bar_no"] < OPENING_RANGE_BARS or row["Close"] <= row["or_high"] or prev["Close"] > row["or_high"]:
             return None
         price = row["Close"]
-        stop = max(row["or_low"], price * (1 - 0.015))
+        stop = max(row["or_low"], price * (1 - self.p("stop_cap_pct")))
         if stop >= price:
             return None
-        return {"stop": stop, "target": price + 2 * (price - stop), "reason": "closed above opening range"}
+        return {"stop": stop,
+                "target": price + self.p("target_r") * (price - stop),
+                "reason": "closed above opening range"}
 
 
 class VwapReclaim(Strategy):
+    PARAMS = {"stop_atr": 0.5, "target_r": 2.0, "exit_slack": 0.998}
+    NEIGHBOURS = {"stop_atr": [0.25, 0.5, 1.0], "target_r": [1.5, 2.0, 2.5],
+                  "exit_slack": [0.996, 0.998, 0.999]}
     id = "vwap_reclaim"
     name = "VWAP reclaim"
     description = ("Buys when price crosses back above the day's VWAP with above-average volume. "
@@ -334,19 +370,22 @@ class VwapReclaim(Strategy):
         if not no_vol and row["Volume"] < row["vol_avg20"]:
             return None
         price = row["Close"]
-        stop = min(row["Low"], row["vwap"]) - 0.5 * row["atr14"]
+        stop = min(row["Low"], row["vwap"]) - self.p("stop_atr") * row["atr14"]
         if stop >= price:
             return None
-        return {"stop": stop, "target": price + 2 * (price - stop),
+        return {"stop": stop,
+                "target": price + self.p("target_r") * (price - stop),
                 "reason": "reclaimed TWAP" if no_vol else "reclaimed VWAP on volume"}
 
     def exit(self, row, prev, position):
-        if _ok(row["vwap"]) and row["Close"] < row["vwap"] * 0.998:
+        if _ok(row["vwap"]) and row["Close"] < row["vwap"] * self.p("exit_slack"):
             return "lost VWAP"
         return None
 
 
 class EmaCrossover(Strategy):
+    PARAMS = {"stop_atr": 1.5, "target_atr": 3.0}
+    NEIGHBOURS = {"stop_atr": [1.0, 1.5, 2.0], "target_atr": [2.0, 3.0, 4.0]}
     id = "ema_cross"
     name = "EMA 9/21 crossover"
     description = "Trend-following: buys when the 9-EMA crosses above the 21-EMA, exits on the cross back."
@@ -355,7 +394,8 @@ class EmaCrossover(Strategy):
         if row["bar_no"] < 2 or not _ok(row["ema9"], row["ema21"], prev["ema9"], prev["ema21"]):
             return None
         if prev["ema9"] <= prev["ema21"] and row["ema9"] > row["ema21"]:
-            stop, target = self.atr_levels(row["Close"], row["atr14"], 1.5, 3.0)
+            stop, target = self.atr_levels(row["Close"], row["atr14"],
+                                           self.p("stop_atr"), self.p("target_atr"))
             return {"stop": stop, "target": target, "reason": "EMA9 crossed above EMA21"}
         return None
 
@@ -366,6 +406,10 @@ class EmaCrossover(Strategy):
 
 
 class RsiReversion(Strategy):
+    PARAMS = {"rsi_floor": 30.0, "rsi_exit": 55.0,
+              "stop_atr": 1.5, "target_atr": 2.0}
+    NEIGHBOURS = {"rsi_floor": [25.0, 30.0, 35.0], "rsi_exit": [50.0, 55.0, 60.0],
+                  "stop_atr": [1.0, 1.5, 2.0], "target_atr": [1.5, 2.0, 2.5]}
     id = "rsi_reversion"
     name = "RSI oversold bounce"
     description = ("Mean-reversion: buys when RSI(14) climbs back above 30 after being oversold, "
@@ -374,18 +418,24 @@ class RsiReversion(Strategy):
     def entry(self, row, prev):
         if row["bar_no"] < 3 or not _ok(row["rsi14"], prev["rsi14"]):
             return None
-        if prev["rsi14"] < 30 <= row["rsi14"]:
-            stop, target = self.atr_levels(row["Close"], row["atr14"], 1.5, 2.0)
-            return {"stop": stop, "target": target, "reason": "RSI back above 30"}
+        floor = self.p("rsi_floor")
+        if prev["rsi14"] < floor <= row["rsi14"]:
+            stop, target = self.atr_levels(row["Close"], row["atr14"],
+                                           self.p("stop_atr"), self.p("target_atr"))
+            return {"stop": stop, "target": target,
+                    "reason": "RSI back above %g" % floor}
         return None
 
     def exit(self, row, prev, position):
-        if _ok(row["rsi14"]) and row["rsi14"] > 55:
-            return "RSI recovered above 55"
+        if _ok(row["rsi14"]) and row["rsi14"] > self.p("rsi_exit"):
+            return "RSI recovered above %g" % self.p("rsi_exit")
         return None
 
 
 class BollingerBreakout(Strategy):
+    PARAMS = {"vol_mult": 1.5, "stop_atr": 1.5, "target_atr": 3.0}
+    NEIGHBOURS = {"vol_mult": [1.2, 1.5, 2.0], "stop_atr": [1.0, 1.5, 2.0],
+                  "target_atr": [2.0, 3.0, 4.0]}
     id = "bb_breakout"
     name = "Bollinger volume breakout"
     description = ("Momentum: buys a close above the upper Bollinger band on 1.5x average volume, "
@@ -401,9 +451,10 @@ class BollingerBreakout(Strategy):
             return None
         if row["Close"] <= row["bb_up"]:
             return None
-        if not no_vol and row["Volume"] < 1.5 * row["vol_avg20"]:
+        if not no_vol and row["Volume"] < self.p("vol_mult") * row["vol_avg20"]:
             return None
-        stop, target = self.atr_levels(row["Close"], row["atr14"], 1.5, 3.0)
+        stop, target = self.atr_levels(row["Close"], row["atr14"],
+                                       self.p("stop_atr"), self.p("target_atr"))
         return {"stop": stop, "target": target,
                 "reason": "breakout above upper band" if no_vol
                           else "volume breakout above upper band"}
@@ -415,6 +466,11 @@ class BollingerBreakout(Strategy):
 
 
 class LegacyScore(Strategy):
+    PARAMS = {"entry_score": 2, "exit_score": -2,
+              "stop_pct": 0.015, "target_pct": 0.025}
+    NEIGHBOURS = {"entry_score": [1, 2, 3], "exit_score": [-1, -2, -3],
+                  "stop_pct": [0.010, 0.015, 0.020],
+                  "target_pct": [0.020, 0.025, 0.030]}
     id = "score4"
     name = "4-signal score (original)"
     description = ("The app's original intraday rule: MA trend + RSI + VWAP + opening range, "
@@ -433,19 +489,24 @@ class LegacyScore(Strategy):
 
     def entry(self, row, prev):
         s, p = self.score(row), self.score(prev)
-        if s is None or s < 2 or (p is not None and p >= 2):
-            return None  # act on the transition into >=2, not every bar it stays there
+        want = self.p("entry_score")
+        if s is None or s < want or (p is not None and p >= want):
+            return None  # act on the transition into >=want, not every bar it stays there
         price = row["Close"]
-        return {"stop": price * 0.985, "target": price * 1.025, "reason": f"score {s:+d}"}
+        return {"stop": price * (1 - self.p("stop_pct")),
+                "target": price * (1 + self.p("target_pct")),
+                "reason": f"score {s:+d}"}
 
     def exit(self, row, prev, position):
         s = self.score(row)
-        if s is not None and s <= -2:
+        if s is not None and s <= self.p("exit_score"):
             return f"score {s:+d}"
         return None
 
 
 class BuyAtOpenBenchmark(Strategy):
+    PARAMS = {"stop_pct": 0.10, "target_pct": 0.50}
+    NEIGHBOURS = {}
     id = "benchmark"
     name = "Benchmark: buy first bar, hold to close"
     description = ("Not a strategy - the yardstick. Buys every selected stock on the first bar and "
@@ -457,7 +518,9 @@ class BuyAtOpenBenchmark(Strategy):
         if row["bar_no"] == 0:
             price = row["Close"]
             # Wide catastrophe stop only; the point is to hold the day.
-            return {"stop": price * 0.9, "target": price * 1.5, "reason": "day open"}
+            return {"stop": price * (1 - self.p("stop_pct")),
+                    "target": price * (1 + self.p("target_pct")),
+                    "reason": "day open"}
         return None
 
 
@@ -468,6 +531,9 @@ class BuyAtOpenBenchmark(Strategy):
 # ---------------------------------------------------------------------------
 
 class OrbBothWays(Strategy):
+    PARAMS = {"stop_cap_pct": 0.015, "target_r": 2.0}
+    NEIGHBOURS = {"stop_cap_pct": [0.010, 0.015, 0.020],
+                  "target_r": [1.5, 2.0, 2.5]}
     id = "orb_both"
     name = "Opening-range breakout (long + short)"
     description = ("Buys a close above the first-15-minute high, or shorts a close below its low. "
@@ -478,17 +544,21 @@ class OrbBothWays(Strategy):
         if row["bar_no"] < OPENING_RANGE_BARS or not _ok(row["or_high"], row["or_low"], prev["Close"]):
             return None
         price = row["Close"]
+        cap, r = self.p("stop_cap_pct"), self.p("target_r")
         if price > row["or_high"] >= prev["Close"]:
-            stop = max(row["or_low"], price * 0.985)
-            return {"stop": stop, "target": price + 2 * (price - stop), "reason": "broke above opening range"}
+            stop = max(row["or_low"], price * (1 - cap))
+            return {"stop": stop, "target": price + r * (price - stop),
+                    "reason": "broke above opening range"}
         if price < row["or_low"] <= prev["Close"]:
-            stop = min(row["or_high"], price * 1.015)
-            return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
+            stop = min(row["or_high"], price * (1 + cap))
+            return {"side": "SHORT", "stop": stop, "target": price - r * (stop - price),
                     "reason": "broke below opening range"}
         return None
 
 
 class SuperTrendFlip(Strategy):
+    PARAMS = {"target_r": 2.0}
+    NEIGHBOURS = {"target_r": [1.5, 2.0, 2.5]}
     id = "supertrend"
     name = "SuperTrend (10, 3) flip"
     description = ("Trend-following with a 3-ATR trailing line: goes long when the trend flips up, "
@@ -500,10 +570,13 @@ class SuperTrendFlip(Strategy):
         price = row["Close"]
         if row["st_dir"] == 1 and row["st_line"] < price:
             stop = row["st_line"]
-            return {"stop": stop, "target": price + 2 * (price - stop), "reason": "SuperTrend flipped up"}
+            return {"stop": stop,
+                    "target": price + self.p("target_r") * (price - stop),
+                    "reason": "SuperTrend flipped up"}
         if row["st_dir"] == -1 and row["st_line"] > price:
             stop = row["st_line"]
-            return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
+            return {"side": "SHORT", "stop": stop,
+                    "target": price - self.p("target_r") * (stop - price),
                     "reason": "SuperTrend flipped down"}
         return None
 
@@ -515,6 +588,10 @@ class SuperTrendFlip(Strategy):
 
 
 class VwapBandReversion(Strategy):
+    PARAMS = {"sd_mult": 2.0, "rsi_long": 35.0, "rsi_short": 65.0,
+              "stop_atr": 0.5}
+    NEIGHBOURS = {"sd_mult": [1.5, 2.0, 2.5], "rsi_long": [30.0, 35.0, 40.0],
+                  "rsi_short": [60.0, 65.0, 70.0], "stop_atr": [0.25, 0.5, 1.0]}
     id = "vwap_bands"
     name = "VWAP band mean-reversion"
     description = ("Fades stretched moves: buys when price is 2 standard deviations below VWAP and turns up "
@@ -524,18 +601,23 @@ class VwapBandReversion(Strategy):
         if row["bar_no"] < 6 or not _ok(row["vwap"], row["vwap_sd"], row["rsi14"], row["atr14"]) or row["vwap_sd"] <= 0:
             return None
         price, vwap, sd = row["Close"], row["vwap"], row["vwap_sd"]
-        if prev["Close"] < vwap - 2 * sd and price > prev["Close"] and row["rsi14"] < 35:
-            stop = min(row["Low"], prev["Low"]) - 0.5 * row["atr14"]
+        mult = self.p("sd_mult")
+        if (prev["Close"] < vwap - mult * sd and price > prev["Close"]
+                and row["rsi14"] < self.p("rsi_long")):
+            stop = min(row["Low"], prev["Low"]) - self.p("stop_atr") * row["atr14"]
             if stop < price < vwap:
                 return {"stop": stop, "target": vwap, "reason": "2σ below VWAP, turning up"}
-        if prev["Close"] > vwap + 2 * sd and price < prev["Close"] and row["rsi14"] > 65:
-            stop = max(row["High"], prev["High"]) + 0.5 * row["atr14"]
+        if (prev["Close"] > vwap + mult * sd and price < prev["Close"]
+                and row["rsi14"] > self.p("rsi_short")):
+            stop = max(row["High"], prev["High"]) + self.p("stop_atr") * row["atr14"]
             if stop > price > vwap:
                 return {"side": "SHORT", "stop": stop, "target": vwap, "reason": "2σ above VWAP, turning down"}
         return None
 
 
 class TrendPullback(Strategy):
+    PARAMS = {"target_r": 2.0}
+    NEIGHBOURS = {"target_r": [1.5, 2.0, 2.5]}
     id = "trend_pullback"
     name = "Trend pullback to EMA 21"
     description = ("Only trades with the day's trend (price vs VWAP, EMA 21 vs EMA 50): waits for a dip "
@@ -551,16 +633,22 @@ class TrendPullback(Strategy):
         if up and prev["Low"] <= prev["ema21"] and price > row["ema21"] and price > prev["High"]:
             stop = min(row["swing_low5"], row["Low"])
             if stop < price:
-                return {"stop": stop, "target": price + 2 * (price - stop), "reason": "bounced off EMA21 in uptrend"}
+                return {"stop": stop,
+                        "target": price + self.p("target_r") * (price - stop),
+                        "reason": "bounced off EMA21 in uptrend"}
         if down and prev["High"] >= prev["ema21"] and price < row["ema21"] and price < prev["Low"]:
             stop = max(row["swing_high5"], row["High"])
             if stop > price:
-                return {"side": "SHORT", "stop": stop, "target": price - 2 * (stop - price),
+                return {"side": "SHORT", "stop": stop,
+                        "target": price - self.p("target_r") * (stop - price),
                         "reason": "rejected at EMA21 in downtrend"}
         return None
 
 
 class GapFade(Strategy):
+    PARAMS = {"gap_pct": 0.006, "stop_atr": 0.2, "max_bar": 9}
+    NEIGHBOURS = {"gap_pct": [0.004, 0.006, 0.008], "stop_atr": [0.1, 0.2, 0.4],
+                  "max_bar": [7, 9, 12]}
     id = "gap_fade"
     name = "Gap fade (gap-fill)"
     description = ("When a stock opens 0.6%+ away from yesterday's close and the first 15 minutes fail to "
@@ -568,24 +656,27 @@ class GapFade(Strategy):
     max_trades_per_symbol_per_day = 1
 
     def entry(self, row, prev):
-        if not (OPENING_RANGE_BARS <= row["bar_no"] <= 9):
+        if not (OPENING_RANGE_BARS <= row["bar_no"] <= self.p("max_bar")):
             return None
         if not _ok(row["prev_session_close"], row["session_open"], row["or_high"], row["or_low"], row["atr14"]):
             return None
         pc, op, price = row["prev_session_close"], row["session_open"], row["Close"]
         gap = (op - pc) / pc
-        if gap >= 0.006 and price < row["or_low"]:
-            stop = row["day_high"] + 0.2 * row["atr14"]
+        threshold = self.p("gap_pct")
+        if gap >= threshold and price < row["or_low"]:
+            stop = row["day_high"] + self.p("stop_atr") * row["atr14"]
             if stop > price > pc:
                 return {"side": "SHORT", "stop": stop, "target": pc, "reason": f"gap up {gap:.1%} failing"}
-        if gap <= -0.006 and price > row["or_high"]:
-            stop = row["day_low"] - 0.2 * row["atr14"]
+        if gap <= -threshold and price > row["or_high"]:
+            stop = row["day_low"] - self.p("stop_atr") * row["atr14"]
             if stop < price < pc:
                 return {"stop": stop, "target": pc, "reason": f"gap down {gap:.1%} recovering"}
         return None
 
 
 class IntradayMomentum(Strategy):
+    PARAMS = {"early_pct": 0.005, "stop_atr": 1.5}
+    NEIGHBOURS = {"early_pct": [0.003, 0.005, 0.008], "stop_atr": [1.0, 1.5, 2.0]}
     id = "intraday_momentum"
     name = "Intraday momentum (first 30 min → last hour)"
     description = ("Based on research that the first half-hour's move tends to continue into the close: "
@@ -606,11 +697,12 @@ class IntradayMomentum(Strategy):
             return None
         early = (row["close_0945"] - row["prev_session_close"]) / row["prev_session_close"]
         price = row["Close"]
-        if early >= 0.005 and price > row["vwap"]:
-            stop = min(row["vwap"], price - 1.5 * row["atr14"])
+        threshold = self.p("early_pct")
+        if early >= threshold and price > row["vwap"]:
+            stop = min(row["vwap"], price - self.p("stop_atr") * row["atr14"])
             return {"stop": stop, "target": price + 3 * (price - stop), "reason": f"first 30 min {early:+.1%}"}
-        if early <= -0.005 and price < row["vwap"]:
-            stop = max(row["vwap"], price + 1.5 * row["atr14"])
+        if early <= -threshold and price < row["vwap"]:
+            stop = max(row["vwap"], price + self.p("stop_atr") * row["atr14"])
             return {"side": "SHORT", "stop": stop, "target": price - 3 * (stop - price),
                     "reason": f"first 30 min {early:+.1%}"}
         return None

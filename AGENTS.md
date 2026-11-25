@@ -155,6 +155,8 @@ Reuse these. Do not create a parallel copy of any of them.
 | Fingerprint | `backend/fingerprint.py` — one comparable line per phase |
 | Regime | `backend/signals/regime.py` — trend and vol per bar; one definition, shared with the study |
 | Rule spec | `rules.yaml` + `backend/signals/rules.py` — the 7-part schema. `python3.13 -m signals.rules` prints the table |
+| Funnel | `backend/funnel/` + `bench.yaml` — Phase 4's seven gates. `python -m funnel.cli` runs them all; `python -m tools.test_idea <idea.yaml>` runs one |
+| Asset labels | `results/asset_labels.json` — Phase 1's output, committed so gate 1 is reproducible |
 | Proof | `backend/validation/` + `backend/run_proof.py` — Phase 3. `python3.13 run_proof.py` prints the three synthetic results against the bands, the guard per strategy, and the fingerprint |
 | Dashboard | `frontend/arena.js`, `frontend/app.js`, `frontend/index.html`, `frontend/style.css` |
 | API | `backend/main.py` — FastAPI routes, including `/api/arena/*` |
@@ -188,6 +190,7 @@ discovered by surprise.
 | --- | --- | --- |
 | §1.3 next-open fills | `engine._maybe_enter` fills at the signal bar's close; signal exits likewise | Every Arena result to date is optimistic by up to one bar |
 | §1.4 2x cost | `SLIPPAGE_MULTIPLES = [0.0, 0.5, 1.0]` | No result is currently stress-tested at double cost |
+| Gate 5 is partial | Indicator windows (the 9 and 21 in `ema9`/`ema21`, the 20 in the Bollinger bands) are computed once in `enrich()` for every strategy at once, so varying one per strategy would mean re-enriching per variant. Gate 5 varies the rule parameters only | A single-spike optimum hiding in an indicator window would not be caught |
 | Regime not wired in | `signals/regime.py` computes trend and volatility, and `rules.yaml` declares the half-size rule, but `engine.py` consults neither. Every filter reads `none` | The regime layer is specified and tested but decorative until the engine asks |
 | India VIX unverified | The brief allows it only if a free reliable source exists. This container's egress policy blocks the data source, so `^INDIAVIX` could not be resolved | `vix_state` exists, pure and tested, but `classify()` does not call it and no rule may filter on vix |
 | `TATAMOTORS.NS` is dead | Yahoo answers "No data found, symbol may be delisted". It is still in `study_tickers` AND in the Arena's `default_symbols` in `arena/markets.py` | Phase 1 studied 11 tickers, not 12. The live Arena has been trying to trade a symbol that returns nothing. Not replaced by guesswork: the successor symbol is a deliberate choice |
