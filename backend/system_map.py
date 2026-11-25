@@ -66,6 +66,11 @@ MODULES = [
                  "swing/cli.py"],
      "note": "Phase 5. Core rotation on delivery costs, quarterly re-pick, "
              "sleeves. Separate from the Arena's intraday book."},
+    {"role": "Harness",
+     "modules": ["harness/runner.py", "harness/risk.py", "harness/store.py",
+                 "harness/alerts.py", ".github/workflows/harness.yml"],
+     "note": "Phase 6. Lock, trading day, reconcile, fresh data, plan, "
+             "risk gate, paper fills, alerts. Any step may stop the run."},
     {"role": "Settings",
      "modules": ["settings.py", "AGENTS.md"],
      "note": "Parsed from AGENTS.md §2. No phase hardcodes a number."},

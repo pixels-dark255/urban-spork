@@ -6,3 +6,4 @@ phase,date_run,sha,notes
 3,2026-11-25,19aa0e3a25da,"backtester proof: planted +0.832% net in 0.6-1.2% band, noise -0.206% vs -0.188% expected, 13/13 strategies causal, control caught, replay==live"
 4,2026-11-25,04dcaf3a560a,"funnel on real NSE 5m bars (40 sessions): 13 ideas in, 0 survivors; 10 of 11 lost money after costs, gap_fade profitable on only 7 trades"
 5,2026-11-25,caaf2427ec36,"swing core ITBEES/GOLDBEES on real bars: +0.70%/yr, -28.52% maxDD, r/dd 0.03; FAILS neighbours (SMA150 -8.06%) and 2x cost (-5.73%); locked test deliberately NOT run"
+6,2026-11-25,338bf1255345,"harness: dry run clean, 3 risk limits each demonstrated, rerun places 0 second orders, gate invariant holds"

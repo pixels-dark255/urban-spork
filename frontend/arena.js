@@ -15,6 +15,7 @@ let arenaStudy = null;
 let arenaProof = null;
 let arenaFunnel = null;
 let arenaSwing = null;
+let arenaHarness = null;
 
 // Which market's arena is on screen. One arena per market, so every call
 // carries it; the server keys storage by it and defaults to India.
@@ -80,7 +81,7 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes] = await Promise.all([
+    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes, harnessRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
       apiFetch(`${API}/api/system`).catch(() => null),
@@ -88,6 +89,7 @@ async function loadArena(silent = false) {
       apiFetch(`${API}/api/proof`).catch(() => null),
       apiFetch(`${API}/api/funnel`).catch(() => null),
       apiFetch(`${API}/api/swing`).catch(() => null),
+      apiFetch(`${API}/api/harness`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
@@ -108,6 +110,9 @@ async function loadArena(silent = false) {
     }
     if (swingRes && swingRes.ok) {
       arenaSwing = await swingRes.json().catch(() => null);
+    }
+    if (harnessRes && harnessRes.ok) {
+      arenaHarness = await harnessRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -507,6 +512,67 @@ function settingsTable(sys) {
           </tbody>
         </table>
       </div>
+    </details>`;
+}
+
+// ---------- Harness (Phase 6) ----------
+// The steps and where the run stopped. A stop is the safe outcome and
+// usually the right one, so it is shown neutrally rather than as an
+// error: the alarming row is a step that failed, not one that refused.
+function harnessPanel(payload) {
+  if (!payload) return "";
+  if (!payload.ok) {
+    return `
+      <div class="section-heading"><span class="eyebrow">phase 6</span>
+        <h2 style="font-size:17px;">Harness</h2></div>
+      <p class="arena-hint">${escapeHtml(payload.reason || "Not run yet.")}</p>`;
+  }
+  const h = payload.harness || {};
+  const steps = (h.steps || []).map((st) => {
+    const mark = st.ok ? (st.stop ? "STOP" : "ok") : "FAIL";
+    const cls = st.ok ? (st.stop ? "sys-gap" : "sys-ok") : "sys-gap";
+    const why = (st.detail && (st.detail.why || st.detail.reason)) || "";
+    return `
+      <tr class="${cls}">
+        <td class="arena-name">${escapeHtml(st.name)}</td>
+        <td class="sys-status">${mark}</td>
+        <td class="sys-detail">${escapeHtml(String(why))}</td>
+      </tr>`;
+  }).join("");
+
+  const limits = (h.limits || []).map((l) => `
+      <tr class="${(l.rules || []).length ? "sys-gap" : "sys-ok"}">
+        <td class="arena-name">${escapeHtml(l.limit)}</td>
+        <td class="study-num">${l.orders_in} &rarr; ${l.orders_out}</td>
+        <td class="sys-detail">${escapeHtml((l.rules || []).join(", ") || "nothing changed")}</td>
+      </tr>`).join("");
+
+  const dbl = h.double_run || {};
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 6</span>
+      <h2 style="font-size:17px;">Harness</h2></div>
+    <p class="arena-hint">Each step may stop the run, and stopping is the safe outcome.
+      Alerts are ${h.alerts_configured ? "configured" : "<b>not configured</b>, so nothing is sent"}.
+      Trust ladder: <b>${escapeHtml(h.trust || "auto")}</b>, paper only.</p>
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Step</th><th>Result</th><th>Why</th></tr></thead>
+        <tbody>${steps}</tbody>
+      </table>
+    </div>
+    <p class="arena-hint">Stopped at: <b>${escapeHtml(h.stopped_at || "nothing; ran to the end")}</b>.
+      Plan: ${escapeHtml(h.plan_reason || "")}</p>
+    <details class="arena-settings sys-modules" open>
+      <summary>Risk limits, each toggled on</summary>
+      <div class="table-scroll">
+        <table class="backtest-table sys-table">
+          <thead><tr><th>Limit</th><th>Orders</th><th>What changed</th></tr></thead>
+          <tbody>${limits}</tbody>
+        </table>
+      </div>
+      <p class="arena-hint">Running twice placed ${dbl.first} order(s) then
+        <b>${dbl.second}</b>: an order id is <code>date|ticker|side|strategy</code>,
+        so a rerun collides with itself instead of doubling a position.</p>
     </details>`;
 }
 
@@ -1000,6 +1066,8 @@ function renderArena(data) {
     ${funnelPanel(arenaFunnel)}
 
     ${swingPanel(arenaSwing)}
+
+    ${harnessPanel(arenaHarness)}
 
     ${systemPanel(arenaSystem)}
 

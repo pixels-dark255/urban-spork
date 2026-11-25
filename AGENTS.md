@@ -155,6 +155,7 @@ Reuse these. Do not create a parallel copy of any of them.
 | Fingerprint | `backend/fingerprint.py` — one comparable line per phase |
 | Regime | `backend/signals/regime.py` — trend and vol per bar; one definition, shared with the study |
 | Rule spec | `rules.yaml` + `backend/signals/rules.py` — the 7-part schema. `python3.13 -m signals.rules` prints the table |
+| Harness | `backend/harness/` + `.github/workflows/harness.yml` — Phase 6. `python -m harness.cli` prints the dry run, the risk limits and the rerun check. Paper only; the trust ladder's top rung writes a paper fill and nothing else |
 | Swing account | `backend/swing/` — Phase 5. `python -m swing.cli` runs the core rotation, the quarterly picker and the sleeves. Delivery costs, separate from the Arena's intraday book |
 | Funnel | `backend/funnel/` + `bench.yaml` — Phase 4's seven gates. `python -m funnel.cli` runs them all; `python -m tools.test_idea <idea.yaml>` runs one |
 | Asset labels | `results/asset_labels.json` — Phase 1's output, committed so gate 1 is reproducible |
@@ -182,6 +183,12 @@ Reuse these. Do not create a parallel copy of any of them.
   needing the NSE calendar reads it rather than hard-coding dates.
 - **Comments** explain *why*, not *what*. The repo's existing comments are the
   standard to match.
+- **Alert credentials.** `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` come
+  from the environment, filled in by a human through `.env`. The token is
+  never logged: Telegram puts it in the request URL, so
+  `harness/alerts.py::redact` scrubs it from anything heading for a log.
+  With neither set the harness runs and sends nothing; an unconfigured
+  alerter must never be able to stop a run.
 - **No secrets in source**, in commits, or in logs.
 
 ---

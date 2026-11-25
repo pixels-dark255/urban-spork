@@ -654,6 +654,15 @@ def api_asset_study():
     return {"ok": True, "study": result}
 
 
+@app.get("/api/harness")
+def api_harness():
+    """Phase 6: the last harness check - steps, risk limits, rerun safety."""
+    result = research_store.load("6")
+    if not result:
+        return {"ok": False, "reason": "The harness has not been run yet."}
+    return {"ok": True, "harness": result}
+
+
 @app.get("/api/swing")
 def api_swing():
     """Phase 5: the swing account - core rotation, sleeves, quarterly picks."""

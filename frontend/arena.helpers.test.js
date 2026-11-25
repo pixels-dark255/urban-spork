@@ -73,7 +73,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -1088,4 +1088,75 @@ test("before the swing account has run the panel says so", () => {
   assert.ok(arena.swingPanel({ ok: false, reason: "not been run yet" })
             .includes("not been run yet"));
   assert.strictEqual(arena.swingPanel(null), "");
+});
+
+// ---------------------------------------------------------------------------
+// Harness (Phase 6)
+// ---------------------------------------------------------------------------
+
+const HARNESS = {
+  ok: true,
+  harness: {
+    trust: "auto", alerts_configured: false,
+    stopped_at: null,
+    plan_reason: "no idea has earned capital",
+    steps: [
+      { name: "lock", ok: true, stop: false, detail: {} },
+      { name: "trading_day", ok: true, stop: false, detail: { why: "trading day" } },
+      { name: "fresh_data", ok: true, stop: false, detail: {} },
+    ],
+    limits: [
+      { limit: "none (baseline)", orders_in: 2, orders_out: 2, rules: [] },
+      { limit: "daily loss > 3%", orders_in: 2, orders_out: 1, rules: ["soft_loss"] },
+      { limit: "daily loss > 5%", orders_in: 2, orders_out: 1, rules: ["hard_loss"] },
+    ],
+    double_run: { first: 1, second: 0 },
+  },
+};
+
+test("every step is listed with its result", () => {
+  const html = arena.harnessPanel(HARNESS);
+  assert.ok(html.includes("lock") && html.includes("trading_day"));
+  assert.ok(html.includes("fresh_data"));
+});
+
+test("a stop is shown neutrally, a failure is not", () => {
+  // Stopping is the safe outcome; a failed step is the alarming one.
+  const h = JSON.parse(JSON.stringify(HARNESS));
+  h.harness.steps[2] = { name: "fresh_data", ok: false, stop: true,
+                         detail: { why: "stale prices" } };
+  const row = arena.harnessPanel(h).split("<tr").find((r) => r.includes("fresh_data"));
+  assert.ok(row.includes("FAIL"));
+  assert.ok(row.includes("stale prices"));
+});
+
+test("an unconfigured alerter is called out rather than implied", () => {
+  assert.ok(arena.harnessPanel(HARNESS).includes("not configured"));
+  const on = JSON.parse(JSON.stringify(HARNESS));
+  on.harness.alerts_configured = true;
+  assert.ok(arena.harnessPanel(on).includes("configured"));
+  assert.ok(!arena.harnessPanel(on).includes("not configured"));
+});
+
+test("each risk limit shows how many orders it removed", () => {
+  const html = arena.harnessPanel(HARNESS);
+  assert.ok(html.includes("2 &rarr; 1"));
+  assert.ok(html.includes("soft_loss"));
+  assert.ok(html.includes("nothing changed"));
+});
+
+test("the rerun result is stated with the reason it is safe", () => {
+  const html = arena.harnessPanel(HARNESS);
+  assert.ok(html.includes("placed 1 order(s) then"));
+  assert.ok(html.includes("date|ticker|side|strategy"));
+});
+
+test("running to the end says so rather than leaving it blank", () => {
+  assert.ok(arena.harnessPanel(HARNESS).includes("ran to the end"));
+});
+
+test("before the harness has run the panel says so", () => {
+  assert.ok(arena.harnessPanel({ ok: false, reason: "has not been run yet" })
+            .includes("has not been run yet"));
+  assert.strictEqual(arena.harnessPanel(null), "");
 });

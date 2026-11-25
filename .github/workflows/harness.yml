@@ -1,0 +1,84 @@
+# The runner harness: lock, checks, risk gate, paper fills, alerts.
+#
+# Paper trading only (AGENTS.md §1.1). Even on the `auto` rung of the
+# trust ladder this writes a paper fill to Neon and nothing else; there
+# is no code path towards a live broker.
+#
+# SETUP:
+#   Settings -> Secrets and variables -> Actions
+#     DATABASE_URL        the same Neon string the other jobs use
+#     TELEGRAM_BOT_TOKEN  optional; without it alerts are silently skipped
+#     TELEGRAM_CHAT_ID    optional, same
+#
+# Without the Telegram pair the harness still runs and simply sends
+# nothing. An unconfigured alerter must never be able to stop a run.
+
+name: Harness
+
+on:
+  schedule:
+    # 10:19 UTC is 15:49 IST, after the 15:30 close: the end-of-day run.
+    - cron: "19 10 * * 1-5"
+    # 11:02 UTC is 16:32 IST: has the end-of-day run actually happened?
+    - cron: "2 11 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run"
+        required: false
+        default: "dry-run"
+        type: choice
+        options: [dry-run, run, missed-check]
+
+concurrency:
+  group: harness
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  harness:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r backend/requirements.txt
+
+      # The runner's own lock is the real guard against two runs at once;
+      # this just picks which job the schedule meant.
+      - name: End-of-day run
+        if: github.event.schedule == '19 10 * * 1-5' || inputs.mode == 'run'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TZ: Asia/Kolkata
+        run: python -m harness.cli --source yahoo --live-store --no-dry-run
+
+      - name: Missed-run check
+        if: github.event.schedule == '2 11 * * 1-5' || inputs.mode == 'missed-check'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TZ: Asia/Kolkata
+        run: python -m harness.cli --missed-check
+
+      - name: Dry run
+        if: github.event_name == 'workflow_dispatch' && inputs.mode == 'dry-run'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: python -m harness.cli --source yahoo --live-store
