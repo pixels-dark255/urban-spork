@@ -1213,6 +1213,32 @@ function systemPanel(sys) {
     </details>`;
 }
 
+// Which pane of the Arena tab is open. Module level, because the arena
+// re-renders on every tick and a settings save, and a reader halfway down
+// the funnel table should not be thrown back to the live board.
+let arenaPane = "live";
+
+// Nine phases each added a panel, and stacking them put the live board at
+// the top of an endless scroll. The grouping is by what a panel is FOR,
+// not by phase number: the phase order is a build order and means nothing
+// to someone reading the dashboard.
+const ARENA_PANES = [
+  ["live", "Live", "Today's board, how it fills, the record so far, and a backtest."],
+  ["evidence", "Evidence", "What was measured before anything could be given money."],
+  ["accounts", "Accounts", "The other two books: the swing account, and the runner that advances them."],
+  ["machinery", "Machinery", "Built, tested, and not in charge of anything yet."],
+];
+
+function arenaPaneBar(active) {
+  const tabs = ARENA_PANES.map(([id, label]) => `
+      <button class="pane-btn${id === active ? " active" : ""}" role="tab"
+        aria-selected="${id === active}" data-pane="${id}">${escapeHtml(label)}</button>`).join("");
+  const hint = (ARENA_PANES.find((p) => p[0] === active) || ARENA_PANES[0])[2];
+  return `
+    <div class="pane-bar" role="tablist" aria-label="Arena sections">${tabs}</div>
+    <p class="pane-hint">${escapeHtml(hint)}</p>`;
+}
+
 function renderArena(data) {
   const c = data.config;
   const strategyChecks = data.strategies.map((s) => `
@@ -1230,6 +1256,10 @@ function renderArena(data) {
 
     ${unprovenBanner(arenaSystem)}
 
+    ${arenaPaneBar(arenaPane)}
+
+    <section class="arena-pane" data-pane="live" ${arenaPane === "live" ? "" : "hidden"}>
+
     <div id="arenaLive">${arenaLiveHtml(data)}</div>
 
     ${fillRulePanel(data.fill_rule)}
@@ -1246,24 +1276,6 @@ function renderArena(data) {
       <button class="add-watchlist-btn arena-btn" id="arenaRunBt">Run backtest</button>
     </div>
     <div id="arenaBacktest"><p class="muted">Replays real past 5-minute bars (Yahoo keeps ~60 days) through the same engine, so you get results today instead of after weeks of live paper trading.</p></div>
-
-    ${assetStudyPanel(arenaStudy)}
-
-    ${ruleTable(arenaSystem && arenaSystem.rule_spec)}
-
-    ${proofPanel(arenaProof)}
-
-    ${funnelPanel(arenaFunnel)}
-
-    ${swingPanel(arenaSwing)}
-
-    ${harnessPanel(arenaHarness)}
-
-    ${aiPanel(arenaAi)}
-
-    ${adaptPanel(arenaAdapt)}
-
-    ${systemPanel(arenaSystem)}
 
     <details id="arenaSettings" class="arena-settings">
       <summary>Settings</summary>
@@ -1292,9 +1304,30 @@ function renderArena(data) {
       <p class="arena-hint">Capital changes apply from the next session. Removing a stock or strategy mid-session closes its positions at the last price.</p>
       <button class="add-watchlist-btn arena-btn" id="arenaSave">Save settings</button>
       <button class="watch-remove arena-reset" id="arenaReset">reset all results</button>
-    </details>`;
+    </details>
+
+    </section>
+
+    <section class="arena-pane" data-pane="evidence" ${arenaPane === "evidence" ? "" : "hidden"}>
+      ${assetStudyPanel(arenaStudy)}
+      ${ruleTable(arenaSystem && arenaSystem.rule_spec)}
+      ${proofPanel(arenaProof)}
+      ${funnelPanel(arenaFunnel)}
+    </section>
+
+    <section class="arena-pane" data-pane="accounts" ${arenaPane === "accounts" ? "" : "hidden"}>
+      ${swingPanel(arenaSwing)}
+      ${harnessPanel(arenaHarness)}
+    </section>
+
+    <section class="arena-pane" data-pane="machinery" ${arenaPane === "machinery" ? "" : "hidden"}>
+      ${aiPanel(arenaAi)}
+      ${adaptPanel(arenaAdapt)}
+      ${systemPanel(arenaSystem)}
+    </section>`;
 
   bindBoard();
+  bindPaneBar();
   document.getElementById("arenaRunBt").addEventListener("click", runArenaBacktest);
   document.getElementById("arenaSave").addEventListener("click", saveArenaSettings);
   document.querySelectorAll("#arenaContent .arena-preset").forEach((btn) => {
@@ -1633,6 +1666,32 @@ function dailyWinnersHtml(data) {
         </tbody></table></div>
     </details>`;
 }
+
+function bindPaneBar() {
+  const bar = document.querySelector("#arenaContent .pane-bar");
+  if (!bar) return;
+  const hint = document.querySelector("#arenaContent .pane-hint");
+  // Switching panes shows and hides, rather than re-rendering: a backtest
+  // result sitting in #arenaBacktest is the user's, not the server's, and
+  // a re-render would throw it away.
+  bar.addEventListener("click", (ev) => {
+    const btn = ev.target.closest(".pane-btn");
+    if (!btn || btn.dataset.pane === arenaPane) return;
+    arenaPane = btn.dataset.pane;
+    bar.querySelectorAll(".pane-btn").forEach((b) => {
+      const on = b.dataset.pane === arenaPane;
+      b.classList.toggle("active", on);
+      b.setAttribute("aria-selected", String(on));
+    });
+    document.querySelectorAll("#arenaContent .arena-pane").forEach((pane) => {
+      pane.hidden = pane.dataset.pane !== arenaPane;
+    });
+    const found = ARENA_PANES.find((p) => p[0] === arenaPane);
+    if (hint && found) hint.textContent = found[2];
+    bar.scrollIntoView({ block: "nearest" });
+  });
+}
+
 
 function bindBoard() {
   document.querySelectorAll("#arenaLive .arena-row").forEach((row) => {

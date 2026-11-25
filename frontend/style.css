@@ -659,6 +659,57 @@ button:active, .result-item:active, .clickable-card:active { transform: scale(0.
 }
 .arena-tag.arena-short { color: var(--loss); border-color: rgba(255, 71, 87, 0.45); }
 
+/* Arena panes. Nine phases of research panels in one column buried the
+   live board; these are the four groups they were split into. Sticky so
+   the way back out of a long funnel table is always on screen. */
+.pane-bar {
+  position: sticky;
+  top: 0;
+  z-index: 12;
+  display: flex;
+  gap: 4px;
+  margin: 16px 0 0;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.pane-bar::-webkit-scrollbar { display: none; }
+.pane-btn {
+  /* Packed left on a wide screen: four tabs stretched across 1,500px read
+     as four separate things rather than one control. On a phone they take
+     the width, because a thumb target wants it. */
+  flex: 0 0 auto;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+}
+.pane-btn:hover { color: var(--text); }
+.pane-btn.active {
+  background: var(--accent-wash);
+  color: var(--accent);
+}
+.pane-hint {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin: 10px 0 4px;
+  line-height: 1.55;
+}
+@media (max-width: 1023px) {
+  .pane-btn { flex: 1 1 auto; padding: 9px 8px; }
+}
+.arena-pane[hidden] { display: none; }
+/* The first heading inside a pane already has the bar above it. */
+.arena-pane > .section-heading:first-child { margin-top: 4px; }
+
 .arena-hint { font-size: 12.5px; color: var(--text-dim); margin: 8px 0; line-height: 1.55; }
 .arena-hint code, .arena-warn code, .sys-detail code {
   font-family: var(--font-mono);

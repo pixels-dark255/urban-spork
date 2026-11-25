@@ -57,6 +57,7 @@ function loadArenaHelpers() {
   vm.runInContext(extractConst(SOURCE, "DAY_NAMES"), context);
   vm.runInContext(extractConst(SOURCE, "STATUS_CLASS"), context);
   vm.runInContext(extractConst(SOURCE, "FILL_REASONS"), context);
+  vm.runInContext(extractConst(SOURCE, "ARENA_PANES"), context);
 
   // escapeHtml goes through a DOM node in the real app; the arena helpers
   // only care that it is called, so a string version keeps this hermetic.
@@ -75,7 +76,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel", "adaptPanel", "killBar", "fillRulePanel"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel", "adaptPanel", "killBar", "fillRulePanel", "arenaPaneBar"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -1345,4 +1346,35 @@ test("the fill rule panel names both next-open-only drop reasons", () => {
 test("the fill rule panel is nothing at all before the first session", () => {
   assert.strictEqual(arena.fillRulePanel(null), "");
   assert.strictEqual(arena.fillRulePanel({}), "");
+});
+
+
+// ---------------------------------------------------------------------------
+// The Arena pane bar - nine phases of panels in one column buried the board
+// ---------------------------------------------------------------------------
+
+test("the pane bar marks exactly one tab active and shows its hint", () => {
+  const html = arena.arenaPaneBar("evidence");
+  const active = html.match(/class="pane-btn active"/g) || [];
+  assert.strictEqual(active.length, 1);
+  assert.match(html, /data-pane="evidence"/);
+  assert.match(html, /aria-selected="true"[^>]*data-pane="evidence"/);
+  // The hint is the pane's own, not the first one's.
+  assert.match(html, /measured before anything could be given money/);
+});
+
+test("every pane in the bar has a label and a hint", () => {
+  // A top-level `const` in a vm script lives in the context's lexical
+  // scope, not on the context object, so it is read back by evaluating it.
+  const panes = vm.runInContext("ARENA_PANES", arena);
+  for (const [id, label, hint] of panes) {
+    assert.ok(id && label && hint, `${id} is missing a label or a hint`);
+    assert.match(arena.arenaPaneBar(id), new RegExp(`data-pane="${id}"`));
+  }
+});
+
+test("an unknown pane falls back to the first hint rather than crashing", () => {
+  const html = arena.arenaPaneBar("nope");
+  assert.strictEqual((html.match(/class="pane-btn active"/g) || []).length, 0);
+  assert.match(html, /Today's board/);
 });
