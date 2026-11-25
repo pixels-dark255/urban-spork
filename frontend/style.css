@@ -1025,3 +1025,41 @@ button:focus-visible, input:focus-visible, .result-item:focus-visible, .watch-sy
   .funnel-row { grid-template-columns: minmax(96px, 1fr) minmax(0, 1.6fr) 34px; gap: 6px; }
   .funnel-label { font-size: 10.5px; }
 }
+
+/* ---------- Swing account (Phase 5) ---------- */
+.swing-chart {
+  width: 100%;
+  height: 86px;
+  margin: 8px 0 4px;
+  display: block;
+  background: var(--paper);
+  border: 1px solid var(--hairline);
+  border-radius: 8px;
+}
+/* What was held, under the equity curve. A flat stretch means something
+   different depending on whether it was the engine or a spell in cash. */
+.swing-bands {
+  display: flex;
+  height: 8px;
+  border-radius: 3px;
+  overflow: hidden;
+  border: 1px solid var(--hairline);
+}
+.swing-bands i { display: block; height: 100%; }
+.band-engine { background: var(--brass); }
+.band-safe { background: #3c9a5c; }
+.band-cash { background: var(--hairline); }
+.swing-legend {
+  display: flex;
+  gap: 14px;
+  margin: 6px 0 12px;
+  font-size: 10.5px;
+  color: var(--mist);
+}
+.swing-legend i {
+  display: inline-block;
+  width: 10px; height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: middle;
+}

@@ -654,6 +654,16 @@ def api_asset_study():
     return {"ok": True, "study": result}
 
 
+@app.get("/api/swing")
+def api_swing():
+    """Phase 5: the swing account - core rotation, sleeves, quarterly picks."""
+    result = research_store.load("5")
+    if not result:
+        return {"ok": False, "reason": "The swing account has not been run yet. "
+                                       "Trigger the Research workflow."}
+    return {"ok": True, "swing": result}
+
+
 @app.get("/api/funnel")
 def api_funnel():
     """Phase 4: which ideas cleared the seven gates, and where the rest died."""

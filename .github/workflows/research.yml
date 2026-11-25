@@ -12,7 +12,7 @@ on:
         required: true
         default: "1"
         type: choice
-        options: ["0", "1", "2", "3", "4"]
+        options: ["0", "1", "2", "3", "4", "5"]
 
 # A phase writes its own result row; two at once would race on it.
 concurrency:
@@ -45,6 +45,14 @@ jobs:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           TZ: Asia/Kolkata
         run: python -m settings
+
+      - name: Phase 5 swing account
+        if: inputs.phase == '5'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: python -m swing.cli --source yahoo
 
       - name: Phase 4 funnel
         if: inputs.phase == '4'

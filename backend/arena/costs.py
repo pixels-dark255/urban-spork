@@ -24,6 +24,10 @@ from __future__ import annotations
 DEFAULT_COSTS = {
     "brokerage_pct": 0.0003,
     "brokerage_cap": 20.0,
+    # Intraday STT is charged on the sell leg only. Delivery is charged on
+    # both, which is why DELIVERY_COSTS below exists rather than the swing
+    # account quietly reusing these numbers.
+    "stt_buy_pct": 0.0,
     "stt_sell_pct": 0.00025,
     "exchange_pct": 0.0000297,
     "sebi_per_crore": 10.0,
@@ -53,7 +57,8 @@ def leg_charges(side: str, turnover: float, cfg: dict) -> dict:
     brokerage = min(turnover * cfg["brokerage_pct"], cfg["brokerage_cap"])
     exchange = turnover * cfg["exchange_pct"]
     sebi = turnover * cfg["sebi_per_crore"] / 1e7
-    stt = turnover * cfg["stt_sell_pct"] if side == "SELL" else 0.0
+    stt = turnover * (cfg["stt_sell_pct"] if side == "SELL"
+                      else cfg.get("stt_buy_pct", 0.0))
     stamp = turnover * cfg["stamp_buy_pct"] if side == "BUY" else 0.0
     gst = (brokerage + exchange + sebi) * cfg["gst_pct"]
     total = brokerage + exchange + sebi + stt + stamp + gst
@@ -75,3 +80,33 @@ def round_trip_cost_estimate(price: float, qty: int, cfg: dict) -> float:
     sell = fill_price("SELL", price, cfg) * qty
     slippage = buy - sell
     return slippage + leg_charges("BUY", buy, cfg)["total"] + leg_charges("SELL", sell, cfg)["total"]
+
+
+# ---------------------------------------------------------------------------
+# Delivery (CNC), for anything held overnight
+# ---------------------------------------------------------------------------
+#
+# A swing account cannot be charged intraday rates. The difference is not
+# a rounding detail: STT alone goes from 0.025% on one leg to 0.1% on
+# both, an eightfold increase, and stamp duty five-folds. A rotation
+# strategy that looks profitable on MIS charges can be a loser on CNC.
+#
+# Brokerage is left at the intraday schedule deliberately. Several
+# discount brokers charge nothing for delivery, so this is the
+# conservative assumption; a backtest that assumed free brokerage would
+# flatter every result here and could not be falsified by a worse broker.
+
+DELIVERY_COSTS = {
+    **DEFAULT_COSTS,
+    "stt_buy_pct": 0.001,      # 0.1% on the buy leg
+    "stt_sell_pct": 0.001,     # 0.1% on the sell leg
+    "stamp_buy_pct": 0.00015,  # 0.015%, five times the intraday rate
+}
+
+
+def delivery(overrides: dict | None = None) -> dict:
+    cfg = dict(DELIVERY_COSTS)
+    for k, v in (overrides or {}).items():
+        if k in cfg and isinstance(v, (int, float)) and v >= 0:
+            cfg[k] = float(v)
+    return cfg

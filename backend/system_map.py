@@ -61,6 +61,11 @@ MODULES = [
                  "funnel/cli.py", "tools/test_idea.py", "bench.yaml"],
      "note": "Phase 4. Seven gates in order; survivors get capital, the "
              "rest stay in the Arena as observe-only."},
+    {"role": "Swing account",
+     "modules": ["swing/core.py", "swing/picker.py", "swing/sleeves.py",
+                 "swing/cli.py"],
+     "note": "Phase 5. Core rotation on delivery costs, quarterly re-pick, "
+             "sleeves. Separate from the Arena's intraday book."},
     {"role": "Settings",
      "modules": ["settings.py", "AGENTS.md"],
      "note": "Parsed from AGENTS.md §2. No phase hardcodes a number."},

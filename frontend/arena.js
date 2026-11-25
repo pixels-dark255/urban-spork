@@ -14,6 +14,7 @@ let arenaSystem = null;
 let arenaStudy = null;
 let arenaProof = null;
 let arenaFunnel = null;
+let arenaSwing = null;
 
 // Which market's arena is on screen. One arena per market, so every call
 // carries it; the server keys storage by it and defaults to India.
@@ -79,13 +80,14 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes] = await Promise.all([
+    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
       apiFetch(`${API}/api/system`).catch(() => null),
       apiFetch(`${API}/api/asset-study`).catch(() => null),
       apiFetch(`${API}/api/proof`).catch(() => null),
       apiFetch(`${API}/api/funnel`).catch(() => null),
+      apiFetch(`${API}/api/swing`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
@@ -103,6 +105,9 @@ async function loadArena(silent = false) {
     }
     if (funnelRes && funnelRes.ok) {
       arenaFunnel = await funnelRes.json().catch(() => null);
+    }
+    if (swingRes && swingRes.ok) {
+      arenaSwing = await swingRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -505,6 +510,138 @@ function settingsTable(sys) {
     </details>`;
 }
 
+// ---------- Swing account (Phase 5) ----------
+// Inline SVG rather than a charting library: the chart CDN is one more
+// thing that can fail, and two lines on a shared scale need nothing more.
+function equitySvg(core, account, width = 320, height = 86) {
+  if (!core || core.length < 2) return "";
+  const series = [core, (account && account.length === core.length) ? account : null]
+    .filter(Boolean);
+  const all = series.flat().map((p) => p[1]);
+  const lo = Math.min(...all), hi = Math.max(...all);
+  const span = hi - lo || 1;
+  const path = (pts) => pts.map((p, i) => {
+    const x = (i / (pts.length - 1)) * width;
+    const y = height - ((p[1] - lo) / span) * height;
+    return `${i ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+  const lines = series.map((pts, i) =>
+    `<path d="${path(pts)}" fill="none" stroke="${i ? "var(--brass)" : "var(--mist)"}"
+       stroke-width="${i ? 1.6 : 1.2}" ${i ? "" : 'stroke-dasharray="3 2"'} />`).join("");
+  return `<svg class="swing-chart" viewBox="0 0 ${width} ${height}"
+            preserveAspectRatio="none" role="img"
+            aria-label="Account equity over the training window">${lines}</svg>`;
+}
+
+// What was held, and when. A flat equity stretch is a different thing
+// depending on whether it was a bad engine or a long spell in cash.
+function holdingsBands(bands, engine) {
+  if (!bands || !bands.length) return "";
+  const first = new Date(bands[0].start).getTime();
+  const last = new Date(bands[bands.length - 1].end).getTime();
+  const span = Math.max(1, last - first);
+  const cls = (t) => t === "CASH" ? "band-cash" : (t === engine ? "band-engine" : "band-safe");
+  const seg = bands.map((b) => {
+    const a = new Date(b.start).getTime(), z = new Date(b.end).getTime();
+    const w = Math.max(0.4, ((z - a) / span) * 100);
+    return `<i class="${cls(b.ticker)}" style="width:${w}%" title="${escapeHtml(b.ticker)} ${escapeHtml(b.start)} to ${escapeHtml(b.end)}"></i>`;
+  }).join("");
+  return `<div class="swing-bands">${seg}</div>
+    <div class="swing-legend">
+      <span><i class="band-engine"></i> engine</span>
+      <span><i class="band-safe"></i> safe</span>
+      <span><i class="band-cash"></i> cash</span>
+    </div>`;
+}
+
+function swingPanel(payload) {
+  if (!payload) return "";
+  if (!payload.ok) {
+    return `
+      <div class="section-heading"><span class="eyebrow">phase 5</span>
+        <h2 style="font-size:17px;">Swing account</h2></div>
+      <p class="arena-hint">${escapeHtml(payload.reason || "Not run yet.")}</p>`;
+  }
+  const w = payload.swing || {};
+  const c = w.core || {}, pick = w.pick || {}, sl = w.sleeves || {};
+  const metric = (label, m, note = "") => `
+      <tr>
+        <td class="arena-name">${escapeHtml(label)}</td>
+        <td class="study-num">${m.cagr_pct === undefined ? "n/a" : pct3(m.cagr_pct)}</td>
+        <td class="study-num neg">${m.max_drawdown_pct === undefined ? "n/a" : pct3(m.max_drawdown_pct)}</td>
+        <td class="study-num">${m.return_over_drawdown == null ? "n/a" : m.return_over_drawdown}</td>
+        <td class="sys-detail">${escapeHtml(note)}</td>
+      </tr>`;
+  const sleeveNote = sl.survivors_available
+    ? `${(sl.chosen || []).length} of ${sl.survivors_available} survivors took a slot`
+    : "no survivors in bench.yaml, so the account is the core alone";
+
+  const safes = (pick.safes || []).map((r) => `
+      <tr class="${r.ticker === w.safe ? "sys-ok" : ""}">
+        <td class="arena-name">${escapeHtml(shortSymbol(r.ticker))}</td>
+        <td class="study-num">${r.correlation == null ? "n/a" : r.correlation.toFixed(2)}</td>
+        <td class="sys-detail">${escapeHtml(r.why || "")}</td>
+      </tr>`).join("");
+
+  const quarters = (w.quarters || []).slice(-12).map((q) => `
+      <tr>
+        <td class="arena-name">${escapeHtml(q.as_of)}</td>
+        <td>${escapeHtml(shortSymbol(q.engine || "-"))}</td>
+        <td>${escapeHtml(shortSymbol(q.safe || "-"))}</td>
+      </tr>`).join("");
+
+  const neighbours = (w.neighbours || []).map((n) => `
+      <tr class="${(n.return_pct || 0) > 0 ? "sys-ok" : "sys-gap"}">
+        <td class="arena-name">${escapeHtml(n.rule)}</td>
+        <td class="study-num">${n.return_pct == null ? "n/a" : pct3(n.return_pct)}</td>
+      </tr>`).join("");
+
+  const causal = w.causal || {};
+  return `
+    <div class="section-heading"><span class="eyebrow">phase 5</span>
+      <h2 style="font-size:17px;">Swing account</h2></div>
+    <p class="arena-hint">Hold <b>${escapeHtml(shortSymbol(w.engine || "?"))}</b> while it is above its
+      200-day average, otherwise <b>${escapeHtml(shortSymbol(w.safe || "CASH"))}</b>.
+      Delivery costs, next-open fills, whole shares only.
+      ${w.source === "synthetic" ? "<b>Run on synthetic bars:</b> shape only, not a verdict." : ""}</p>
+    ${equitySvg(w.equity, w.account_equity)}
+    ${holdingsBands(w.holdings, w.engine)}
+    <div class="table-scroll">
+      <table class="backtest-table sys-table">
+        <thead><tr><th>Account</th><th>Return/yr</th><th>Max DD</th><th>Ret/DD</th><th></th></tr></thead>
+        <tbody>
+          ${metric("Core alone", c)}
+          ${metric("Core + sleeves", w.account || c, sleeveNote)}
+          ${w.locked ? metric("Locked window", w.locked, "run once") : ""}
+        </tbody>
+      </table>
+    </div>
+    <details class="arena-settings sys-modules" open>
+      <summary>Neighbours, correlations and quarterly picks</summary>
+      <p class="arena-hint">The lineup must not depend on data that did not exist yet:
+        re-picked with the future removed, it came out
+        <b>${causal.match ? "the same" : "DIFFERENT"}</b>.</p>
+      <div class="table-scroll">
+        <table class="backtest-table sys-table">
+          <thead><tr><th>Trend rule</th><th>Return</th></tr></thead>
+          <tbody>${neighbours}</tbody>
+        </table>
+      </div>
+      <div class="table-scroll">
+        <table class="backtest-table sys-table">
+          <thead><tr><th>Safe candidate</th><th>Corr</th><th>Why</th></tr></thead>
+          <tbody>${safes}</tbody>
+        </table>
+      </div>
+      <div class="table-scroll">
+        <table class="backtest-table sys-table">
+          <thead><tr><th>Quarter</th><th>Engine</th><th>Safe</th></tr></thead>
+          <tbody>${quarters}</tbody>
+        </table>
+      </div>
+    </details>`;
+}
+
 // ---------- The funnel (Phase 4) ----------
 // A horizontal bar per gate, each as wide as the number of ideas still
 // standing. The useful reading is where the chart collapses: that is the
@@ -861,6 +998,8 @@ function renderArena(data) {
     ${proofPanel(arenaProof)}
 
     ${funnelPanel(arenaFunnel)}
+
+    ${swingPanel(arenaSwing)}
 
     ${systemPanel(arenaSystem)}
 

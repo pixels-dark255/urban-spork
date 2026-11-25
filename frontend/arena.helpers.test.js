@@ -73,7 +73,7 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -1003,4 +1003,89 @@ test("before the funnel has run the panel says so", () => {
   assert.ok(arena.funnelPanel({ ok: false, reason: "not been run yet" })
             .includes("not been run yet"));
   assert.strictEqual(arena.funnelPanel(null), "");
+});
+
+// ---------------------------------------------------------------------------
+// Swing account (Phase 5)
+// ---------------------------------------------------------------------------
+
+const SWING = {
+  ok: true,
+  swing: {
+    source: "yahoo", engine: "BANKBEES.NS", safe: "LIQUIDBEES.NS",
+    equity: [["2022-01-03", 100000], ["2022-06-01", 108000], ["2022-12-01", 121000]],
+    account_equity: [["2022-01-03", 100000], ["2022-06-01", 109000], ["2022-12-01", 126000]],
+    holdings: [{ ticker: "CASH", start: "2022-01-03", end: "2022-02-01" },
+               { ticker: "BANKBEES.NS", start: "2022-02-02", end: "2022-09-01" },
+               { ticker: "LIQUIDBEES.NS", start: "2022-09-02", end: "2022-12-01" }],
+    core: { cagr_pct: 17.08, max_drawdown_pct: -21.19, return_over_drawdown: 0.81 },
+    neighbours: [{ rule: "SMA100", return_pct: 82.98 },
+                 { rule: "EMA200", return_pct: -3.1 }],
+    pick: { safes: [{ ticker: "LIQUIDBEES.NS", correlation: 0.02, why: "mean -0.0009% a day" },
+                    { ticker: "GOLDBEES.NS", correlation: 0.61, why: "correlation 0.61 is too high" }] },
+    sleeves: { chosen: [], rejected: [], survivors_available: 0 },
+    quarters: [{ as_of: "2024-12-31", engine: "BANKBEES.NS", safe: "LIQUIDBEES.NS" }],
+    causal: { match: true },
+  },
+};
+
+test("the equity chart draws core and account on one shared scale", () => {
+  const svg = arena.equitySvg(SWING.swing.equity, SWING.swing.account_equity);
+  assert.ok(svg.includes("<svg"));
+  assert.strictEqual((svg.match(/<path /g) || []).length, 2);
+});
+
+test("one curve alone still draws", () => {
+  const svg = arena.equitySvg(SWING.swing.equity, null);
+  assert.strictEqual((svg.match(/<path /g) || []).length, 1);
+});
+
+test("too few points draws nothing rather than a misleading line", () => {
+  assert.strictEqual(arena.equitySvg([["2022-01-01", 100]], null), "");
+  assert.strictEqual(arena.equitySvg(null, null), "");
+});
+
+test("holdings bands distinguish engine, safe and cash", () => {
+  const html = arena.holdingsBands(SWING.swing.holdings, "BANKBEES.NS");
+  assert.ok(html.includes("band-engine"));
+  assert.ok(html.includes("band-safe"));
+  assert.ok(html.includes("band-cash"));
+});
+
+test("a band carries its dates so a flat stretch can be explained", () => {
+  const html = arena.holdingsBands(SWING.swing.holdings, "BANKBEES.NS");
+  assert.ok(html.includes("2022-02-02 to 2022-09-01"));
+});
+
+test("the panel names the rule in plain words", () => {
+  const html = arena.swingPanel(SWING);
+  assert.ok(html.includes("BANKBEES"));
+  assert.ok(html.includes("200-day average"));
+});
+
+test("a failing neighbour is marked, not averaged away", () => {
+  const row = arena.swingPanel(SWING).split("<tr").find((r) => r.includes("EMA200"));
+  assert.ok(row.includes("sys-gap"));
+});
+
+test("a safe candidate rejected for correlation says so", () => {
+  const html = arena.swingPanel(SWING);
+  assert.ok(html.includes("correlation 0.61 is too high"));
+});
+
+test("no survivors is explained rather than shown as an empty sleeve table", () => {
+  assert.ok(arena.swingPanel(SWING).includes("no survivors in bench.yaml"));
+});
+
+test("the look-ahead result is stated on the panel", () => {
+  assert.ok(arena.swingPanel(SWING).includes("the same"));
+  const bad = JSON.parse(JSON.stringify(SWING));
+  bad.swing.causal.match = false;
+  assert.ok(arena.swingPanel(bad).includes("DIFFERENT"));
+});
+
+test("before the swing account has run the panel says so", () => {
+  assert.ok(arena.swingPanel({ ok: false, reason: "not been run yet" })
+            .includes("not been run yet"));
+  assert.strictEqual(arena.swingPanel(null), "");
 });

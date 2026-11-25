@@ -155,6 +155,7 @@ Reuse these. Do not create a parallel copy of any of them.
 | Fingerprint | `backend/fingerprint.py` — one comparable line per phase |
 | Regime | `backend/signals/regime.py` — trend and vol per bar; one definition, shared with the study |
 | Rule spec | `rules.yaml` + `backend/signals/rules.py` — the 7-part schema. `python3.13 -m signals.rules` prints the table |
+| Swing account | `backend/swing/` — Phase 5. `python -m swing.cli` runs the core rotation, the quarterly picker and the sleeves. Delivery costs, separate from the Arena's intraday book |
 | Funnel | `backend/funnel/` + `bench.yaml` — Phase 4's seven gates. `python -m funnel.cli` runs them all; `python -m tools.test_idea <idea.yaml>` runs one |
 | Asset labels | `results/asset_labels.json` — Phase 1's output, committed so gate 1 is reproducible |
 | Proof | `backend/validation/` + `backend/run_proof.py` — Phase 3. `python3.13 run_proof.py` prints the three synthetic results against the bands, the guard per strategy, and the fingerprint |
@@ -168,6 +169,10 @@ Reuse these. Do not create a parallel copy of any of them.
 - **Tests.** Backend: `cd backend && python3.13 -m pytest -q`. Frontend:
   `cd frontend && node --test app.helpers.test.js arena.helpers.test.js`.
   Both must pass before a commit.
+- **Costs.** Intraday pays `costs.DEFAULT_COSTS` (MIS). Anything held
+  overnight pays `costs.DELIVERY_COSTS` (CNC), where STT is 0.1% on
+  **both** legs rather than 0.025% on the sell. A swing result charged
+  intraday rates is wrong by roughly 0.19% per round trip.
 - **Money.** Indian results are in rupees (`₹`). A market with another quote
   currency carries its own symbol and an INR conversion; never mix them in
   one column without labelling.
