@@ -12,3 +12,6 @@ phase,date_run,sha,notes
 4,2026-11-25,26d138138002,"funnel re-run on the next-open engine (40 sessions to 2026-11-25): still 13 in, 0 survivors; 7 of 10 comparable ideas worse by Rs875 in total, and gap_fade stopped being profitable"
 9,2026-11-25,6e6ec91fcf03,"next-open fills measured: 113 entries recomputed from the bars, 0 mismatches, control caught; gapped bars move all 116 fills (avg -0.0003%, worst -0.65%); 6 gapped_through, 1 no_next_bar; sweep 0/0.5/1/2x and gate 6 reads 2x from it"
 4-sweep,2026-11-26,e23d1fb22a79,"slippage sweep on real NSE 5m bars (40 sessions): 0 of 11 profitable at every multiple except gap_fade at 2x on 7 trades; free fills recover Rs8,884 of a Rs21,892 loss and nothing crosses zero"
+2,2026-11-26,5826fb2c66cb,"rules.yaml gains the 12 patient variants: 25 strategies, 7 testable, 18 not (ATR or structure stops carried over from their bases)"
+3,2026-11-26,2da2f85d462b,"look-ahead guard re-run with the patient family: 25 of 25 strategies causal over 30 truncation dates each, control still caught, planted +0.832% and noise -0.206% unchanged"
+4,2026-11-26,c09d0ecb4972,"funnel with the patient family on real NSE 5m bars (40 sessions): 25 ideas in, 0 survivors. Loss cut 28% by trading 24% less, but loss per trade only -20.59 to -19.64, so no edge was found"
