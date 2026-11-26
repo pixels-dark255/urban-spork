@@ -166,7 +166,11 @@ DEFAULT_CONFIG = {
     "daily_capital": 10_000.0,      # always in INR, whatever the market
     "capital_mode": "reset",        # "reset" daily, or "compound"
     "symbols": LIQUID_NIFTY[:6],
-    "strategies": list(STRATEGIES.keys()),
+    # Arena defaults only. A variant family built for the funnel is
+    # offered in the catalog and ticked on deliberately, not handed a
+    # book the moment it is written.
+    "strategies": [sid for sid, s in STRATEGIES.items()
+                   if getattr(s, "arena_default", True)],
     "risk": DEFAULT_RISK,
     "costs": {},
     "window": None,                 # None means the market's own session
@@ -399,10 +403,13 @@ def adopt_new_strategies(state: dict) -> list[str]:
     if known is None:
         known = list(ORIGINAL_STRATEGY_IDS)
     added = []
-    for sid in STRATEGIES:
+    for sid, strat in STRATEGIES.items():
         if sid not in known:
             known.append(sid)
-            if sid not in cfg["strategies"]:
+            # A strategy that is not an arena default is offered, never
+            # pushed: twelve new books appearing unasked in a running arena
+            # is not an improvement.
+            if getattr(strat, "arena_default", True) and sid not in cfg["strategies"]:
                 cfg["strategies"].append(sid)
                 added.append(sid)
     cfg["known_strategies"] = known

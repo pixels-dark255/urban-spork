@@ -176,7 +176,11 @@ def test_existing_arena_gets_new_strategies_once_and_opt_out_sticks():
     st = engine.new_state(cfg(["orb", "ema_cross", "benchmark"]))
     st["config"].pop("known_strategies")          # an arena from before the update
     added = engine.adopt_new_strategies(st)
-    assert set(added) == set(STRATEGIES) - set(S.ORIGINAL_STRATEGY_IDS)
+    # Arena defaults only. A family built for the funnel is offered in the
+    # catalog, not pushed into a book that is already running.
+    defaults = {sid for sid, s in STRATEGIES.items() if s.arena_default}
+    assert set(added) == defaults - set(S.ORIGINAL_STRATEGY_IDS)
+    assert not [a for a in added if a.startswith("patient_")]
     assert st["config"]["strategies"][-1] == "benchmark"
 
     st["config"]["strategies"].remove("gap_fade")   # user unticks one
@@ -184,10 +188,21 @@ def test_existing_arena_gets_new_strategies_once_and_opt_out_sticks():
     assert "gap_fade" not in st["config"]["strategies"]
 
 
-def test_brand_new_arena_has_everything_and_nothing_to_adopt():
+def test_brand_new_arena_has_every_default_and_nothing_to_adopt():
     st = engine.new_state()
     assert engine.adopt_new_strategies(st) == []
-    assert set(st["config"]["strategies"]) == set(STRATEGIES)
+    assert set(st["config"]["strategies"]) == {
+        sid for sid, s in STRATEGIES.items() if s.arena_default}
+
+
+def test_a_non_default_strategy_is_offered_and_kept_once_ticked():
+    """It must be reachable, or it is dead code with a rules.yaml entry."""
+    assert "patient_orb" in {row["id"] for row in S.catalog()}
+    st = engine.new_state(cfg(["orb", "patient_orb", "benchmark"]))
+    assert "patient_orb" in st["config"]["strategies"]
+    # And adopting does not quietly remove it again.
+    engine.adopt_new_strategies(st)
+    assert "patient_orb" in st["config"]["strategies"]
 
 
 # ---------------------------------------------------------------------------

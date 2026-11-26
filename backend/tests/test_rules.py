@@ -71,14 +71,40 @@ def test_the_defaults_carry_the_half_size_multiple():
     assert DOC["defaults"]["size"]["volatile_multiple"] == regime.VOLATILE_SIZE_MULTIPLE
 
 
+REGIME_WORDS = ("regime", "trend", "volatil", "calm", "choppy", "vix")
+
+
 def test_no_rule_filters_on_a_regime_yet():
-    """Today every filter is `none`, and that is a finding, not a choice.
+    """No rule consults the regime, and that is a finding, not a choice.
 
     When the regime layer is wired into the engine this test should fail
     and be replaced, which is the point: it marks the moment the filters
     stop being decorative.
+
+    It checks for a REGIME filter rather than for the literal string
+    "none", because a filter can be a real condition without being a
+    market-state one: the patient family filters on whether the move it is
+    aiming for covers the round trip, which the engine does execute.
     """
-    assert all(r["filter"] == "none" for r in DOC["strategies"])
+    for rule in DOC["strategies"]:
+        text = str(rule["filter"]).lower()
+        found = [w for w in REGIME_WORDS if w in text]
+        assert not found, "%s filters on %s: %s" % (rule["id"], found, rule["filter"])
+
+
+def test_a_filter_that_is_not_none_is_one_the_engine_actually_runs():
+    """The gap this file records is that rules.yaml can describe things the
+    engine ignores. A filter that is written down must not join them."""
+    from arena.strategies import STRATEGIES
+
+    for rule in DOC["strategies"]:
+        if str(rule["filter"]).lower() == "none":
+            continue
+        strategy = STRATEGIES[rule["id"]]
+        # Only the patient family has a filter so far, and it is enforced
+        # in its own entry() rather than being a description of an
+        # intention.
+        assert hasattr(strategy, "min_move_mult") or "min_move_mult" in strategy.params
 
 
 def test_no_rule_filters_on_vix():

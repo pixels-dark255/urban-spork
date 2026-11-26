@@ -268,3 +268,218 @@ strategies:
       kind: atr
     size: equal slot share, halved when volatile
     target: held to the square-off
+
+  # ---------------------------------------------------------------------
+  # The patient family. Same signals, taken far less often.
+  #
+  # A round trip costs 0.206% of the position, and with slippage switched
+  # off entirely the originals still make about 0.008%% a trade
+  # (results/slippage_sweep.md). These take the same setups only when
+  # the move being aimed at is 4x the toll, and aim 3x the risk rather
+  # than the base's own multiple.
+  #
+  # Every base is wrapped, including the ones that score worst. Picking
+  # which to wrap by how they did would be choosing a rule on recent
+  # results, which is what AGENTS.md §1.5 forbids.
+  # ---------------------------------------------------------------------
+
+  - id: patient_orb
+    kind: breakout
+    name: Opening-range breakout (patient)
+    testable: true
+    market: nse
+    setup: close of a 5-minute bar above the high of the first 15 minutes, where the previous close was not above it
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: the opening-range low, or 1.5% below entry, whichever is nearer
+      pct: 1.5
+      kind: percent_bounded
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_orb_both
+    kind: breakout
+    name: Opening-range breakout (long + short) (patient)
+    testable: true
+    market: nse
+    setup: close above the first-15-minute high (long) or below its low (short), crossing it on this bar
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: the other side of the opening range, or 1.5% from entry, whichever is nearer
+      pct: 1.5
+      kind: percent_bounded
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_score4
+    kind: mixed
+    name: 4-signal score (original) (patient)
+    testable: true
+    market: nse
+    setup: the 4-signal score (SMA5 vs SMA20, RSI14, close vs VWAP, close vs opening range) crosses up into +2 or better
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: score falls to -2 or worse, stop, target, or square-off at 15:15
+    stop:
+      rule: 1.5% below entry
+      pct: 1.5
+      kind: percent
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_vwap_reclaim
+    kind: reversion
+    name: VWAP reclaim (patient)
+    testable: false
+    not_testable_because: stop is 0.5 ATR below the lower of the bar low and VWAP, not a percentage
+    market: nse
+    setup: close crosses back above the day's VWAP, with volume above its 20-bar average
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: close falls 0.2% below VWAP, stop, target, or square-off at 15:15
+    stop:
+      rule: 0.5 ATR(14) below min(bar low, VWAP)
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_ema_cross
+    kind: momentum
+    name: EMA 9/21 crossover (patient)
+    testable: false
+    not_testable_because: stop is 1.5 ATR, not a percentage
+    market: nse
+    setup: the 9-EMA crosses above the 21-EMA on the close
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: 9-EMA crosses back below the 21-EMA, stop, target, or square-off at 15:15
+    stop:
+      rule: 1.5 ATR(14) below entry
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_rsi_reversion
+    kind: reversion
+    name: RSI oversold bounce (patient)
+    testable: false
+    not_testable_because: stop is 1.5 ATR, not a percentage
+    market: nse
+    setup: RSI(14) closes back above 30 having been below it on the previous bar
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: RSI(14) above 55, stop, target, or square-off at 15:15
+    stop:
+      rule: 1.5 ATR(14) below entry
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_bb_breakout
+    kind: breakout
+    name: Bollinger volume breakout (patient)
+    testable: false
+    not_testable_because: stop is 1.5 ATR, not a percentage
+    market: nse
+    setup: close above the upper Bollinger band on at least 1.5x the 20-bar average volume
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: close back below the middle band, stop, target, or square-off at 15:15
+    stop:
+      rule: 1.5 ATR(14) below entry
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_supertrend
+    kind: momentum
+    name: SuperTrend (10, 3) flip (patient)
+    testable: false
+    not_testable_because: the stop is the SuperTrend line itself, a moving level rather than a percentage
+    market: nse
+    setup: the SuperTrend(10, 3) direction flips, long on a flip up and short on a flip down
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: the direction flips against the position, stop, target, or square-off at 15:15
+    stop:
+      rule: the SuperTrend line
+      pct: null
+      kind: structure
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_vwap_bands
+    kind: reversion
+    name: VWAP band mean-reversion (patient)
+    testable: false
+    not_testable_because: stop is a swing extreme offset by 0.5 ATR, not a percentage
+    market: nse
+    setup: previous close more than 2 standard deviations below VWAP, this bar turns up, RSI(14) under 35 (mirrored for shorts at 2 sigma above with RSI over 65)
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: 0.5 ATR(14) beyond the lower of this bar's and the previous bar's low
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_trend_pullback
+    kind: momentum
+    name: Trend pullback to EMA 21 (patient)
+    testable: false
+    not_testable_because: stop is the last 5-bar swing extreme, a structure rather than a percentage
+    market: nse
+    setup: price above VWAP with EMA21 above EMA50, previous bar's low touched the EMA21, this bar closes back above it and above the previous high (mirrored for shorts)
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: the lower of the 5-bar swing low and this bar's low
+      pct: null
+      kind: structure
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_gap_fade
+    kind: reversion
+    name: Gap fade (gap-fill) (patient)
+    testable: false
+    not_testable_because: stop is the day's extreme offset by 0.2 ATR, not a percentage
+    market: nse
+    setup: session opens 0.6% or more from the previous close, and between bars 3 and 9 price closes back inside the opening range against the gap
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: stop, target, or square-off at 15:15
+    stop:
+      rule: 0.2 ATR(14) beyond the day's high (short) or low (long)
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk
+
+  - id: patient_intraday_momentum
+    kind: momentum
+    name: Intraday momentum (first 30 min → last hour) (patient)
+    testable: false
+    not_testable_because: stop is the lower of VWAP and 1.5 ATR, not a percentage
+    market: nse
+    setup: with 75 minutes left in the session, the day is up 0.5% or more as of 09:45 and price is above VWAP (mirrored for shorts)
+    filter: the move it is aiming for must be at least 4x the 0.206% round trip, so 0.824%
+    entry: next session open after the signal bar closes
+    exit: square-off at 15:15
+    stop:
+      rule: min(VWAP, 1.5 ATR(14) below entry)
+      pct: null
+      kind: atr
+    size: equal slot share, halved when volatile, and at most one trade a day per stock
+    target: 3x the risk

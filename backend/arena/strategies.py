@@ -276,6 +276,10 @@ class Strategy:
     name = "Base"
     description = ""
     benchmark = False          # benchmarks are never benched, only compared
+    # Whether a running arena switches this on by itself. False means the
+    # strategy is available to tick but is not pushed into books that are
+    # already going.
+    arena_default = True
     max_trades_per_symbol_per_day = 2
     # True when the strategy normally requires a volume confirmation. On a
     # market whose feed carries no volume it still trades, without that
@@ -708,12 +712,118 @@ class IntradayMomentum(Strategy):
         return None
 
 
+# ---------------------------------------------------------------------------
+# The patient family
+#
+# Measured, not guessed at: a round trip on an NSE intraday position costs
+# 0.206% of it (results/slippage_sweep.md). The sweep then showed that with
+# slippage switched off entirely the eleven existing ideas still make about
+# Rs1 a trade on Rs12,500, which is 0.008%. They are not losing an edge to
+# costs; they are taking trades too small to pay for themselves.
+#
+# So this family takes the SAME signals and refuses most of them. A setup is
+# taken only when the move it is aiming for is a multiple of what the round
+# trip costs, and it aims further before getting out. Fewer trades, each one
+# worth making.
+#
+# It is a wrapper, not a copy. Every rule still comes from the base
+# strategy's own entry() (AGENTS.md §1.2), and each variant is a NEW id
+# going through the full funnel rather than a threshold moved on an old one
+# (AGENTS.md §1.5).
+# ---------------------------------------------------------------------------
+
+# One NSE round trip, as a percentage of the position: brokerage 0.060, STT
+# 0.025, GST 0.012, exchange 0.006, stamp 0.003, SEBI 0.000, slippage 0.100.
+ROUND_TRIP_PCT = 0.206
+
+
+class Patient(Strategy):
+    """A base rule, taken only when it is aiming far enough to be worth it.
+
+    `min_move_mult` is in round trips, not in rupees or percent, because
+    that is the thing the move has to beat. At the default of 4 a setup
+    must be aiming for 0.824% before it is taken at all.
+
+    `target_r` widens the base's own target. This is the bet being tested
+    and it is not a free one: a target further away is hit less often, so
+    the family wins only if the bigger wins outweigh the lower hit rate.
+    The funnel decides that, not this comment.
+    """
+
+    PARAMS = {"min_move_mult": 4.0, "target_r": 3.0}
+    NEIGHBOURS = {"min_move_mult": [3.0, 4.0, 6.0],
+                  "target_r": [2.0, 3.0, 4.0]}
+    # One a day per symbol: the whole point is to stop paying the toll
+    # repeatedly for moves that never cover it.
+    max_trades_per_symbol_per_day = 1
+    # Available to tick on, but it does not join a running arena by itself.
+    # Twelve new books appearing unasked in someone's live arena is not an
+    # improvement.
+    arena_default = False
+    base_id = "base"
+
+    @property
+    def base(self):
+        return STRATEGIES[self.base_id]
+
+    def entry(self, row, prev):
+        sig = self.base.entry(row, prev)
+        if not sig:
+            return None
+        price = row["Close"]
+        stop = float(sig["stop"])
+        short = sig.get("side") == "SHORT"
+        risk = (stop - price) if short else (price - stop)
+        if not _ok(price, stop) or risk <= 0 or price <= 0:
+            return None
+        target = (price - self.p("target_r") * risk) if short \
+            else (price + self.p("target_r") * risk)
+        if target <= 0:
+            return None
+        move_pct = 100.0 * abs(target - price) / price
+        if move_pct < self.p("min_move_mult") * ROUND_TRIP_PCT:
+            return None
+        out = {"stop": stop, "target": target,
+               "reason": "%s, aiming %.2f%%" % (sig.get("reason", "signal"), move_pct)}
+        if short:
+            out["side"] = "SHORT"
+        return out
+
+    def exit(self, row, prev, position):
+        # The way out is the base's. Only the decision to come in at all,
+        # and how far it aims, belong to this family.
+        return self.base.exit(row, prev, position)
+
+
+def _patient(base: Strategy) -> type:
+    """One patient variant of `base`, named after it."""
+    return type("Patient" + type(base).__name__, (Patient,), {
+        "id": "patient_" + base.id,
+        "base_id": base.id,
+        "name": base.name + " (patient)",
+        "description": ("%s Taken only when it is aiming at least %gx the %.3f%% round "
+                        "trip, at %gx the risk, once a day per stock."
+                        % (base.description, Patient.PARAMS["min_move_mult"],
+                           ROUND_TRIP_PCT, Patient.PARAMS["target_r"])),
+        "volume_gated": base.volume_gated,
+    })
+
+
 STRATEGIES: dict[str, Strategy] = {s.id: s for s in [
     OpeningRangeBreakout(), VwapReclaim(), EmaCrossover(), RsiReversion(),
     BollingerBreakout(), LegacyScore(),
     OrbBothWays(), SuperTrendFlip(), VwapBandReversion(), TrendPullback(), GapFade(), IntradayMomentum(),
     BuyAtOpenBenchmark(),
 ]}
+
+# A patient variant of every real idea. Every one of them, deliberately:
+# picking which bases to wrap by how they scored would be choosing a rule
+# on recent results, which is the thing AGENTS.md §1.5 exists to stop. The
+# funnel decides which survive, not this list.
+for _base in [s for s in list(STRATEGIES.values()) if not s.benchmark]:
+    _variant = _patient(_base)()
+    STRATEGIES[_variant.id] = _variant
+del _base, _variant
 
 # The strategies that existed before the second wave. Arenas created back
 # then have these in their config; anything newer is switched on for them
