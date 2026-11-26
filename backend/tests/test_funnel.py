@@ -280,3 +280,60 @@ def test_a_second_run_appends_rather_than_replacing(tmp_path):
 
 def test_an_absent_log_reports_no_runs(tmp_path):
     assert run_mod.locked_runs(tmp_path / "missing.csv") == {}
+
+
+# --- the fill-cost ladder ---------------------------------------------------
+
+def test_the_sweep_runs_every_idea_at_every_multiple(monkeypatch):
+    """0x is the row that matters: slippage is the biggest single cost leg
+    and the only one nobody has measured."""
+    from arena import engine
+    from funnel import cli as funnel_cli, run as run_mod
+
+    seen = []
+
+    def fake_run(strategy, symbols, enriched, days, cost_multiple=1.0, capital=None):
+        seen.append((strategy.id, cost_multiple))
+        return {"ok": True, "trades": 5, "net": -100.0 * cost_multiple,
+                "profit_factor": 0.5, "charges": 20.0, "before_charges": -80.0}
+
+    monkeypatch.setattr(run_mod.backtest, "run", fake_run)
+    ideas = [i for i in run_mod.ideas_from_rules() if not i.observe_only][:2]
+    multiples = [0.0, 1.0, 2.0]
+    rows = funnel_cli.sweep(ideas, {}, ["A.NS"], 10, multiples)
+
+    assert [r["id"] for r in rows] == sorted(i.id for i in ideas)
+    for idea in ideas:
+        for m in multiples:
+            assert (idea.id, m) in seen
+    # Each row carries a net per multiple, and 0x is not the same run as 1x.
+    row = rows[0]
+    assert row["at"]["0.0"]["net"] == 0.0
+    assert row["at"]["2.0"]["net"] == -200.0
+    assert engine.SLIPPAGE_MULTIPLES[0] == 0.0
+
+
+def test_the_sweep_table_counts_how_many_survive_each_multiple():
+    from funnel import cli as funnel_cli
+
+    rows = [
+        {"id": "wins_at_zero", "trades": 9, "charges": 10.0,
+         "at": {"0.0": {"net": 50.0}, "1.0": {"net": -20.0}}},
+        {"id": "loses_always", "trades": 4, "charges": 10.0,
+         "at": {"0.0": {"net": -5.0}, "1.0": {"net": -40.0}}},
+    ]
+    text = funnel_cli.sweep_table(rows, [0.0, 1.0])
+    assert "net @ 0x" in text and "net @ 1x" in text
+    assert "1 of 2" in text        # one idea is profitable with no slippage
+    assert "0 of 2" in text        # none is once slippage is charged
+    # The statutory legs are never switched off, and the header says so.
+    assert "Statutory charges stay on" in text
+
+
+def test_before_charges_is_not_called_gross():
+    """Slippage is paid in the fill price, not in charges, so a number that
+    only adds charges back is not a gross result and must not claim to be."""
+    source = pathlib.Path(__file__).resolve().parent.parent / "funnel" / "backtest.py"
+    text = source.read_text()
+    assert '"before_charges"' in text
+    assert '"gross"' not in text

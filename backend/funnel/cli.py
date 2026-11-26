@@ -104,6 +104,60 @@ def table(report: dict) -> str:
     return "\n".join(lines)
 
 
+def sweep(ideas, enriched, symbols, days, multiples) -> list[dict]:
+    """Every idea at every fill-cost assumption.
+
+    AGENTS.md §1.4 requires 2x. This runs the whole ladder, because the
+    question 0x answers is the one that matters most: slippage is the
+    biggest single cost leg and the only one nobody has measured. Brokerage,
+    STT, GST, exchange, SEBI and stamp duty are statute and stay on at
+    every multiple.
+    """
+    rows = []
+    for idea in ideas:
+        if idea.observe_only:
+            continue
+        at = {}
+        for multiple in multiples:
+            result = run_mod.backtest.run(idea.strategy, symbols, enriched, days,
+                                          cost_multiple=multiple)
+            at[multiple] = result
+        base = at.get(1.0) or next(iter(at.values()))
+        if not base.get("ok") or not base.get("trades"):
+            continue
+        rows.append({"id": idea.id, "trades": base["trades"],
+                     "charges": base.get("charges"),
+                     "at": {str(m): {"net": r.get("net"), "trades": r.get("trades"),
+                                     "profit_factor": r.get("profit_factor")}
+                            for m, r in at.items()}})
+    rows.sort(key=lambda r: r["id"])
+    return rows
+
+
+def sweep_table(rows: list[dict], multiples: list[float]) -> str:
+    head = "%-19s %7s" % ("IDEA", "TRADES")
+    for m in multiples:
+        head += " %12s" % ("net @ %gx" % m)
+    lines = ["Slippage sweep: the same ideas at each fill-cost assumption",
+             "Statutory charges stay on throughout; only the fill assumption moves.",
+             "-" * len(head), head, "-" * len(head)]
+    wins = {m: 0 for m in multiples}
+    for row in rows:
+        line = "%-19s %7d" % (row["id"], row["trades"])
+        for m in multiples:
+            net = (row["at"].get(str(m)) or {}).get("net")
+            line += " %12s" % ("n/a" if net is None else "%+.2f" % net)
+            if net is not None and net > 0:
+                wins[m] += 1
+        lines.append(line)
+    lines.append("-" * len(head))
+    tail = "%-19s %7s" % ("PROFITABLE", "")
+    for m in multiples:
+        tail += " %12s" % ("%d of %d" % (wins[m], len(rows)))
+    lines.append(tail)
+    return "\n".join(lines)
+
+
 def fingerprint_values(report: dict) -> dict:
     values = {"ideas_in": report["counts"]["ideas_in"],
               "survivors": report["counts"]["survivors"],
@@ -113,6 +167,10 @@ def fingerprint_values(report: dict) -> dict:
     # reader can see.
     for row in (report.get("bars") or {}).get("symbols", []):
         values["bars:%s" % row["symbol"]] = row["bars"]
+    for row in (report.get("sweep") or {}).get("rows", []):
+        for multiple, at in sorted((row.get("at") or {}).items()):
+            if at.get("net") is not None:
+                values["sweep:%s@%s" % (row["id"], multiple)] = round(at["net"], 2)
     for key in gates.ORDER:
         c = report["counts"][key]
         values["gate:%s:passed" % key] = c["passed"]
@@ -131,6 +189,8 @@ def main(argv=None) -> int:
     ap.add_argument("--locked", action="store_true",
                     help="run gate 7. ONCE per idea (AGENTS.md §1.6); "
                          "refused on synthetic bars")
+    ap.add_argument("--sweep", action="store_true",
+                    help="also run every idea at each of engine.SLIPPAGE_MULTIPLES")
     ap.add_argument("--no-store", action="store_true")
     args = ap.parse_args(argv)
 
@@ -158,6 +218,17 @@ def main(argv=None) -> int:
 
     # The dashboard renders the gates in order and by name, so both travel
     # with the result rather than being duplicated in the frontend.
+    if args.sweep:
+        from arena import engine as engine_mod
+        multiples = list(engine_mod.SLIPPAGE_MULTIPLES)
+        rows = sweep(run_mod.ideas_from_rules(), enriched, symbols,
+                     args.sessions, multiples)
+        report["sweep"] = {"multiples": multiples, "rows": rows}
+        sweep_text = sweep_table(rows, multiples)
+        print()
+        print(sweep_text)
+        text = text + "\n\n" + sweep_text
+
     report["order"] = list(gates.ORDER)
     report["titles"] = dict(gates.TITLES)
 

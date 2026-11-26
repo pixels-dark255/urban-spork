@@ -12,7 +12,7 @@ on:
         required: true
         default: "1"
         type: choice
-        options: ["0", "1", "2", "3", "4", "5"]
+        options: ["0", "1", "2", "3", "4", "4-sweep", "5"]
 
 # A phase writes its own result row; two at once would race on it.
 concurrency:
@@ -62,10 +62,21 @@ jobs:
           TZ: Asia/Kolkata
         run: python -m funnel.cli --source yahoo --sessions 40
 
+      # The same funnel plus the fill-cost ladder. Separate from phase 4 so
+      # the plain run's fingerprint stays comparable with every one before
+      # it: the sweep adds keys to the hash.
+      - name: Phase 4 funnel, with the slippage sweep
+        if: inputs.phase == '4-sweep'
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          TZ: Asia/Kolkata
+        run: python -m funnel.cli --source yahoo --sessions 40 --sweep
+
       # The artifact is the record, but a log line is readable from anywhere
       # the artifact store is not, so the table goes into the run summary too.
       - name: Show the funnel table
-        if: inputs.phase == '4'
+        if: inputs.phase == '4' || inputs.phase == '4-sweep'
         run: |
           cat results/funnel.csv
           {
@@ -76,7 +87,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the funnel's outputs
-        if: inputs.phase == '4'
+        if: inputs.phase == '4' || inputs.phase == '4-sweep'
         uses: actions/upload-artifact@v4
         with:
           name: funnel-outputs

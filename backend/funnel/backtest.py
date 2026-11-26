@@ -111,4 +111,12 @@ def run(strategy, symbols: list[str], enriched: dict, days: int,
         "max_drawdown": max_drawdown(trades),
         "return_pct": round(100.0 * net / start_capital, 3) if start_capital else None,
         "cost_multiple": cost_multiple,
+        # The charges actually booked, so this part of the cost is measured
+        # rather than reconstructed by adding an assumed figure back on.
+        # `before_charges` is NOT gross: slippage is paid in the fill price,
+        # not in charges, so it is still inside this number. The 0x row of
+        # the sweep is the one with no slippage in it at all.
+        "charges": round(sum(float(t.get("charges") or 0.0) for t in trades), 2),
+        "before_charges": round(net + sum(float(t.get("charges") or 0.0)
+                                          for t in trades), 2),
     }
