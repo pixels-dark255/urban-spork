@@ -300,12 +300,21 @@ def test_the_sweep_runs_every_idea_at_every_multiple(monkeypatch):
     monkeypatch.setattr(run_mod.backtest, "run", fake_run)
     ideas = [i for i in run_mod.ideas_from_rules() if not i.observe_only][:2]
     multiples = [0.0, 1.0, 2.0]
-    rows = funnel_cli.sweep(ideas, {}, ["A.NS"], 10, multiples)
+    # Gate 1 decides which assets an idea may trade, and the sweep must use
+    # the same ones the funnel does or it is a different experiment.
+    labels = funnel_cli.gates.load_labels()
+    enriched = {sym: object() for sym in labels["labels"]}
+    rows = funnel_cli.sweep(ideas, enriched, labels, 10, multiples)
 
-    assert [r["id"] for r in rows] == sorted(i.id for i in ideas)
-    for idea in ideas:
+    assert rows, "the sweep should produce rows for ideas that clear gate 1"
+    assert [r["id"] for r in rows] == sorted(r["id"] for r in rows)
+    for row in rows:
         for m in multiples:
-            assert (idea.id, m) in seen
+            assert (row["id"], m) in seen
+        # Never the whole universe: an idea trades what it is entitled to.
+        entitled = funnel_cli.gates.gate_fits_asset(
+            next(i for i in ideas if i.id == row["id"]), labels)["symbols"]
+        assert row["symbols"] == [s for s in entitled if s in enriched]
     # Each row carries a net per multiple, and 0x is not the same run as 1x.
     row = rows[0]
     assert row["at"]["0.0"]["net"] == 0.0

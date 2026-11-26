@@ -104,7 +104,7 @@ def table(report: dict) -> str:
     return "\n".join(lines)
 
 
-def sweep(ideas, enriched, symbols, days, multiples) -> list[dict]:
+def sweep(ideas, enriched, labels, days, multiples) -> list[dict]:
     """Every idea at every fill-cost assumption.
 
     AGENTS.md §1.4 requires 2x. This runs the whole ladder, because the
@@ -112,10 +112,21 @@ def sweep(ideas, enriched, symbols, days, multiples) -> list[dict]:
     biggest single cost leg and the only one nobody has measured. Brokerage,
     STT, GST, exchange, SEBI and stamp duty are statute and stay on at
     every multiple.
+
+    Each idea trades the assets gate 1 entitles it to, exactly as it does
+    in the funnel itself. Running the sweep over every symbol instead
+    produced four times the trades and a different answer, which is a
+    different experiment wearing the funnel's name.
     """
     rows = []
     for idea in ideas:
         if idea.observe_only:
+            continue
+        fits = gates.gate_fits_asset(idea, labels)
+        if not fits["pass"]:
+            continue
+        symbols = [s for s in fits["symbols"] if s in enriched]
+        if not symbols:
             continue
         at = {}
         for multiple in multiples:
@@ -126,7 +137,7 @@ def sweep(ideas, enriched, symbols, days, multiples) -> list[dict]:
         if not base.get("ok") or not base.get("trades"):
             continue
         rows.append({"id": idea.id, "trades": base["trades"],
-                     "charges": base.get("charges"),
+                     "symbols": symbols, "charges": base.get("charges"),
                      "at": {str(m): {"net": r.get("net"), "trades": r.get("trades"),
                                      "profit_factor": r.get("profit_factor")}
                             for m, r in at.items()}})
@@ -221,7 +232,7 @@ def main(argv=None) -> int:
     if args.sweep:
         from arena import engine as engine_mod
         multiples = list(engine_mod.SLIPPAGE_MULTIPLES)
-        rows = sweep(run_mod.ideas_from_rules(), enriched, symbols,
+        rows = sweep(run_mod.ideas_from_rules(), enriched, labels,
                      args.sessions, multiples)
         report["sweep"] = {"multiples": multiples, "rows": rows}
         sweep_text = sweep_table(rows, multiples)
