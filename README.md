@@ -185,22 +185,35 @@ splits evenly between the positions it may hold at once:
 
 | market | book | slots | per position |
 |---|---|---|---|
-| India | ₹50,000 | 4 | ₹12,500 (25%) |
+| India | ₹50,000 | 2 | ₹25,000 (50%) |
 | US | ₹50,000 | 2 | ₹25,000 (50%) |
 | Forex | ₹10,000 | 4 | ₹2,500 |
 | Crypto | ₹10,000 | 3 | ₹3,333 |
 
-Both numbers are measured rather than chosen. Over a month of sessions,
-median capital at work was 96% at 2 slots, **70% at 4** and 46% at 6. The
-strategies rarely find six signals at once, so extra slots sit in cash
-while holding no more stocks. Four holds three at a time, the same as five
-or six, and leaves far less idle. The US gets two slots because ₹50,000
-split five ways is about $113, which will not buy one share of a mega-cap.
+The measurement behind these: over a month of sessions, median capital at
+work was **96% at 2 slots**, 70% at 4 and 46% at 6. The strategies rarely
+find four signals at once, so extra slots sit in cash while holding no
+more stocks.
+
+India runs two slots so that half the book goes into each position: on
+₹50,000 that is ₹25,000 a trade rather than ₹12,500, and a result worth
+reading rather than a rounding error. The cost is spread. Two slots hold
+two stocks at a time however many the screener looked at, so one bad fill
+moves the whole book twice as far, and a day with three good signals can
+only take two of them. **Positions at a time** in Arena Settings changes
+it per arena without a code change.
+
+The US gets two slots because ₹50,000 split five ways is about $113,
+which will not buy one share of a mega-cap.
+
+The funnel does not read any of this. It pins its own four slots in
+`backend/funnel/backtest.py`, because a recorded Phase 4 number that
+quietly changes when the dashboard is retuned is not a result.
 
 > **Why affordability is a screen at all.** A position's size is rounded
 > **down** to whole shares, so a share priced near the whole allowance
-> wastes most of it: against a ₹12,500 allowance a ₹7,000 share is one
-> share and ₹5,500 left in cash. The screen drops anything that would use
+> wastes most of it: against a ₹25,000 allowance a ₹14,000 share is one
+> share and ₹11,000 left in cash. The screen drops anything that would use
 > less than 75% of its allowance, which is relative to your book, so a
 > bigger book automatically admits more of the market.
 

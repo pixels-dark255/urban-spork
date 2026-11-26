@@ -325,12 +325,18 @@ class Market:
     # afterwards: five slots of a ₹50,000 book is ₹10,000, fine for a
     # screened Indian stock and not enough for one US mega-cap share.
     #
-    # Four is measured, not chosen. Over a month of synthetic sessions,
-    # median capital at work was 96% at 2 slots, 70% at 4 and 46% at 6 -
-    # because the strategies rarely find six signals at once, so the extra
-    # slots sit in cash. Four holds three stocks at a time (the same as
-    # five or six) while leaving far less idle, and trades nearly as often.
-    default_open_slots = 4
+    # Two, for capital at work rather than for spread. Over a month of
+    # synthetic sessions median capital at work was 96% at 2 slots, 70% at 4
+    # and 46% at 6: the strategies rarely find four signals at once, so the
+    # extra slots sit in cash. Two puts half the book in each position, so a
+    # Rs50,000 book trades Rs25,000 at a time instead of Rs12,500, and the
+    # result is a number worth reading rather than a rounding error.
+    #
+    # The cost is spread. Two slots hold two stocks at a time however many
+    # the screener looked at, so one bad fill moves the whole book twice as
+    # far. The dashboard's Open slots setting takes this back without a
+    # code change, and the funnel pins its own value regardless.
+    default_open_slots = 2
     cost_model_id = "nse"
     # Minutes before the session end: no new entries, then square everything off.
     entry_cutoff_before_end = 30

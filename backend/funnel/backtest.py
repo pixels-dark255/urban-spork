@@ -40,6 +40,11 @@ def registered(strategy, variant_id: str):
             STRATEGIES.pop(variant_id, None)
 
 
+# Every funnel number on record was measured at four slots, so four is what
+# the funnel keeps using. Changing it is a new measurement, not a setting.
+FUNNEL_SLOTS = 4
+
+
 def _costs_at(multiple: float) -> dict | None:
     """Cost overrides at a multiple of the real ones (AGENTS.md §1.4)."""
     if multiple == 1.0:
@@ -76,7 +81,12 @@ def run(strategy, symbols: list[str], enriched: dict, days: int,
     variant_id = "funnel__%s" % strategy.id
     with registered(strategy, variant_id):
         config = {"market": "nse", "symbols": symbols,
-                  "strategies": [variant_id], "enabled": True}
+                  "strategies": [variant_id], "enabled": True,
+                  # Pinned, not inherited. The market's default is what the
+                  # live dashboard happens to use today, and a recorded
+                  # Phase 4 result that silently changes when someone
+                  # retunes the dashboard is not a result at all.
+                  "open_slots": FUNNEL_SLOTS}
         if capital:
             config["daily_capital"] = capital
         overrides = _costs_at(cost_multiple)

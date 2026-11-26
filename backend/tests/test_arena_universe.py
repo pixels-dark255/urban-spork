@@ -134,10 +134,10 @@ def test_the_nse_universe_is_clean():
 
 def test_the_book_divides_evenly_between_its_slots():
     cfg = engine.new_state({"market": "nse"})["config"]
-    assert engine.open_slots(cfg) == 4
-    assert engine.position_share(cfg) == pytest.approx(0.25)
-    assert cfg["risk"]["max_open_positions"] == 4
-    assert cfg["risk"]["max_position_pct"] == 25.0
+    assert engine.open_slots(cfg) == 2
+    assert engine.position_share(cfg) == pytest.approx(0.5)
+    assert cfg["risk"]["max_open_positions"] == 2
+    assert cfg["risk"]["max_position_pct"] == 50.0
 
 
 def test_slots_are_per_market_because_affordability_is():
@@ -145,7 +145,7 @@ def test_slots_are_per_market_because_affordability_is():
     share of a US mega-cap. Split two ways it is $282, which will."""
     assert engine.open_slots(engine.new_state({"market": "us"})["config"]) == 2
     assert engine.open_slots(engine.new_state({"market": "crypto"})["config"]) == 3
-    assert engine.open_slots(engine.new_state({"market": "nse"})["config"]) == 4
+    assert engine.open_slots(engine.new_state({"market": "nse"})["config"]) == 2
 
 
 def test_an_arena_made_before_these_settings_existed_still_gets_them():
@@ -155,8 +155,8 @@ def test_an_arena_made_before_these_settings_existed_still_gets_them():
     old = {"market": "nse", "daily_capital": 10_000.0,
            "symbols": ["RELIANCE.NS"],
            "risk": {"max_open_positions": 2, "max_position_pct": 50.0}}
-    assert engine.open_slots(old) == 4
-    assert engine.position_share(old) == pytest.approx(0.25)
+    assert engine.open_slots(old) == 2
+    assert engine.position_share(old) == pytest.approx(0.5)
     assert old.get("universe", "auto") == "auto"
     # ...and the stored list is untouched, so switching back returns to it.
     assert old["symbols"] == ["RELIANCE.NS"]

@@ -1631,6 +1631,13 @@ function renderArena(data) {
           <option value="reset" ${c.capital_mode === "reset" ? "selected" : ""}>start fresh with this amount</option>
           <option value="compound" ${c.capital_mode === "compound" ? "selected" : ""}>carry over yesterday's balance</option>
         </select></label>
+      <label class="arena-field">Positions at a time
+        <span class="arena-sub">The book is split evenly between these, so ${
+          data.allocation ? inr(data.allocation.per_position_inr, false) : "each slot"} goes
+          into one trade. Fewer slots means bigger positions and less spread.</span>
+        <select id="arenaSlots">${[1, 2, 3, 4, 5, 6].map((n) => `<option value="${n}" ${
+          data.allocation && n === data.allocation.slots ? "selected" : ""}>${n} at a time ${
+          `(${inr(c.daily_capital / n, false)} each)`}</option>`).join("")}</select></label>
       ${windowFields(data)}
       ${leverageField(data)}
       <label class="arena-field">Symbols (comma separated)
@@ -2158,6 +2165,8 @@ async function saveArenaSettings() {
         .map((el) => Number(el.value)),
     };
   }
+  const slots = document.getElementById("arenaSlots");
+  if (slots && slots.value) body.open_slots = Number(slots.value);
   const lev = document.getElementById("arenaLeverage");
   if (lev && lev.value) body.leverage = parseFloat(lev.value);
   try {

@@ -60,9 +60,9 @@ def test_one_position_can_only_use_its_slots_share_of_the_book():
     state = _state(capital=50000.0)
     cap = engine.capital(state)
     assert cap["book"] == 50000.0
-    assert cap["slots"] == 4
-    assert cap["per_slot"] == pytest.approx(12500.0)
-    assert cap["share_pct"] == pytest.approx(25.0)
+    assert cap["slots"] == 2
+    assert cap["per_slot"] == pytest.approx(25000.0)
+    assert cap["share_pct"] == pytest.approx(50.0)
 
     traded = [b for b in cap["books"] if b["trades"] and b["strategy"] != "benchmark"]
     assert traded, "the fixture should produce trades"
@@ -144,3 +144,44 @@ def test_desk_returns_one_session_of_bars_and_the_trades_inside_it(monkeypatch):
     monkeypatch.setattr(service_mod, "_fetch_enriched",
                         lambda *a, **kw: (_ for _ in ()).throw(AssertionError("refetched")))
     assert service_mod.desk("ip")["session"] == out["session"]
+
+
+# --- slots ------------------------------------------------------------------
+
+def test_the_nse_arena_puts_half_the_book_in_each_position():
+    state = _state(capital=50000.0)
+    cap = engine.capital(state)
+    assert cap["slots"] == 2
+    assert cap["per_slot"] == pytest.approx(25000.0)
+    assert cap["share_pct"] == pytest.approx(50.0)
+
+
+def test_a_chosen_slot_count_beats_the_market_default():
+    state = _state()
+    state["config"]["open_slots"] = 5
+    cap = engine.capital(state)
+    assert cap["slots"] == 5
+    assert cap["per_slot"] == pytest.approx(state["config"]["daily_capital"] / 5)
+
+
+def test_the_funnel_pins_its_slots_rather_than_inheriting_them(monkeypatch):
+    """A recorded Phase 4 number must not move when the dashboard is retuned."""
+    from arena import markets as markets_mod
+    from funnel import backtest as funnel_backtest
+
+    seen = {}
+    real = engine.replay
+
+    def spy(config, *args, **kwargs):
+        seen["open_slots"] = config.get("open_slots")
+        return real(config, *args, **kwargs)
+
+    monkeypatch.setattr(funnel_backtest.engine, "replay", spy)
+    market = markets_mod.get("nse")
+    bars = {"A.NS": enrich(arena_guard.intraday_bars(sessions=4, seed=SEED), market=market)}
+    funnel_backtest.run(__import__("arena.strategies", fromlist=["STRATEGIES"])
+                        .STRATEGIES["orb"], ["A.NS"], bars, days=4)
+    assert seen["open_slots"] == funnel_backtest.FUNNEL_SLOTS == 4
+    # And it is pinned to a number of its own, not to whatever the live
+    # arena is set to today.
+    assert market.default_open_slots != funnel_backtest.FUNNEL_SLOTS
