@@ -167,7 +167,7 @@ def summarise(rows: list[dict], started: dt.datetime, now: dt.datetime,
                      f"{r['caught_up']} | {net} | {failed} | {bar} |")
     lines.append("")
     if budget_hit:
-        lines += ["> ⏱ Time budget reached — the remaining arenas were left for the "
+        lines += ["> ⏱ Time budget reached. The remaining arenas were left for the "
                   "next run. Catch-up means nothing is lost.", ""]
     return "\n".join(lines)
 

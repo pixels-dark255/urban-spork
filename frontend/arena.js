@@ -322,7 +322,7 @@ function runnerLine(runner) {
         day: "2-digit", month: "short", hour: "2-digit", minute: "2-digit",
         hour12: false }))}`
     : "has never run for this arena";
-  return `${line}<div class="arena-stale">The runner ${when} — check
+  return `${line}<div class="arena-stale">The runner ${when}. Check
     GitHub → Actions. Results are caught up automatically once it runs
     again, so nothing is lost in the meantime.</div>`;
 }
@@ -401,7 +401,7 @@ function picksPanel(data) {
   if (!picked || !picked.rows || !picked.rows.length) {
     return `<div class="stock-sub arena-session">Picking its own stocks each session
       · ${escapeHtml(bits.join(" · "))}</div>
-      <p class="arena-hint">The screen has not run for this session yet — it runs once a
+      <p class="arena-hint">The screen has not run for this session yet. It runs once a
       day, before the first bars are fetched. Until then the arena trades its
       ${live.length}-stock fallback list.</p>`;
   }
@@ -1647,7 +1647,7 @@ function dailyWinnersHtml(data) {
   const cur = data.currency;
   return `
     <details class="arena-settings">
-      <summary>Day by day — who won each session</summary>
+      <summary>Day by day: who won each session</summary>
       <div class="table-scroll"><table class="backtest-table">
         <thead><tr><th>day</th><th>best that day</th><th>worst that day</th>
           <th>benchmark</th><th>traded</th></tr></thead>

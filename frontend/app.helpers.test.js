@@ -141,3 +141,24 @@ test("formatExitReason spells out the EOD square-off", () => {
   assert.strictEqual(app.formatExitReason("signal_reversal"), "signal reversal");
   assert.strictEqual(app.formatExitReason(undefined), "exit");
 });
+
+// ---------------------------------------------------------------------------
+// House rule: no em dashes in UI copy (AGENTS.md)
+// ---------------------------------------------------------------------------
+
+test("no em dash is used as punctuation anywhere a user can read it", () => {
+  // An em dash standing alone as a cell value is the no-value marker and is
+  // correct. Anything else is prose punctuation, which the house rule
+  // forbids, so the marker is removed before the file is searched.
+  const MARKER = /"—"/g;
+  const offenders = [];
+  for (const file of ["app.js", "arena.js", "index.html", "style.css", "sw.js",
+                      "manifest.json"]) {
+    const text = fs.readFileSync(path.join(__dirname, file), "utf8")
+      .replace(MARKER, '""');
+    text.split("\n").forEach((line, i) => {
+      if (line.includes("—")) offenders.push(`${file}:${i + 1}: ${line.trim()}`);
+    });
+  }
+  assert.deepStrictEqual(offenders, []);
+});

@@ -119,10 +119,10 @@ function renderMarketStatusPill() {
 
   if (marketStatus && !open) {
     if (marketStatus.reason === "holiday" && marketStatus.holiday_name) {
-      label = `🔴 Holiday — ${marketStatus.holiday_name}`;
+      label = `🔴 Holiday: ${marketStatus.holiday_name}`;
       title = `NSE trading holiday: ${marketStatus.holiday_name}`;
     } else if (marketStatus.reason === "weekend") {
-      title = "Weekend — NSE is closed";
+      title = "Weekend: NSE is closed";
     }
     if (marketStatus.next_trading_day) {
       title += ` · next trading day ${marketStatus.next_trading_day}`;
@@ -429,7 +429,7 @@ async function runIntradaySearch(q) {
           }
           intradaySearchInput.value = "";
           intradaySearchResults.innerHTML = "";
-          showToast(`${el.dataset.symbol} added — paper trading across 5m/15m/30m starts next market tick`, "success");
+          showToast(`${el.dataset.symbol} added. Paper trading across 5m/15m/30m starts next market tick`, "success");
           loadIntradayList();
         } catch (e) {
           showToast("Network error adding stock", "error");
@@ -462,7 +462,7 @@ async function loadIntradayList(silent = false) {
     const res = await apiFetch(`${API}/api/intraday/stocks`);
     const data = await res.json();
     if (!data.stocks.length) {
-      content.innerHTML = `<p class="muted">No stocks tracked yet — search above to add one.</p>`;
+      content.innerHTML = `<p class="muted">No stocks tracked yet. Search above to add one.</p>`;
       return;
     }
     content.innerHTML = data.stocks.map(renderIntradayCard).join("");
@@ -506,7 +506,7 @@ function verdictFor(score) {
   if (score == null) return { text: "warming up", cls: "verdict-neutral" };
   if (score >= 2) return { text: "Good time to buy", cls: "verdict-strong-buy" };
   if (score === 1) return { text: "Leaning buy", cls: "verdict-buy" };
-  if (score === 0) return { text: "Neutral — wait", cls: "verdict-neutral" };
+  if (score === 0) return { text: "Neutral: wait", cls: "verdict-neutral" };
   if (score === -1) return { text: "Leaning sell", cls: "verdict-sell" };
   return { text: "Bad time to buy", cls: "verdict-strong-sell" };
 }
@@ -734,7 +734,7 @@ async function runSearch(q) {
           }
           btn.textContent = "✓";
           btn.classList.add("added");
-          showToast(`${btn.dataset.symbol} added — 90-day backtest calibrating`, "success");
+          showToast(`${btn.dataset.symbol} added. 90-day backtest calibrating`, "success");
           refreshTicker();
         } catch (e2) {
           showToast("Network error adding stock", "error");
@@ -744,7 +744,7 @@ async function runSearch(q) {
       });
     });
   } catch (e) {
-    searchResults.innerHTML = `<p class="muted">Search failed — check the backend is reachable.</p>`;
+    searchResults.innerHTML = `<p class="muted">Search failed. Check the backend is reachable.</p>`;
   }
 }
 
@@ -932,7 +932,7 @@ function renderWatchAnalysis(data, itemId, silent = false) {
     <div class="watch-track-record">
       directional accuracy: ${da.overall_pct}% over ${da.resolved_count} resolved predictions
       (early ${da.early_period_pct}% → recent ${da.recent_period_pct}%)
-      ${da.improved ? "— improving ✓" : ""}
+      ${da.improved ? ", improving ✓" : ""}
     </div>` : `<div class="watch-track-record muted">not enough resolved live predictions yet to show a trend</div>`;
 
   document.getElementById("analysisContent").innerHTML = `
@@ -1077,10 +1077,10 @@ async function addCurrentToWatchlist() {
       btn.disabled = false;
       return;
     }
-    btn.textContent = "Added & calibrated ✓ — see Watchlist tab";
+    btn.textContent = "Added & calibrated ✓. See Watchlist tab";
     refreshTicker();
   } catch (e) {
-    btn.textContent = "Failed — network error, try again";
+    btn.textContent = "Failed: network error, try again";
     btn.disabled = false;
   }
 }
@@ -1139,12 +1139,12 @@ function renderWatchDetail(data) {
         ${bt.directional_improved ? "Directional accuracy improved as weights refined ✓" : "No clear directional improvement yet on this stock"}
       </div>
     </div>
-  ` : `<p class="muted">Backtest still running or there wasn't enough history for this stock — check back shortly.</p>`;
+  ` : `<p class="muted">Backtest still running or there wasn't enough history for this stock. Check back shortly.</p>`;
 
   const liveDaHtml = da ? `
     <div class="watch-track-record">
       live directional accuracy since adding: ${da.overall_pct}% over ${da.resolved_count} resolved
-      (early ${da.early_period_pct}% → recent ${da.recent_period_pct}%) ${da.improved ? "— improving ✓" : ""}
+      (early ${da.early_period_pct}% → recent ${da.recent_period_pct}%)${da.improved ? ", improving ✓" : ""}
     </div>` : `<div class="watch-track-record muted">not enough resolved live predictions yet</div>`;
 
   const weightRows = Object.entries(weights).map(([name, val]) => {
@@ -1259,7 +1259,7 @@ async function loadWatchlist(silent = false) {
     const res = await apiFetch(`${API}/api/watchlist`);
     const data = await res.json();
     if (!data.watchlist.length) {
-      content.innerHTML = `<p class="muted">Nothing yet — add a stock from its analysis screen.</p>`;
+      content.innerHTML = `<p class="muted">Nothing yet. Add a stock from its analysis screen.</p>`;
       return;
     }
     content.innerHTML = data.watchlist.map(renderWatchCard).join("");
@@ -1345,8 +1345,8 @@ function renderWatchCard(item) {
     ? `<div class="watch-track-record">live tracked accuracy: avg ${tr.avg_abs_error_pct}% error over ${tr.resolved_count} resolved predictions</div>`
     : `<div class="watch-track-record muted">no resolved live predictions yet</div>`;
   const btRow = bt
-    ? `<div class="watch-track-record">90-day backtest: ${bt.avg_abs_error_pct_overall}% avg error (early ${bt.avg_abs_error_pct_early_period}% → recent ${bt.avg_abs_error_pct_recent_period}%) ${bt.improved ? "— improving ✓" : ""}</div>`
-    : `<div class="watch-track-record muted">backtest running — tap to check back</div>`;
+    ? `<div class="watch-track-record">90-day backtest: ${bt.avg_abs_error_pct_overall}% avg error (early ${bt.avg_abs_error_pct_early_period}% → recent ${bt.avg_abs_error_pct_recent_period}%)${bt.improved ? ", improving ✓" : ""}</div>`
+    : `<div class="watch-track-record muted">backtest running, tap to check back</div>`;
 
   return `
     <div class="watch-card">
