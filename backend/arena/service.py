@@ -24,6 +24,7 @@ from arena import universe as universe_mod
 from arena.strategies import enrich, catalog
 
 BACKTEST_PREFIX = "bt::"
+DESK_PREFIX = "desk::"
 # Pause between symbols, and the waits before each retry of one symbol.
 # The first entry is 0 because the first attempt is not a retry.
 FETCH_GAP_SECONDS = 0.5
@@ -232,7 +233,7 @@ def tick_all(now: dt.datetime | None = None) -> None:
     while its own session is shut.
     """
     for ip in store.all_ids():
-        if ip.startswith(BACKTEST_PREFIX):
+        if ip.startswith((BACKTEST_PREFIX, DESK_PREFIX)):
             continue
         try:
             tick_client(ip, now)
@@ -641,6 +642,87 @@ def trades(ip: str, sid: str | None = None, limit: int = 100) -> list[dict]:
             out.append({**trade, "caught_up": exit_day in caught_up_days})
     out.sort(key=lambda t: t["exit_at"], reverse=True)
     return out[:max(1, min(limit, 1000))]
+
+
+def _session_of(trade: dict) -> str:
+    return str(trade.get("entry_at") or trade.get("exit_at") or "")[:10]
+
+
+def desk(ip: str, refresh: bool = False) -> dict:
+    """One session, replayable: its bars, its trades, and what they cost.
+
+    The Arena has no tick feed. It is advanced by a scheduled job on bars
+    that are already delayed, so "what is happening right now" does not
+    exist and pretending otherwise would be a lie told in green and red.
+    What does exist is the last session the arena actually traded, and
+    that can be played back bar by bar. The payload is everything that
+    playback needs and nothing it does not.
+
+    Bars are fetched once per session and cached, because fetching twelve
+    symbols from Yahoo takes long enough that a page load should not do it
+    twice.
+    """
+    state = load_or_create(ip)
+    trades = [t for book_id, book in state["books"].items()
+              if book_id in state["config"]["strategies"]
+              for t in book["trades"]]
+    if not trades:
+        return {"ok": False, "reason": "no_trades",
+                "capital": engine.capital(state),
+                "text": ("No session has been traded yet, so there is nothing to play "
+                         "back. The desk fills in after the runner advances the arena "
+                         "through its first session.")}
+
+    session = max(_session_of(t) for t in trades)
+    cached = None if refresh else store.load(DESK_PREFIX + ip)
+    if cached and cached.get("session") == session:
+        return cached
+
+    market, window = _market_window(state)
+    symbols = sorted({t["symbol"] for t in trades if _session_of(t) == session})
+    bars, diag = _fetch_enriched(symbols, REPLAY_PERIOD, market=market, window=window,
+                                 fx=state.get("fx"))
+
+    series = {}
+    for sym, frame in bars.items():
+        if frame is None or frame.empty:
+            continue
+        day = frame[frame["session"] == session]
+        if day.empty:
+            continue
+        series[sym] = [{"t": at.isoformat(),
+                        "o": round(float(row["Open"]), 4),
+                        "h": round(float(row["High"]), 4),
+                        "l": round(float(row["Low"]), 4),
+                        "c": round(float(row["Close"]), 4)}
+                       for at, row in day.iterrows()]
+
+    rows = []
+    for book_id, book in sorted(state["books"].items()):
+        if book_id not in state["config"]["strategies"]:
+            continue
+        for trade in book["trades"]:
+            if _session_of(trade) != session:
+                continue
+            rows.append({"strategy": book_id, "symbol": trade["symbol"],
+                         "side": trade.get("side", "LONG"), "qty": trade["qty"],
+                         "entry_at": trade["entry_at"], "entry_price": trade["entry_price"],
+                         "exit_at": trade.get("exit_at"), "exit_price": trade.get("exit_price"),
+                         "net": trade.get("net"), "charges": trade.get("charges"),
+                         "exit_reason": trade.get("exit_reason"),
+                         "notional": round(float(trade["qty"]) * float(trade["entry_price"]), 2)})
+    rows.sort(key=lambda t: (str(t["entry_at"]), t["strategy"], t["symbol"]))
+
+    payload = {"ok": True, "session": session, "symbols": sorted(series),
+               "missing": sorted(set(symbols) - set(series)),
+               "bars": series, "trades": rows,
+               "capital": engine.capital(state),
+               "currency": market.quote_currency,
+               "currency_symbol": market.currency_symbol,
+               "fetched": diag.get("latest_bar_at") if isinstance(diag, dict) else None}
+    with store.lock:
+        store.save(DESK_PREFIX + ip, payload)
+    return payload
 
 
 def run_backtest(ip: str, days: int = 30, slippage_sweep: bool = False) -> dict:

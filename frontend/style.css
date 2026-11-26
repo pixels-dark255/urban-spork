@@ -1128,3 +1128,207 @@ button:active, .result-item:active, .clickable-card:active { transform: scale(0.
   body[data-tab="watchlist"] .app-body,
   body[data-tab="intraday"] .app-body { grid-template-columns: 410px minmax(0, 1fr); }
 }
+
+/* ------------------------------------------------------------------- desk */
+/* One session, replayed. Two columns on a wide screen: the chart of whatever
+   the replay is currently in, and the tape beside it. They stack on a phone,
+   where side by side would make both unreadable. */
+
+.desk-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 14px 0 8px;
+}
+.desk-badge {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--warn);
+  background: var(--warn-wash);
+  border: 1px solid var(--warn);
+  border-radius: 4px;
+  padding: 2px 6px;
+  margin-right: 8px;
+}
+.desk-clock {
+  font-family: var(--font-mono);
+  color: var(--text-dim);
+  margin-left: 8px;
+}
+.desk-controls { display: flex; gap: 6px; }
+.desk-btn {
+  background: var(--surface-2);
+  border: 1px solid var(--hairline);
+  color: var(--text);
+  font-size: 12.5px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  min-width: 62px;
+}
+.desk-btn:hover { border-color: var(--accent-dim); }
+
+.desk-pnl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 18px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  margin-bottom: 10px;
+}
+.desk-pnl b { color: var(--text); font-weight: 600; }
+
+.desk-grid { display: grid; gap: 12px; grid-template-columns: 1fr; align-items: start; }
+@media (min-width: 900px) {
+  .desk-grid { grid-template-columns: minmax(0, 1.45fr) minmax(0, 1fr); }
+}
+
+.desk-chart-wrap {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  padding: 10px 12px 4px;
+}
+.desk-chart-title {
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.desk-chart-title .muted { margin-left: 8px; font-size: 11.5px; }
+.desk-chart { width: 100%; height: 240px; display: block; }
+.desk-chart-empty {
+  height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.desk-wick, .desk-body { stroke-width: 1; }
+.desk-wick.up, .desk-body.up { stroke: var(--gain); fill: var(--gain); }
+.desk-wick.down, .desk-body.down { stroke: var(--loss); fill: var(--loss); }
+/* The newest bar pulses, so a glance tells you the replay is still running. */
+.desk-live { animation: desk-pulse 1s ease-in-out infinite; }
+@keyframes desk-pulse { 50% { opacity: 0.35; } }
+.desk-pin { stroke: var(--bg); stroke-width: 1.5; }
+.desk-pin.buy { fill: var(--gain); }
+.desk-pin.sell { fill: var(--warn); }
+.desk-pin.close { fill: var(--accent); }
+
+/* Five rows on screen and the rest a scroll away: enough to see what just
+   happened without the tape becoming the whole page. */
+.desk-tape {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius);
+  overflow-y: auto;
+  max-height: calc(var(--tape-rows, 5) * 42px);
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+.desk-tape-row {
+  display: grid;
+  grid-template-columns: 42px 1fr auto;
+  grid-template-areas: "side sym net" "side qty strat";
+  gap: 1px 8px;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid var(--hairline-soft);
+}
+.desk-tape-row:last-child { border-bottom: none; }
+.desk-tape-row.current { background: var(--accent-wash); }
+.desk-side {
+  grid-area: side;
+  font-size: 9.5px;
+  letter-spacing: 0.06em;
+  text-align: center;
+  padding: 3px 0;
+  border-radius: 3px;
+}
+.desk-side.buy { color: var(--gain); background: var(--gain-wash); }
+.desk-side.sell { color: var(--loss); background: var(--loss-wash); }
+.desk-sym { grid-area: sym; font-weight: 600; font-size: 12.5px; }
+.desk-qty { grid-area: qty; color: var(--text-dim); font-size: 11px; }
+.desk-strat { grid-area: strat; color: var(--text-faint); font-size: 10.5px; text-align: right; }
+.desk-net { grid-area: net; text-align: right; font-weight: 600; }
+.desk-tape-row.live .desk-net { color: var(--warn); }
+.desk-tape-empty { padding: 16px 12px; color: var(--text-faint); font-size: 12px; }
+
+.desk-syms { display: flex; flex-wrap: wrap; gap: 6px; }
+.desk-sym-chip {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 6px 11px;
+  border-radius: var(--radius-sm);
+  line-height: 1.5;
+}
+.desk-sym-chip.active { border-color: var(--accent); color: var(--accent); }
+/* A position still open in the replay, so its number is not final yet. */
+.desk-sym-chip.held { box-shadow: inset 2px 0 0 var(--warn); }
+
+.desk-cap-now {
+  display: flex;
+  gap: 18px;
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--text-dim);
+  margin-bottom: 10px;
+}
+.desk-cap-now b { color: var(--text); }
+.desk-cap-list { display: flex; flex-direction: column; gap: 6px; }
+.desk-cap-row {
+  display: grid;
+  grid-template-columns: 118px minmax(0, 1fr) 42px 86px;
+  gap: 10px;
+  align-items: center;
+  font-size: 12px;
+}
+.desk-cap-name { font-family: var(--font-mono); color: var(--text-dim); }
+.desk-cap-track {
+  height: 8px;
+  background: var(--surface-2);
+  border-radius: 4px;
+  overflow: hidden;
+}
+.desk-cap-fill { display: block; height: 100%; background: var(--accent); }
+.desk-cap-pct, .desk-cap-net { font-family: var(--font-mono); text-align: right; }
+@media (max-width: 640px) {
+  .desk-cap-row { grid-template-columns: 96px minmax(0, 1fr) 38px 76px; gap: 7px; font-size: 11px; }
+}
+
+.desk-strats { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 10px; }
+.desk-strat-chip {
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  color: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  padding: 5px 9px;
+  border-radius: var(--radius-sm);
+}
+.desk-strat-chip .muted { margin-left: 5px; font-size: 10px; }
+.desk-strat-chip.active { border-color: var(--accent); color: var(--accent); }
+
+/* Thirteen strategies wrap to five rows on a phone and push the chart off
+   the screen. One scrolling row keeps the desk above the fold. */
+@media (max-width: 899px) {
+  .desk-strats {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    scrollbar-width: none;
+    padding-bottom: 2px;
+  }
+  .desk-strats::-webkit-scrollbar { display: none; }
+  .desk-strat-chip { flex: 0 0 auto; }
+}

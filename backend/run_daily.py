@@ -82,8 +82,8 @@ def arena_keys(market: str) -> list[str]:
     """
     keys = []
     for stored in arena_store.all_ids():
-        if stored.startswith(arena_service.BACKTEST_PREFIX):
-            continue        # a saved backtest result, not an arena
+        if stored.startswith((arena_service.BACKTEST_PREFIX, arena_service.DESK_PREFIX)):
+            continue        # a saved backtest or desk payload, not an arena
         _client, market_id = arena_store.split_key(stored)
         if market != "all" and market_id != market:
             continue

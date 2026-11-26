@@ -1213,6 +1213,349 @@ function systemPanel(sys) {
     </details>`;
 }
 
+// ---------------------------------------------------------------------------
+// The desk: one session, played back
+//
+// The Arena has no tick feed. It is advanced by a scheduled job on bars that
+// are already delayed, so a screen claiming to show "right now" would be a
+// lie told in green and red. What is real is the last session it traded, and
+// that can be replayed bar by bar - which is also the only version that works
+// at 9pm on a Sunday, when a live screen would be an empty box.
+// ---------------------------------------------------------------------------
+
+let arenaDesk = null;
+let deskTimer = null;
+let deskIndex = 0;
+let deskPlaying = true;
+let deskSpeed = 1;
+let deskSymbol = null;       // null means "follow the trade being played"
+// Every strategy gets its OWN book of daily_capital, so money summed across
+// them is money that never existed in one place. The desk watches one
+// strategy at a time; comparing them is what the capital bar below is for.
+let deskStrategy = null;
+
+// One bar per 420ms at 1x, which is slow enough to watch and fast enough
+// that a 75-bar session plays in about half a minute.
+const DESK_STEP_MS = 420;
+const DESK_SPEEDS = [1, 2, 4, 8];
+// Rows on screen at once. The rest of the session is a scroll away.
+const TAPE_VISIBLE = 5;
+
+function deskTimeline(bars) {
+  const seen = new Set();
+  for (const rows of Object.values(bars || {})) {
+    for (const bar of rows) seen.add(bar.t);
+  }
+  return [...seen].sort();
+}
+
+function deskStrategies(desk) {
+  const counts = {};
+  for (const t of (desk && desk.trades) || []) {
+    counts[t.strategy] = (counts[t.strategy] || 0) + 1;
+  }
+  // Busiest first: the one with the most fills is the one worth watching,
+  // and ties fall back to the name so the order never wobbles.
+  return Object.keys(counts).sort((a, b) => counts[b] - counts[a] || a.localeCompare(b))
+    .map((id) => ({ id, trades: counts[id] }));
+}
+
+function deskTrades(desk, strategy) {
+  const pick = strategy || (deskStrategies(desk)[0] || {}).id;
+  return ((desk && desk.trades) || []).filter((t) => t.strategy === pick);
+}
+
+// What the screen should show when the clock has reached `index`.
+function deskStateAt(desk, index) {
+  const timeline = deskTimeline(desk.bars);
+  const clamped = Math.max(0, Math.min(index, timeline.length - 1));
+  const clock = timeline[clamped] || "";
+  const open = [];
+  const done = [];
+  let realised = 0;
+  let invested = 0;
+  const strategy = deskStrategy || (deskStrategies(desk)[0] || {}).id || null;
+  for (const t of deskTrades(desk, strategy)) {
+    if (!t.entry_at || t.entry_at > clock) continue;
+    if (t.exit_at && t.exit_at <= clock) {
+      done.push(t);
+      realised += Number(t.net) || 0;
+    } else {
+      open.push(t);
+      invested += Number(t.notional) || 0;
+    }
+  }
+  // The trade being watched: the newest one still open, or failing that the
+  // last one closed. That is what the chart follows.
+  const current = open.length ? open[open.length - 1] : (done.length ? done[done.length - 1] : null);
+  return {
+    clock, index: clamped, last: timeline.length - 1,
+    open, done, current, strategy,
+    total: deskTrades(desk, strategy).length,
+    realised: Math.round(realised * 100) / 100,
+    invested: Math.round(invested * 100) / 100,
+    symbol: deskSymbol || (current ? current.symbol : (desk.symbols || [])[0]),
+  };
+}
+
+// Candles in inline SVG. No charting library: every CDN is a dependency that
+// can be blocked, and 75 bars do not need one.
+function candleChart(rows, upto, marks, label) {
+  const shown = (rows || []).filter((b) => b.t <= upto);
+  if (!shown.length) return `<div class="desk-chart-empty">no bars yet</div>`;
+  const W = 640, H = 260, PAD = 6;
+  const all = rows;
+  // The axis grows with the session rather than reserving the whole day up
+  // front: a fixed axis leaves four fifths of the box empty at 09:30 and
+  // makes a running replay look broken. MIN_SLOTS stops the first two bars
+  // filling the screen.
+  const MIN_SLOTS = 24;
+  const slots = Math.max(shown.length, Math.min(all.length, MIN_SLOTS));
+  // Priced off the bars ON SCREEN, so the candles use the full height
+  // instead of being flattened by a spike later in the day the replay has
+  // not reached yet.
+  const hi = Math.max(...shown.map((b) => b.h));
+  const lo = Math.min(...shown.map((b) => b.l));
+  const span = (hi - lo) || 1;
+  const step = W / slots;
+  const y = (v) => PAD + (H - 2 * PAD) * (1 - (v - lo) / span);
+  const body = shown.map((b, i) => {
+    const x = i * step + step / 2;
+    const up = b.c >= b.o;
+    const top = y(Math.max(b.o, b.c)), bot = y(Math.min(b.o, b.c));
+    const w = Math.max(1.5, step * 0.62);
+    const live = i === shown.length - 1 ? " desk-live" : "";
+    return `<line x1="${x.toFixed(1)}" x2="${x.toFixed(1)}" y1="${y(b.h).toFixed(1)}" y2="${y(b.l).toFixed(1)}"
+        class="desk-wick${up ? " up" : " down"}${live}"/>
+      <rect x="${(x - w / 2).toFixed(1)}" y="${top.toFixed(1)}" width="${w.toFixed(1)}"
+        height="${Math.max(1, bot - top).toFixed(1)}" class="desk-body${up ? " up" : " down"}${live}"/>`;
+  }).join("");
+  const pins = (marks || []).map((m) => {
+    const i = shown.findIndex((b) => b.t === m.at);
+    if (i < 0) return "";
+    const x = i * step + step / 2;
+    return `<circle cx="${x.toFixed(1)}" cy="${y(m.price).toFixed(1)}" r="4"
+      class="desk-pin ${m.kind}"><title>${escapeHtml(m.title)}</title></circle>`;
+  }).join("");
+  return `
+    <svg class="desk-chart" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none"
+         role="img" aria-label="${escapeHtml(label || "price")}">
+      ${body}${pins}
+    </svg>`;
+}
+
+function deskMarks(trades, symbol) {
+  const out = [];
+  for (const t of trades || []) {
+    if (t.symbol !== symbol) continue;
+    out.push({ at: t.entry_at, price: t.entry_price, kind: t.side === "SHORT" ? "sell" : "buy",
+               title: `${t.strategy} ${t.side} ${t.qty} at ${t.entry_price}` });
+    if (t.exit_at) {
+      out.push({ at: t.exit_at, price: t.exit_price, kind: "close",
+                 title: `${t.strategy} out at ${t.exit_price} (${t.exit_reason || "exit"})` });
+    }
+  }
+  return out;
+}
+
+function tapeRows(state, cur) {
+  // Newest first: a tape reads downwards from what just happened.
+  const rows = [...state.done, ...state.open].sort(
+    (a, b) => String(b.entry_at).localeCompare(String(a.entry_at)));
+  if (!rows.length) {
+    return `<div class="desk-tape-empty">waiting for the first fill of the session</div>`;
+  }
+  return rows.map((t) => {
+    const live = !t.exit_at || t.exit_at > state.clock;
+    const net = live ? null : Number(t.net);
+    return `
+      <div class="desk-tape-row${live ? " live" : ""}${t === state.current ? " current" : ""}">
+        <span class="desk-side ${t.side === "SHORT" ? "sell" : "buy"}">${t.side === "SHORT" ? "SELL" : "BUY"}</span>
+        <span class="desk-sym">${escapeHtml(shortSymbol(t.symbol))}</span>
+        <span class="desk-qty">${t.qty} @ ${Number(t.entry_price).toFixed(2)} · ${money(t.notional, cur, false)}</span>
+        <span class="desk-strat">${escapeHtml(t.strategy)}</span>
+        <span class="desk-net ${net == null ? "" : pnlClass(net)}">${
+          net == null ? "open" : money(net, cur)}</span>
+      </div>`;
+  }).join("");
+}
+
+function capitalBar(capital, investedNow) {
+  if (!capital || !capital.book) return "";
+  const cur = { symbol: capital.currency === "INR" ? "₹" : "", code: capital.currency };
+  const rows = (capital.books || []).filter((b) => b.trades > 0)
+    .sort((a, b) => b.peak_deployed - a.peak_deployed);
+  const bars = rows.map((b) => `
+      <div class="desk-cap-row">
+        <span class="desk-cap-name">${escapeHtml(b.strategy)}</span>
+        <span class="desk-cap-track"><span class="desk-cap-fill" style="width:${
+          Math.min(100, b.peak_pct || 0)}%"></span></span>
+        <span class="desk-cap-pct">${(b.peak_pct || 0).toFixed(0)}%</span>
+        <span class="desk-cap-net ${pnlClass(b.net_total)}">${money(b.net_total, cur)}</span>
+      </div>`).join("");
+  const idle = Math.max(0, capital.book - investedNow);
+  return `
+    <div class="section-heading"><span class="eyebrow">the money</span>
+      <h2 style="font-size:17px;">Capital at work</h2></div>
+    <p class="arena-hint">The book is ${money(capital.book, cur, false)}, split into ${capital.slots}
+      equal slots of ${money(capital.per_slot, cur, false)}. A strategy can only use a slot when it
+      has a signal, so the bar below is the most it ever had in the market at once. The rest
+      sat in cash and earned nothing, which a net-rupees leaderboard never shows.</p>
+    <div class="desk-cap-now">
+      <span>in the market now <b>${money(investedNow, cur, false)}</b></span>
+      <span>idle <b>${money(idle, cur, false)}</b></span>
+    </div>
+    <div class="desk-cap-list">${bars || '<p class="muted">No strategy has traded yet.</p>'}</div>`;
+}
+
+function symbolStrip(desk, state, cur) {
+  const nets = {};
+  for (const t of state.done) {
+    nets[t.symbol] = (nets[t.symbol] || 0) + (Number(t.net) || 0);
+  }
+  const held = new Set(state.open.map((t) => t.symbol));
+  const syms = [...new Set(deskTrades(desk, state.strategy).map((t) => t.symbol))].sort();
+  if (!syms.length) return "";
+  return `
+    <div class="section-heading"><span class="eyebrow">this session</span>
+      <h2 style="font-size:17px;">Stocks traded</h2></div>
+    <div class="desk-syms">${syms.map((s) => {
+      const net = nets[s];
+      const on = s === state.symbol;
+      return `<button class="desk-sym-chip${on ? " active" : ""}${held.has(s) ? " held" : ""}"
+        data-desk-symbol="${escapeHtml(s)}">
+        <span>${escapeHtml(shortSymbol(s))}</span>
+        <span class="${net == null ? "muted" : pnlClass(net)}">${
+          net == null ? "flat" : money(net, cur)}</span></button>`;
+    }).join("")}</div>`;
+}
+
+function deskHtml(desk) {
+  if (!desk) {
+    return `<div class="skeleton-block" style="height:300px"></div>`;
+  }
+  if (!desk.ok) {
+    return `${capitalBar(desk.capital, 0)}
+      <p class="arena-hint">${escapeHtml(desk.text || "Nothing to play back yet.")}</p>`;
+  }
+  const cur = { symbol: desk.currency_symbol || "₹", code: desk.currency };
+  const state = deskStateAt(desk, deskIndex);
+  // Each strategy trades its own book of this size, so the money on screen
+  // is one strategy's, never thirteen books added together.
+  const book = (desk.capital || {}).book;
+  const rows = desk.bars[state.symbol] || [];
+  const at = state.clock ? fmtIST(state.clock, { hour: "2-digit", minute: "2-digit", hour12: false }) : "";
+  return `
+    <div class="desk-head">
+      <div>
+        <span class="desk-badge">REPLAY</span>
+        <b>${escapeHtml(fmtDayLabel(desk.session))}</b>
+        <span class="desk-clock">${escapeHtml(at)}</span>
+      </div>
+      <div class="desk-controls">
+        <button class="desk-btn" id="deskPlay">${deskPlaying ? "Pause" : "Play"}</button>
+        <button class="desk-btn" id="deskSpeed">${deskSpeed}x</button>
+        <button class="desk-btn" id="deskRestart">Restart</button>
+      </div>
+    </div>
+    <div class="desk-strats">${deskStrategies(desk).map((s) => `
+      <button class="desk-strat-chip${s.id === state.strategy ? " active" : ""}"
+        data-desk-strategy="${escapeHtml(s.id)}">${escapeHtml(s.id)}
+        <span class="muted">${s.trades}</span></button>`).join("")}</div>
+    <div class="desk-pnl">
+      <span>book <b>${money(book, cur, false)}</b></span>
+      <span>in the market <b>${money(state.invested, cur, false)}</b></span>
+      <span>realised <b class="${pnlClass(state.realised)}">${money(state.realised, cur)}</b></span>
+      <span>open <b>${state.open.length}</b></span>
+      <span>filled <b>${state.done.length + state.open.length}</b> of ${state.total}</span>
+    </div>
+    <div class="desk-grid">
+      <div class="desk-chart-wrap">
+        <div class="desk-chart-title">${escapeHtml(shortSymbol(state.symbol || ""))}
+          <span class="muted">${escapeHtml(state.current && state.current.symbol === state.symbol
+            ? state.current.strategy : "")}</span></div>
+        ${candleChart(rows, state.clock, deskMarks(deskTrades(desk, state.strategy), state.symbol), state.symbol)}
+      </div>
+      <div class="desk-tape" style="--tape-rows:${TAPE_VISIBLE}">${tapeRows(state, cur)}</div>
+    </div>
+    ${symbolStrip(desk, state, cur)}
+    ${capitalBar(desk.capital, state.invested)}`;
+}
+
+function renderDesk() {
+  const host = document.getElementById("arenaDesk");
+  if (!host) return;
+  host.innerHTML = deskHtml(arenaDesk);
+  bindDesk();
+}
+
+function deskStop() {
+  if (deskTimer) { clearInterval(deskTimer); deskTimer = null; }
+}
+
+function deskStart() {
+  deskStop();
+  if (!arenaDesk || !arenaDesk.ok || !deskPlaying) return;
+  const last = deskTimeline(arenaDesk.bars).length - 1;
+  deskTimer = setInterval(() => {
+    if (deskIndex >= last) { deskIndex = 0; } else { deskIndex += 1; }
+    renderDesk();
+  }, Math.max(60, DESK_STEP_MS / deskSpeed));
+}
+
+function bindDesk() {
+  const play = document.getElementById("deskPlay");
+  if (play) {
+    play.addEventListener("click", () => {
+      deskPlaying = !deskPlaying;
+      renderDesk();
+      deskStart();
+    });
+  }
+  const speed = document.getElementById("deskSpeed");
+  if (speed) {
+    speed.addEventListener("click", () => {
+      deskSpeed = DESK_SPEEDS[(DESK_SPEEDS.indexOf(deskSpeed) + 1) % DESK_SPEEDS.length];
+      renderDesk();
+      deskStart();
+    });
+  }
+  const restart = document.getElementById("deskRestart");
+  if (restart) {
+    restart.addEventListener("click", () => { deskIndex = 0; renderDesk(); deskStart(); });
+  }
+  document.querySelectorAll("#arenaDesk [data-desk-strategy]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      deskStrategy = btn.dataset.deskStrategy;
+      deskSymbol = null;          // the new strategy picks its own symbol
+      renderDesk();
+    });
+  });
+  document.querySelectorAll("#arenaDesk [data-desk-symbol]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      // Tapping the symbol already being followed hands the chart back to
+      // the replay rather than doing nothing.
+      const sym = btn.dataset.deskSymbol;
+      deskSymbol = deskSymbol === sym ? null : sym;
+      renderDesk();
+    });
+  });
+}
+
+async function loadDesk() {
+  deskStop();
+  try {
+    const res = await apiFetch(mq("/api/arena/desk"));
+    arenaDesk = res && res.ok ? await res.json().catch(() => null) : null;
+  } catch (e) {
+    arenaDesk = null;
+  }
+  deskIndex = 0;
+  renderDesk();
+  deskStart();
+}
+
+
 // Which pane of the Arena tab is open. Module level, because the arena
 // re-renders on every tick and a settings save, and a reader halfway down
 // the funnel table should not be thrown back to the live board.
@@ -1223,7 +1566,7 @@ let arenaPane = "live";
 // not by phase number: the phase order is a build order and means nothing
 // to someone reading the dashboard.
 const ARENA_PANES = [
-  ["live", "Live", "Today's board, how it fills, the record so far, and a backtest."],
+  ["live", "Live", "The last session replayed trade by trade, today's board, the record so far, and a backtest."],
   ["evidence", "Evidence", "What was measured before anything could be given money."],
   ["accounts", "Accounts", "The other two books: the swing account, and the runner that advances them."],
   ["machinery", "Machinery", "Built, tested, and not in charge of anything yet."],
@@ -1259,6 +1602,8 @@ function renderArena(data) {
     ${arenaPaneBar(arenaPane)}
 
     <section class="arena-pane" data-pane="live" ${arenaPane === "live" ? "" : "hidden"}>
+
+    <div id="arenaDesk"><div class="skeleton-block" style="height:300px"></div></div>
 
     <div id="arenaLive">${arenaLiveHtml(data)}</div>
 
@@ -1328,6 +1673,10 @@ function renderArena(data) {
 
   bindBoard();
   bindPaneBar();
+  // The desk fetches its own bars, which takes seconds. Loading it with the
+  // rest would hold the whole tab behind a network call for a panel that is
+  // not even the one the reader may be after.
+  loadDesk();
   document.getElementById("arenaRunBt").addEventListener("click", runArenaBacktest);
   document.getElementById("arenaSave").addEventListener("click", saveArenaSettings);
   document.querySelectorAll("#arenaContent .arena-preset").forEach((btn) => {
@@ -1688,6 +2037,8 @@ function bindPaneBar() {
     });
     const found = ARENA_PANES.find((p) => p[0] === arenaPane);
     if (hint && found) hint.textContent = found[2];
+    // No reason to animate a chart nobody is looking at.
+    if (arenaPane === "live") { deskStart(); } else { deskStop(); }
     bar.scrollIntoView({ block: "nearest" });
   });
 }

@@ -1033,6 +1033,69 @@ def skipped_unaffordable(state: dict) -> int:
     return total
 
 
+def peak_deployed(trades: list[dict]) -> float:
+    """The most money this book ever had in the market at one time.
+
+    Swept from the trades rather than stored, so it is right for books that
+    were running before anything counted this. Each trade contributes its
+    entry notional from entry to exit; the peak is the highest the running
+    total reaches.
+    """
+    events = []
+    for trade in trades:
+        notional = float(trade.get("qty") or 0) * float(trade.get("entry_price") or 0)
+        if notional <= 0 or not trade.get("entry_at"):
+            continue
+        events.append((str(trade["entry_at"]), 1, notional))
+        # A trade still open has no exit; it stays on the books to the end.
+        if trade.get("exit_at"):
+            events.append((str(trade["exit_at"]), 0, notional))
+    # Exits before entries at the same instant: a slot freed on a bar can be
+    # refilled on that bar, and counting both at once would invent a peak.
+    events.sort(key=lambda e: (e[0], e[1]))
+    running = peak = 0.0
+    for _at, opening, notional in events:
+        running += notional if opening else -notional
+        peak = max(peak, running)
+    return round(peak, 2)
+
+
+def capital(state: dict) -> dict:
+    """How much of the book is actually at work.
+
+    The Arena splits the book into equal slots, so one position may use
+    only its share. With fewer signals than slots the rest sits in cash,
+    and a leaderboard of net rupees never shows that: a strategy that made
+    Rs200 on a quarter of the book and one that made Rs200 on all of it
+    look identical.
+    """
+    cfg = state["config"]
+    book_size = float(cfg["daily_capital"])
+    slots = open_slots(cfg)
+    per_slot = round(book_size * position_share(cfg), 2)
+    rows = []
+    for sid, book in sorted(state["books"].items()):
+        if sid not in cfg["strategies"]:
+            continue
+        invested = round(sum(float(p["entry_price"]) * float(p["qty"])
+                             for p in book["positions"].values()), 2)
+        peak = peak_deployed(book["trades"])
+        rows.append({
+            "strategy": sid,
+            "invested": invested,
+            "idle": round(max(0.0, book["cash"]), 2),
+            "positions": len(book["positions"]),
+            "peak_deployed": peak,
+            "peak_pct": round(100 * peak / book_size, 1) if book_size else None,
+            "net_total": round(book["stats"]["net"], 2),
+            "trades": book["stats"]["trades"],
+        })
+    return {"book": book_size, "slots": slots, "per_slot": per_slot,
+            "share_pct": round(100 * position_share(cfg), 1),
+            "currency": market_of(state).quote_currency,
+            "books": rows}
+
+
 def fill_rule(state: dict) -> dict:
     """What the next-open fill rule did, in numbers.
 

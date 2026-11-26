@@ -618,6 +618,12 @@ def api_arena_scoreboard(request: Request, market: str | None = None,
     return arena_service.scoreboard(arena_key(request, market), period)
 
 
+@app.get("/api/arena/desk")
+def api_arena_desk(request: Request, market: str | None = None, refresh: bool = False):
+    """The last traded session, ready to be played back."""
+    return arena_service.desk(arena_key(request, market), refresh=refresh)
+
+
 @app.get("/api/arena/trades")
 def api_arena_trades(request: Request, strategy: str | None = None, limit: int = 100,
                      market: str | None = None):

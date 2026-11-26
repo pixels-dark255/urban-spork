@@ -42,7 +42,7 @@ function extractFunction(source, name, where) {
 }
 
 function loadArenaHelpers() {
-  const context = { Intl, Date, console, Number, Math, Object, String, JSON };
+  const context = { Intl, Date, console, Number, Math, Object, String, JSON, Set, Array };
   // renderBoard reads the module-level "which row is expanded" flag.
   context.arenaOpenStrategy = null;
   context.arenaMarket = "nse";
@@ -58,6 +58,9 @@ function loadArenaHelpers() {
   vm.runInContext(extractConst(SOURCE, "STATUS_CLASS"), context);
   vm.runInContext(extractConst(SOURCE, "FILL_REASONS"), context);
   vm.runInContext(extractConst(SOURCE, "ARENA_PANES"), context);
+  vm.runInContext(extractConst(SOURCE, "DESK_SPEEDS"), context);
+  vm.runInContext(extractConst(SOURCE, "TAPE_VISIBLE"), context);
+  vm.runInContext("let deskSymbol = null; let deskStrategy = null;", context);
 
   // escapeHtml goes through a DOM node in the real app; the arena helpers
   // only care that it is called, so a string version keeps this hermetic.
@@ -76,7 +79,9 @@ function loadArenaHelpers() {
                       "runnerLine", "streakText", "sparkline", "picksPanel",
                       "systemPanel", "unprovenBanner", "barTable",
                       "settingsTable", "assetStudyPanel", "labelChip",
-                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel", "adaptPanel", "killBar", "fillRulePanel", "arenaPaneBar"]) {
+                      "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel", "adaptPanel", "killBar", "fillRulePanel", "arenaPaneBar", "deskTimeline", "deskStateAt",
+                      "candleChart", "deskMarks", "tapeRows", "capitalBar",
+                      "deskStrategies", "deskTrades", "symbolStrip"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -1376,5 +1381,143 @@ test("every pane in the bar has a label and a hint", () => {
 test("an unknown pane falls back to the first hint rather than crashing", () => {
   const html = arena.arenaPaneBar("nope");
   assert.strictEqual((html.match(/class="pane-btn active"/g) || []).length, 0);
-  assert.match(html, /Today's board/);
+  assert.match(html, /The last session replayed/);
+});
+
+
+// ---------------------------------------------------------------------------
+// The desk: a session played back
+// ---------------------------------------------------------------------------
+
+const DESK = {
+  ok: true, session: "2026-11-25", currency: "INR", currency_symbol: "₹",
+  symbols: ["A.NS", "B.NS"],
+  bars: {
+    "A.NS": [
+      { t: "2026-11-25T09:15:00+05:30", o: 100, h: 102, l: 99, c: 101 },
+      { t: "2026-11-25T09:20:00+05:30", o: 101, h: 104, l: 101, c: 103 },
+      { t: "2026-11-25T09:25:00+05:30", o: 103, h: 103, l: 98, c: 99 },
+    ],
+    "B.NS": [{ t: "2026-11-25T09:20:00+05:30", o: 50, h: 51, l: 49, c: 50 }],
+  },
+  trades: [
+    { strategy: "orb", symbol: "A.NS", side: "LONG", qty: 10,
+      entry_at: "2026-11-25T09:20:00+05:30", entry_price: 101,
+      exit_at: "2026-11-25T09:25:00+05:30", exit_price: 99, net: -25, notional: 1010 },
+    { strategy: "vwap_bands", symbol: "B.NS", side: "SHORT", qty: 20,
+      entry_at: "2026-11-25T09:25:00+05:30", entry_price: 50,
+      exit_at: null, exit_price: null, net: null, notional: 1000 },
+  ],
+  capital: { book: 50000, slots: 4, per_slot: 12500, share_pct: 25, currency: "INR",
+    books: [{ strategy: "orb", invested: 0, idle: 50000, positions: 0,
+              peak_deployed: 12300, peak_pct: 24.6, net_total: -25, trades: 1 }] },
+};
+
+test("the timeline is every bar time across every symbol, in order", () => {
+  // Array.from, because an array built inside the vm context is not
+  // reference-equal to one built out here even when it holds the same values.
+  assert.deepStrictEqual(Array.from(arena.deskTimeline(DESK.bars)), [
+    "2026-11-25T09:15:00+05:30",
+    "2026-11-25T09:20:00+05:30",
+    "2026-11-25T09:25:00+05:30",
+  ]);
+  assert.strictEqual(arena.deskTimeline({}).length, 0);
+});
+
+test("nothing is revealed before the bar it happened on", () => {
+  const first = arena.deskStateAt(DESK, 0);
+  assert.strictEqual(first.open.length, 0);
+  assert.strictEqual(first.done.length, 0);
+  assert.strictEqual(first.realised, 0);
+  assert.strictEqual(first.current, null);
+});
+
+test("a trade is open on its entry bar and realised on its exit bar", () => {
+  const mid = arena.deskStateAt(DESK, 1);
+  assert.strictEqual(mid.strategy, "orb");        // busiest first, then by name
+  assert.strictEqual(mid.open.length, 1);
+  assert.strictEqual(mid.open[0].symbol, "A.NS");
+  assert.strictEqual(mid.invested, 1010);
+  assert.strictEqual(mid.realised, 0);
+
+  const end = arena.deskStateAt(DESK, 2);
+  assert.strictEqual(end.done.length, 1);
+  assert.strictEqual(end.realised, -25);
+  // The other strategy's open short belongs to a different book, so its
+  // money must not appear in this one.
+  assert.strictEqual(end.invested, 0);
+});
+
+test("an index past the end of the session clamps rather than going blank", () => {
+  const over = arena.deskStateAt(DESK, 99);
+  assert.strictEqual(over.index, 2);
+  assert.strictEqual(over.last, 2);
+  assert.strictEqual(over.done.length, 1);
+});
+
+test("the chart draws only the bars up to the clock", () => {
+  const rows = DESK.bars["A.NS"];
+  const early = arena.candleChart(rows, "2026-11-25T09:15:00+05:30", [], "A");
+  const late = arena.candleChart(rows, "2026-11-25T09:25:00+05:30", [], "A");
+  assert.strictEqual((early.match(/class="desk-body/g) || []).length, 1);
+  assert.strictEqual((late.match(/class="desk-body/g) || []).length, 3);
+  // Up and down bars are not the same colour, which is the whole point.
+  assert.match(late, /desk-body up/);
+  assert.match(late, /desk-body down/);
+  assert.match(arena.candleChart([], "x", [], "A"), /no bars yet/);
+});
+
+test("entry and exit pins belong to the symbol being charted", () => {
+  const marks = arena.deskMarks(DESK.trades, "A.NS");
+  assert.strictEqual(marks.length, 2);
+  assert.strictEqual(marks[0].kind, "buy");
+  assert.strictEqual(marks[1].kind, "close");
+  assert.strictEqual(arena.deskMarks(DESK.trades, "B.NS").length, 1);  // still open
+});
+
+test("the tape shows the watched strategy's trades and marks the open one", () => {
+  const state = arena.deskStateAt(DESK, 2);
+  const html = arena.tapeRows(state, { symbol: "₹", code: "INR" });
+  assert.match(html, /BUY/);
+  assert.match(html, /A/);
+  // vwap_bands is a different book, so its SELL is not on this tape.
+  assert.doesNotMatch(html, /SELL/);
+
+  const other = arena.deskStateAt({ ...DESK, trades: [DESK.trades[1]] }, 2);
+  const open = arena.tapeRows(other, { symbol: "₹", code: "INR" });
+  assert.match(open, /desk-tape-row live/);
+  assert.match(open, />open</);
+  assert.match(open, /SELL/);
+  assert.match(arena.tapeRows(arena.deskStateAt(DESK, 0), null), /waiting for the first fill/);
+});
+
+test("each strategy is its own book, so their money is never added up", () => {
+  const strategies = arena.deskStrategies(DESK);
+  assert.deepStrictEqual(Array.from(strategies).map((s) => s.id), ["orb", "vwap_bands"]);
+  assert.strictEqual(arena.deskTrades(DESK, "orb").length, 1);
+  assert.strictEqual(arena.deskTrades(DESK, "vwap_bands").length, 1);
+  // Both books held about Rs1,000 at the same moment. Summed it would read
+  // Rs2,010, which is money that never existed in one account.
+  const a = arena.deskStateAt({ ...DESK, trades: [DESK.trades[0]] }, 1).invested;
+  const b = arena.deskStateAt({ ...DESK, trades: [DESK.trades[1]] }, 2).invested;
+  assert.strictEqual(a, 1010);
+  assert.strictEqual(b, 1000);
+  assert.strictEqual(arena.deskStateAt(DESK, 1).invested, 1010);
+});
+
+test("the stock strip lists only the watched strategy's symbols", () => {
+  const state = arena.deskStateAt(DESK, 2);
+  const html = arena.symbolStrip(DESK, state, { symbol: "₹", code: "INR" });
+  assert.match(html, /data-desk-symbol="A.NS"/);
+  assert.doesNotMatch(html, /data-desk-symbol="B.NS"/);
+});
+
+test("the capital bar says how much of the book was ever actually used", () => {
+  const html = arena.capitalBar(DESK.capital, 1000);
+  assert.match(html, /4\s*\n?\s*equal slots/);
+  assert.match(html, /width:24.6%/);
+  // Book 50,000 with 1,000 in the market leaves 49,000 idle, and saying so is
+  // the entire point of the panel.
+  assert.match(html, /49,000/);
+  assert.strictEqual(arena.capitalBar(null, 0), "");
 });
