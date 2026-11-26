@@ -83,7 +83,7 @@ async function loadArena(silent = false) {
   try {
     // The market strip needs every market's open/shut state, not just this
     // one's. Fetched alongside, and a failure there only costs the dots.
-    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes, harnessRes, aiRes, adaptRes] = await Promise.all([
+    const [res, marketsRes, systemRes, studyRes, proofRes, funnelRes, swingRes, harnessRes, aiRes, adaptRes, knownRes] = await Promise.all([
       apiFetch(mq("/api/arena")),
       apiFetch(`${API}/api/arena/markets`).catch(() => null),
       apiFetch(`${API}/api/system`).catch(() => null),
@@ -94,6 +94,7 @@ async function loadArena(silent = false) {
       apiFetch(`${API}/api/harness`).catch(() => null),
       apiFetch(`${API}/api/ai`).catch(() => null),
       apiFetch(`${API}/api/adapt`).catch(() => null),
+      apiFetch(`${API}/api/arena/known`).catch(() => null),
     ]);
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || "failed");
@@ -123,6 +124,9 @@ async function loadArena(silent = false) {
     }
     if (adaptRes && adaptRes.ok) {
       arenaAdapt = await adaptRes.json().catch(() => null);
+    }
+    if (knownRes && knownRes.ok) {
+      arenaKnown = await knownRes.json().catch(() => null);
     }
     arenaData = data;
     // Don't clobber a settings form the user is typing in.
@@ -1810,6 +1814,35 @@ function isValidClientId(id) {
   return UUID_RE.test(String(id || "").trim());
 }
 
+let arenaKnown = null;
+
+const MARKET_SHORT = { nse: "India", us: "US", forex: "Forex", crypto: "Crypto" };
+
+function knownArenas(known, currentId) {
+  const rows = ((known && known.arenas) || []).filter((a) => a.trades > 0);
+  if (!rows.length) return "";
+  return `
+    <div class="arena-field">Arenas on this server
+      <span class="arena-sub">An arena belongs to an ID, not to a browser. If this one is
+        empty while the runner has been trading, you are looking at a new ID. Open the one
+        that has the trades.</span>
+      <div class="known-list">${rows.map((a) => {
+        const mine = a.client_id === currentId;
+        return `<button class="known-row${mine ? " mine" : ""}"
+          data-known-id="${escapeHtml(a.client_id)}" data-known-market="${escapeHtml(a.market)}"
+          data-known-trades="${a.trades}"
+          ${mine ? "disabled" : ""}>
+          <span class="known-market">${escapeHtml(MARKET_SHORT[a.market] || a.market)}</span>
+          <span class="known-trades">${a.trades} trades
+            <span class="known-id">${escapeHtml(String(a.client_id).slice(0, 8))}</span></span>
+          <span class="known-net ${pnlClass(a.net)}">${inr(a.net)}</span>
+          <span class="known-when">${a.last_day ? escapeHtml(fmtDayLabel(a.last_day)) : ""}${
+            mine ? " · open now" : ""}</span>
+        </button>`;
+      }).join("")}</div>
+    </div>`;
+}
+
 function identityFields() {
   const current = (typeof CLIENT_ID === "string" ? CLIENT_ID : "");
   return `
@@ -1821,6 +1854,7 @@ function identityFields() {
         <button class="arena-link" id="arenaCopyId">copy</button>
       </div>
     </div>
+    ${knownArenas(arenaKnown, current)}
     <div class="arena-field">Use an existing ID
       <span class="arena-sub">Switches this browser to another ID. Nothing is deleted -
         the arenas under the current ID stay where they are, and you can switch back by
@@ -1833,6 +1867,32 @@ function identityFields() {
 }
 
 function bindIdentity() {
+  document.querySelectorAll("#arenaContent [data-known-id]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const next = btn.dataset.knownId;
+      if (!next || next === CLIENT_ID) return;
+      // Deliberately not routed through the paste box above. That box
+      // guards against a hand-typed id and only accepts a UUID; these come
+      // from the server's own list and include arenas keyed the old way,
+      // by address, which are real books with real trades in them.
+      if (!confirm(`Open this arena?\n\n${btn.dataset.knownMarket} · ${
+        btn.dataset.knownTrades} trades\nID ${next}\n\n`
+        + `This browser is using ID ${CLIENT_ID}. Nothing is deleted, but you will `
+        + `need that ID to come back to it, so copy it first.`)) {
+        return;
+      }
+      try {
+        localStorage.setItem("tickerboard_client_id", next);
+      } catch (e) {
+        showToast("This browser will not let the app store the ID", "error");
+        return;
+      }
+      // The market matters as much as the id: an arena is one client's book
+      // for one market, and landing on the wrong tab looks just as empty.
+      setArenaMarket(btn.dataset.knownMarket);
+      location.reload();
+    });
+  });
   const copy = document.getElementById("arenaCopyId");
   if (copy) {
     copy.addEventListener("click", async () => {

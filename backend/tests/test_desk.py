@@ -185,3 +185,52 @@ def test_the_funnel_pins_its_slots_rather_than_inheriting_them(monkeypatch):
     # And it is pinned to a number of its own, not to whatever the live
     # arena is set to today.
     assert market.default_open_slots != funnel_backtest.FUNNEL_SLOTS
+
+
+# --- finding an arena you have lost -----------------------------------------
+
+def test_known_arenas_lists_what_has_traded_busiest_first(monkeypatch):
+    busy = _state(sessions=6)
+    quiet = engine.new_state({"market": "nse", "symbols": ["A.NS"]})
+    engine.start_day(quiet, "2026-09-01")      # books exist, nothing traded
+    never = engine.new_state({"market": "nse", "symbols": ["A.NS"]})
+    saved = {"aaa::nse": busy, "bbb::us": quiet, "ccc::nse": never}
+
+    monkeypatch.setattr(service_mod.store, "all_ids", lambda: sorted(saved))
+    monkeypatch.setattr(service_mod.store, "load", lambda key: saved.get(key))
+
+    rows = service_mod.known_arenas()["arenas"]
+    assert [r["client_id"] for r in rows] == ["aaa", "bbb"]
+    assert rows[0]["market"] == "nse"
+    assert rows[0]["trades"] > 0
+    assert rows[1]["trades"] == 0
+    # An arena that has never even opened a session has nothing to offer,
+    # so it is left out rather than listed as an empty choice.
+    assert "ccc" not in [r["client_id"] for r in rows]
+    # The net is the money, so it has to be the same money the books hold.
+    live = [b for sid, b in busy["books"].items() if sid in busy["config"]["strategies"]]
+    assert rows[0]["net"] == pytest.approx(round(sum(b["stats"]["net"] for b in live), 2))
+
+
+def test_known_arenas_skips_the_cache_keys_that_are_not_arenas(monkeypatch):
+    saved = {"aaa::nse": _state(sessions=4),
+             service_mod.BACKTEST_PREFIX + "aaa::nse": {"books": {}},
+             service_mod.DESK_PREFIX + "aaa::nse": {"books": {}}}
+    monkeypatch.setattr(service_mod.store, "all_ids", lambda: sorted(saved))
+    monkeypatch.setattr(service_mod.store, "load", lambda key: saved.get(key))
+    assert len(service_mod.known_arenas()["arenas"]) == 1
+
+
+def test_one_unreadable_arena_does_not_hide_the_rest(monkeypatch):
+    """A row that will not load is one arena lost, not the whole list."""
+    good = _state(sessions=4)
+
+    def load(key):
+        if key == "bad::nse":
+            raise ValueError("corrupt row")
+        return good
+
+    monkeypatch.setattr(service_mod.store, "all_ids", lambda: ["bad::nse", "good::nse"])
+    monkeypatch.setattr(service_mod.store, "load", load)
+    rows = service_mod.known_arenas()["arenas"]
+    assert [r["client_id"] for r in rows] == ["good"]

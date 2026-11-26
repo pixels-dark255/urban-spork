@@ -60,6 +60,7 @@ function loadArenaHelpers() {
   vm.runInContext(extractConst(SOURCE, "ARENA_PANES"), context);
   vm.runInContext(extractConst(SOURCE, "DESK_SPEEDS"), context);
   vm.runInContext(extractConst(SOURCE, "TAPE_VISIBLE"), context);
+  vm.runInContext(extractConst(SOURCE, "MARKET_SHORT"), context);
   vm.runInContext("let deskSymbol = null; let deskStrategy = null;", context);
 
   // escapeHtml goes through a DOM node in the real app; the arena helpers
@@ -81,7 +82,7 @@ function loadArenaHelpers() {
                       "settingsTable", "assetStudyPanel", "labelChip",
                       "calmVolBars", "pctCell", "heatColor", "heatmapTable", "ruleTable", "proofPanel", "proofRow", "pct3", "funnelPanel", "funnelChart", "swingPanel", "equitySvg", "holdingsBands", "harnessPanel", "aiPanel", "adaptPanel", "killBar", "fillRulePanel", "arenaPaneBar", "deskTimeline", "deskStateAt",
                       "candleChart", "deskMarks", "tapeRows", "capitalBar",
-                      "deskStrategies", "deskTrades", "symbolStrip"]) {
+                      "deskStrategies", "deskTrades", "symbolStrip", "knownArenas"]) {
     vm.runInContext(extractFunction(SOURCE, name, "arena.js"), context);
   }
   return context;
@@ -1520,4 +1521,46 @@ test("the capital bar says how much of the book was ever actually used", () => {
   // the entire point of the panel.
   assert.match(html, /49,000/);
   assert.strictEqual(arena.capitalBar(null, 0), "");
+});
+
+
+// ---------------------------------------------------------------------------
+// Finding an arena a browser has lost
+// ---------------------------------------------------------------------------
+
+const KNOWN = { arenas: [
+  { client_id: "aaa", market: "nse", trades: 214, net: -4919.26, sessions: 9,
+    last_day: "2026-11-25", capital: 50000 },
+  { client_id: "bbb", market: "us", trades: 31, net: -80.01, sessions: 4,
+    last_day: "2026-11-24", capital: 50000 },
+  { client_id: "ccc", market: "nse", trades: 0, net: 0, sessions: 0,
+    last_day: null, capital: 50000 },
+]};
+
+test("the picker offers the arenas that have traded, and not the empty one", () => {
+  const html = arena.knownArenas(KNOWN, "zzz");
+  assert.match(html, /data-known-id="aaa"/);
+  assert.match(html, /data-known-id="bbb"/);
+  // An arena with no trades is not a choice worth offering.
+  assert.doesNotMatch(html, /data-known-id="ccc"/);
+  // The market travels with the id: landing on the wrong tab looks just
+  // as empty as landing on the wrong id.
+  assert.match(html, /data-known-market="nse"/);
+  assert.match(html, /data-known-market="us"/);
+  assert.match(html, /214 trades/);
+  // Two India arenas with similar numbers need something to tell them apart.
+  assert.match(html, /class="known-id">aaa</);
+  assert.match(html, /−₹4,919/);
+});
+
+test("the arena already open is marked and cannot be switched to", () => {
+  const html = arena.knownArenas(KNOWN, "aaa");
+  assert.match(html, /class="known-row mine"[^>]*data-known-id="aaa"[^>]*disabled/s);
+  assert.match(html, /open now/);
+});
+
+test("the picker is nothing at all when there is nothing to find", () => {
+  assert.strictEqual(arena.knownArenas(null, "aaa"), "");
+  assert.strictEqual(arena.knownArenas({ arenas: [] }, "aaa"), "");
+  assert.strictEqual(arena.knownArenas({ arenas: [KNOWN.arenas[2]] }, "aaa"), "");
 });

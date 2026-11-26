@@ -1332,3 +1332,37 @@ button:active, .result-item:active, .clickable-card:active { transform: scale(0.
   .desk-strats::-webkit-scrollbar { display: none; }
   .desk-strat-chip { flex: 0 0 auto; }
 }
+
+/* The arena picker. An arena belongs to a client id rather than a browser,
+   so a cleared cache or a different phone lands on a brand new empty one
+   while the real book carries on being traded somewhere unfindable. */
+.known-list { display: flex; flex-direction: column; gap: 5px; margin-top: 6px; }
+.known-row {
+  display: grid;
+  grid-template-columns: 62px 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  padding: 8px 11px;
+  border-radius: var(--radius-sm);
+}
+.known-row:hover:not(:disabled) { border-color: var(--accent-dim); }
+.known-row.mine { border-color: var(--accent); opacity: 0.75; }
+.known-row:disabled { cursor: default; }
+.known-market { color: var(--text); font-weight: 600; }
+.known-trades, .known-when { color: var(--text-dim); }
+.known-when { text-align: right; }
+.known-net { text-align: right; font-weight: 600; }
+@media (max-width: 560px) {
+  .known-row { grid-template-columns: 54px 1fr auto; }
+  .known-when { grid-column: 1 / -1; text-align: left; }
+}
+/* Two NSE arenas with similar numbers are otherwise indistinguishable.
+   Eight characters is enough to tell them apart and matches what the
+   runner's summary prints. */
+.known-id { color: var(--text-faint); margin-left: 8px; }

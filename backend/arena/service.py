@@ -644,6 +644,43 @@ def trades(ip: str, sid: str | None = None, limit: int = 100) -> list[dict]:
     return out[:max(1, min(limit, 1000))]
 
 
+def known_arenas() -> dict:
+    """Every arena on this server, so a browser can find one it has lost.
+
+    Arenas belong to a client id, not to a device. Clear a browser's
+    storage, open the dashboard on a phone, or follow a link from anywhere
+    else, and a fresh id is minted and a brand new empty arena appears -
+    while the one the runner has been advancing for weeks sits there
+    untouched and unfindable. The id was the only way back and nothing
+    ever showed it.
+    """
+    out = []
+    for key in store.all_ids():
+        if key.startswith((BACKTEST_PREFIX, DESK_PREFIX)):
+            continue
+        try:
+            state = store.load(key)
+        except Exception:
+            continue
+        if not state or not state.get("books"):
+            continue
+        client_id, market_id = store.split_key(key)
+        live = [b for sid, b in state["books"].items()
+                if sid in state["config"]["strategies"]]
+        out.append({
+            "client_id": client_id,
+            "market": market_id,
+            "trades": sum(b["stats"]["trades"] for b in live),
+            "net": round(sum(b["stats"]["net"] for b in live), 2),
+            "sessions": len(state.get("history") or []),
+            "last_day": state.get("last_settled_day") or state.get("day"),
+            "capital": state["config"].get("daily_capital"),
+        })
+    # Busiest first: the arena worth opening is the one that has traded.
+    out.sort(key=lambda a: (-a["trades"], a["client_id"], a["market"]))
+    return {"arenas": out}
+
+
 def _session_of(trade: dict) -> str:
     return str(trade.get("entry_at") or trade.get("exit_at") or "")[:10]
 

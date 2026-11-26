@@ -618,6 +618,12 @@ def api_arena_scoreboard(request: Request, market: str | None = None,
     return arena_service.scoreboard(arena_key(request, market), period)
 
 
+@app.get("/api/arena/known")
+def api_arena_known():
+    """Arenas that exist on this server, so a new browser can find its own."""
+    return arena_service.known_arenas()
+
+
 @app.get("/api/arena/desk")
 def api_arena_desk(request: Request, market: str | None = None, refresh: bool = False):
     """The last traded session, ready to be played back."""
