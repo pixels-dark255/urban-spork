@@ -223,3 +223,28 @@ def test_every_json_response_is_strict_json(client):
         response = client.get(path)
         assert response.status_code == 200, path
         json.loads(response.text)
+
+
+# --- house rule: no em dashes in prose --------------------------------------
+
+def test_no_em_dash_is_used_as_punctuation_in_any_document():
+    """AGENTS.md forbids em dashes in UI copy and docs.
+
+    A lone em dash in a table cell is the no-value marker, which is what
+    the character is for, so it is stripped before the search. Anything
+    left is prose punctuation.
+    """
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent.parent
+    cell = re.compile(r"\|\s*—\s*(?=\|)")
+    offenders = []
+    for path in sorted(root.rglob("*.md")):
+        if any(part in {".git", "node_modules"} for part in path.parts):
+            continue
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            if "—" in cell.sub("| ", line):
+                offenders.append("%s:%d: %s" % (path.relative_to(root), number,
+                                                line.strip()))
+    assert offenders == []

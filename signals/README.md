@@ -1,4 +1,4 @@
-# signals/ — shared signal code
+# signals/: shared signal code
 
 **The code lives in `backend/signals/`.** The backend is the Python import
 root (everything runs with `backend` on the path), so a package here could

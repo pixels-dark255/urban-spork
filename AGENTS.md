@@ -1,4 +1,4 @@
-# AGENTS.md — house rules for TickerBoard
+# AGENTS.md: house rules for TickerBoard
 
 Read this before writing code. It binds humans and agents equally.
 
@@ -70,7 +70,7 @@ funnel. The old rule keeps running until the new one has earned its place.
 ### 1.6 The locked window is run ONCE
 Each idea gets exactly one run on the locked test window, after every choice
 about it has already been made. If it fails, the idea is out. There is no
-"tweak and rerun" — that is the same as having no test at all.
+"tweak and rerun": that is the same as having no test at all.
 
 Every locked-window run is appended to `results/locked_test_log.csv`
 (`idea_id, date_run, result, notes`) so that a rerun is visible to anyone
@@ -145,33 +145,33 @@ Reuse these. Do not create a parallel copy of any of them.
 
 | Role | Module |
 | --- | --- |
-| Data download | `backend/data_sources.py` — every external fetch (yfinance, news), caching, symbol search, `_yf_download` |
-| | `backend/arena/universe.py` — daily bars for screening (`fetch_daily`), per-process cache |
-| Indicators | `backend/indicators.py` — SMA, EMA, RSI, MACD, Bollinger, volatility (pure pandas) |
-| **Signals** | `backend/arena/strategies.py` — `enrich()` plus every `Strategy` class and `catalog()`. **The one signal module** (§1.2) |
+| Data download | `backend/data_sources.py`: every external fetch (yfinance, news), caching, symbol search, `_yf_download` |
+| | `backend/arena/universe.py`: daily bars for screening (`fetch_daily`), per-process cache |
+| Indicators | `backend/indicators.py`: SMA, EMA, RSI, MACD, Bollinger, volatility (pure pandas) |
+| **Signals** | `backend/arena/strategies.py`: `enrich()` plus every `Strategy` class and `catalog()`. **The one signal module** (§1.2) |
 | Arena strategies | same file: ORB both ways, SuperTrend flip, VWAP band reversion, EMA pullback, gap fade, intraday momentum, VWAP reclaim, EMA crossover, RSI reversion, Bollinger breakout, legacy score, buy-at-open benchmark |
 | Cost model | `backend/arena/costs.py` (India) · `backend/arena/markets.py` (`CostModel`, `USCostModel`, `ForexCostModel`, `CryptoCostModel`) |
-| Paper fills | `backend/arena/engine.py` — `_maybe_enter`, `_exit_price`, `process_bar(s)`, position sizing, square-off |
-| Backtest | `backend/arena/engine.py::replay` — the live path over past sessions. (`backend/backtest.py` is **not** this: it is the watchlist predictor's 90-day weight refinement) |
-| Persistence | `backend/arena/store.py` — arena state per client id, Postgres with a JSON-file fallback · `backend/storage.py` — watchlist and intraday |
-| Scheduler | `.github/workflows/arena-runner.yml` + `backend/run_daily.py` — the scheduled runner that actually advances the arena · `backend/scheduler.py` — the in-process APScheduler · `backend/arena/runner.py` — which of the two is in charge (`ARENA_RUNNER`) |
+| Paper fills | `backend/arena/engine.py`: `_maybe_enter`, `_exit_price`, `process_bar(s)`, position sizing, square-off |
+| Backtest | `backend/arena/engine.py::replay`: the live path over past sessions. (`backend/backtest.py` is **not** this: it is the watchlist predictor's 90-day weight refinement) |
+| Persistence | `backend/arena/store.py`: arena state per client id, Postgres with a JSON-file fallback · `backend/storage.py`: watchlist and intraday |
+| Scheduler | `.github/workflows/arena-runner.yml` + `backend/run_daily.py`: the scheduled runner that actually advances the arena · `backend/scheduler.py`: the in-process APScheduler · `backend/arena/runner.py`: which of the two is in charge (`ARENA_RUNNER`) |
 | Market calendar | `backend/market_calendar.py` + `backend/nse_holidays.json` (NSE) · `backend/arena/markets.py` (other venues) · `backend/timeutil.py` (one source of truth for time) |
 | Settings | `backend/settings.py` reads §2 above. `python3.13 -m settings` prints and checks it |
-| Ticker check | `backend/ticker_check.py` — resolves every ticker; flags, never drops |
+| Ticker check | `backend/ticker_check.py`: resolves every ticker; flags, never drops |
 | History archive | `backend/bar_archive.py`, `backend/archive_bars.py`, `.github/workflows/bar-archive.yml` |
-| Fingerprint | `backend/fingerprint.py` — one comparable line per phase |
-| Regime | `backend/signals/regime.py` — trend and vol per bar; one definition, shared with the study |
-| Rule spec | `rules.yaml` + `backend/signals/rules.py` — the 7-part schema. `python3.13 -m signals.rules` prints the table |
-| Adapt | `backend/adapt/` + `CHANGELOG_rules.md` — Phase 8. `python -m adapt.cli` prints the kill lines, the status table and a dry-run rotate. The scheduled review may fix a code bug, never a rule |
-| AI layer | `backend/ai/` + `ai_calls/` — Phase 7, **off**. `python -m ai.cli` runs the two replays and prints the enable verdict. Core only; four calls; every call recorded before it can act |
-| Harness | `backend/harness/` + `.github/workflows/harness.yml` — Phase 6. `python -m harness.cli` prints the dry run, the risk limits and the rerun check. Paper only; the trust ladder's top rung writes a paper fill and nothing else |
-| Swing account | `backend/swing/` — Phase 5. `python -m swing.cli` runs the core rotation, the quarterly picker and the sleeves. Delivery costs, separate from the Arena's intraday book |
-| Funnel | `backend/funnel/` + `bench.yaml` — Phase 4's seven gates. `python -m funnel.cli` runs them all; `python -m tools.test_idea <idea.yaml>` runs one |
-| Asset labels | `results/asset_labels.json` — Phase 1's output, committed so gate 1 is reproducible |
-| Fill rule | `backend/validation/fills.py` + `backend/run_phase9.py` — Phase 9. `python3.13 run_phase9.py` recomputes every entry from the bars and prints the two drop reasons and the slippage sweep |
-| Proof | `backend/validation/` + `backend/run_proof.py` — Phase 3. `python3.13 run_proof.py` prints the three synthetic results against the bands, the guard per strategy, and the fingerprint |
+| Fingerprint | `backend/fingerprint.py`: one comparable line per phase |
+| Regime | `backend/signals/regime.py`: trend and vol per bar; one definition, shared with the study |
+| Rule spec | `rules.yaml` + `backend/signals/rules.py`: the 7-part schema. `python3.13 -m signals.rules` prints the table |
+| Adapt | `backend/adapt/` + `CHANGELOG_rules.md`: Phase 8. `python -m adapt.cli` prints the kill lines, the status table and a dry-run rotate. The scheduled review may fix a code bug, never a rule |
+| AI layer | `backend/ai/` + `ai_calls/`: Phase 7, **off**. `python -m ai.cli` runs the two replays and prints the enable verdict. Core only; four calls; every call recorded before it can act |
+| Harness | `backend/harness/` + `.github/workflows/harness.yml`: Phase 6. `python -m harness.cli` prints the dry run, the risk limits and the rerun check. Paper only; the trust ladder's top rung writes a paper fill and nothing else |
+| Swing account | `backend/swing/`: Phase 5. `python -m swing.cli` runs the core rotation, the quarterly picker and the sleeves. Delivery costs, separate from the Arena's intraday book |
+| Funnel | `backend/funnel/` + `bench.yaml`: Phase 4's seven gates. `python -m funnel.cli` runs them all; `python -m tools.test_idea <idea.yaml>` runs one |
+| Asset labels | `results/asset_labels.json`: Phase 1's output, committed so gate 1 is reproducible |
+| Fill rule | `backend/validation/fills.py` + `backend/run_phase9.py`: Phase 9. `python3.13 run_phase9.py` recomputes every entry from the bars and prints the two drop reasons and the slippage sweep |
+| Proof | `backend/validation/` + `backend/run_proof.py`: Phase 3. `python3.13 run_proof.py` prints the three synthetic results against the bands, the guard per strategy, and the fingerprint |
 | Dashboard | `frontend/arena.js`, `frontend/app.js`, `frontend/index.html`, `frontend/style.css` |
-| API | `backend/main.py` — FastAPI routes, including `/api/arena/*` |
+| API | `backend/main.py`: FastAPI routes, including `/api/arena/*` |
 
 ---
 
@@ -211,7 +211,7 @@ discovered by surprise.
 | Rule | Gap | Impact |
 | --- | --- | --- |
 | AI layer cannot be enabled | Phase 7 (fingerprint `e8a5000d1c16`). Three conditions must hold and none does: six §1 rules are open, the core failed its own gates, and the masked replay did not beat core alone | The layer is built, tested and sealed off. `replay.may_enable` refuses even when the replay is flattering, because improving a core that failed its gates proves nothing worth acting on |
-| Core rotation fails its gates | Phase 5 on real bars (fingerprint `caaf2427ec36`): engine `ITBEES.NS`, safe `GOLDBEES.NS`, SMA200 returns **+0.70%/yr against a −28.52% drawdown** (ret/dd 0.03). **Neighbours FAIL** — SMA150 loses 8.06% while SMA100 makes 28% and SMA250 makes 59% — and **2x cost FAILS** at −5.73% | The locked window was deliberately **not** spent: the idea is already out, and §1.6 allows one run per idea. Switching to SMA250 because it scored best is forbidden by §1.5 and would be a new idea needing the full funnel |
+| Core rotation fails its gates | Phase 5 on real bars (fingerprint `caaf2427ec36`): engine `ITBEES.NS`, safe `GOLDBEES.NS`, SMA200 returns **+0.70%/yr against a −28.52% drawdown** (ret/dd 0.03). **Neighbours FAIL** (SMA150 loses 8.06% while SMA100 makes 28% and SMA250 makes 59%), and **2x cost FAILS** at −5.73% | The locked window was deliberately **not** spent: the idea is already out, and §1.6 allows one run per idea. Switching to SMA250 because it scored best is forbidden by §1.5 and would be a new idea needing the full funnel |
 | Nothing has earned capital | Phase 4 on real NSE 5m bars (40 sessions, fingerprint `04dcaf3a560a`): 13 ideas in, **0 survivors**. Ten of the eleven that reached gate 2 lost money after costs; `gap_fade` was profitable but on 7 trades against a 40-trade minimum | `bench.yaml` has an empty `survivors` list. Every strategy is observe-only, with no capital, until one clears the gates |
 | Gate 5 is partial | Indicator windows (the 9 and 21 in `ema9`/`ema21`, the 20 in the Bollinger bands) are computed once in `enrich()` for every strategy at once, so varying one per strategy would mean re-enriching per variant. Gate 5 varies the rule parameters only | A single-spike optimum hiding in an indicator window would not be caught |
 | Regime not wired in | `signals/regime.py` computes trend and volatility, and `rules.yaml` declares the half-size rule, but `engine.py` consults neither. Every filter reads `none` | The regime layer is specified and tested but decorative until the engine asks |

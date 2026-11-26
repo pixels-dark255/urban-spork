@@ -27,7 +27,7 @@ flat +5:30 and the now-unreachable `_nth_sunday` helper removed.
   not adapting them. They still work on US tickers.
 - **`trader-news` is half-adapted.** Its Yahoo headline feed works for `.NS`
   symbols; its SEC filing feed does not, and skips any ticker with no CIK.
-- **`trader-alerts` falls back to stooq**, whose URL is `%s.us` — US only. The
+- **`trader-alerts` falls back to stooq**, whose URL is `%s.us` and is therefore US only. The
   primary Yahoo path is what runs for Indian symbols.
 - **Holidays cover 2026 only.** `backend/nse_holidays.json` lists no 2027 dates
   yet; until it does, the tools treat every 2027 weekday as a trading day. Add

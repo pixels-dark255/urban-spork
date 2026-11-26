@@ -1,4 +1,4 @@
-# data/ — research snapshot
+# data/: research snapshot
 
 Frozen bars used for proof work. **The live runner never writes here.**
 Anything in this folder must be reproducible and must not change under a

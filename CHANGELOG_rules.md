@@ -5,7 +5,7 @@ and why. Nothing here is ever edited: a record that can be rewritten is a
 story.
 
 A kill line is a multiple of the worst drawdown a strategy was tested
-through — 2x for a sleeve or intraday strategy, 1.5x for the core. Past it,
+through: 2x for a sleeve or intraday strategy, 1.5x for the core. Past it,
 the thing running is no longer the thing that was tested.
 
 Two separate events, deliberately:

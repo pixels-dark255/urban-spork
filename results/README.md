@@ -1,4 +1,4 @@
-# results/ — machine-readable results
+# results/: machine-readable results
 
 `locked_test_log.csv`   every locked-window run (AGENTS.md §1.6)
 `phase_fingerprints.csv` one fingerprint per phase (AGENTS.md §1.7)
