@@ -11,7 +11,15 @@ from arena.strategies import enrich
 from . import gates, run as run_mod
 
 
-def load_bars(source: str, sessions: int, symbols: list[str]) -> dict:
+# How far back the data source serves each bar size. Yahoo keeps about 60
+# days of 5m and 15m and about two years of 1h, which is the whole reason
+# AGENTS.md labels the short bars UNPROVEN: 60 days cannot carry a
+# 12-month minimum however the numbers come out.
+PERIOD_FOR = {"5m": "60d", "15m": "60d", "1h": "2y"}
+
+
+def load_bars(source: str, sessions: int, symbols: list[str],
+              bar_size: str = "5m") -> dict:
     """Enriched bars for every symbol the funnel might trade."""
     market = markets_mod.get("nse")
     if source == "synthetic":
@@ -21,12 +29,38 @@ def load_bars(source: str, sessions: int, symbols: list[str]) -> dict:
             for i, sym in enumerate(sorted(symbols))}
 
     import data_sources
+    period = PERIOD_FOR.get(bar_size)
+    if period is None:
+        raise SystemExit("no download period is defined for %r bars" % bar_size)
     out = {}
     for sym in sorted(symbols):
-        frame = data_sources._yf_download(sym, "60d", "5m", timeout=45.0)
+        frame = data_sources._yf_download(sym, period, bar_size, timeout=45.0)
         if frame is not None and not frame.empty:
             out[sym] = enrich(frame, market=market)
     return out
+
+
+def split_train_locked(enriched: dict, fraction: float) -> tuple[dict, list, list]:
+    """The first `fraction` of sessions to train on, the rest held back.
+
+    AGENTS.md §2 sets 0.70 for hourly bars. The split is by SESSION and on
+    the union across symbols, so every symbol is cut at the same date and
+    one symbol with a short history cannot shift another symbol's window.
+    """
+    sessions = sorted({s for df in enriched.values()
+                       if df is not None and not df.empty
+                       for s in df["session"].unique() if s})
+    if not sessions:
+        return {}, [], []
+    cut = max(1, int(len(sessions) * fraction))
+    train, locked = sessions[:cut], sessions[cut:]
+    keep = set(train)
+    out = {}
+    for sym, df in enriched.items():
+        part = df[df["session"].isin(keep)]
+        if not part.empty:
+            out[sym] = part
+    return out, train, locked
 
 
 def bars_summary(enriched: dict, wanted: list[str]) -> dict:
@@ -68,7 +102,12 @@ def bars_table(summary: dict) -> str:
 def table(report: dict) -> str:
     counts = report["counts"]
     lines = ["Phase 4: the funnel", "",
-             "%d ideas in" % counts["ideas_in"], ""]
+             "%d ideas in, on %s bars" % (counts["ideas_in"], report.get("bar_size", "5m")), ""]
+    if report.get("held_back_sessions"):
+        window = report.get("locked_window") or ["?", "?"]
+        lines[2] += ("\n%d sessions held back for the locked test (%s to %s). "
+                     "Gates 1-6 never saw them." % (report["held_back_sessions"],
+                                                    window[0], window[1]))
     lines.append("%-30s %8s %8s %8s" % ("GATE", "REACHED", "PASSED", "FAILED"))
     lines.append("-" * 58)
     for key in gates.ORDER:
@@ -173,6 +212,11 @@ def fingerprint_values(report: dict) -> dict:
     values = {"ideas_in": report["counts"]["ideas_in"],
               "survivors": report["counts"]["survivors"],
               "bar_size": report["bar_size"], "sessions": report["sessions"]}
+    # Only when there IS a split. A 5m run has no locked window to hold
+    # back, and adding a key that is always zero would move every 5m
+    # fingerprint ever recorded without a single number having changed.
+    if report.get("held_back_sessions"):
+        values["held_back_sessions"] = report["held_back_sessions"]
     # The input is part of the result. Without this two runs on different
     # downloads can share a fingerprint, or differ on it for a reason no
     # reader can see.
@@ -197,6 +241,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--source", choices=["synthetic", "yahoo"], default="synthetic")
     ap.add_argument("--sessions", type=int, default=12)
+    ap.add_argument("--bars", default="5m", choices=sorted(PERIOD_FOR),
+                    help="bar size to run the funnel on")
     ap.add_argument("--locked", action="store_true",
                     help="run gate 7. ONCE per idea (AGENTS.md §1.6); "
                          "refused on synthetic bars")
@@ -212,14 +258,33 @@ def main(argv=None) -> int:
 
     labels = gates.load_labels()
     symbols = sorted(labels["labels"])
-    enriched = load_bars(args.source, args.sessions, symbols)
+    enriched = load_bars(args.source, args.sessions, symbols, args.bars)
     if not enriched:
         print("[error] no bars", file=sys.stderr)
         return 3
 
-    report = run_mod.run_all(enriched, labels, days=args.sessions)
+    days = args.sessions
+    held_back = []
+    if args.bars == "1h" and args.source == "yahoo":
+        # Hourly bars reach back two years, so unlike 5m there is enough
+        # history to hold a locked window back. AGENTS.md §2 fixes the
+        # split at 70/30, and the last 30% is NOT loaded into training:
+        # gates 1 to 6 never see it, which is the only way gate 7 can mean
+        # anything later (§1.6).
+        import settings as settings_mod
+        fraction = settings_mod.load()["hourly_train_fraction"]
+        enriched, train, held_back = split_train_locked(enriched, fraction)
+        days = len(train)
+        if not enriched:
+            print("[error] no training bars after the split", file=sys.stderr)
+            return 3
+
+    report = run_mod.run_all(enriched, labels, days=days, bar_size=args.bars)
     report["source"] = args.source
     report["bars"] = bars_summary(enriched, symbols)
+    report["held_back_sessions"] = len(held_back)
+    if held_back:
+        report["locked_window"] = [held_back[0], held_back[-1]]
     text = table(report) + "\n\n" + bars_table(report["bars"])
     print(text)
 

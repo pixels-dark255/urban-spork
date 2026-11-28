@@ -346,3 +346,83 @@ def test_before_charges_is_not_called_gross():
     text = source.read_text()
     assert '"before_charges"' in text
     assert '"gross"' not in text
+
+
+# --- bar sizes --------------------------------------------------------------
+
+def test_the_warm_ups_mean_the_same_at_five_minutes_as_the_bar_counts_did():
+    """They were bar counts that silently meant 5-minute bars. In minutes
+    they must resolve to exactly the same bars at 5m, or this is a rule
+    change wearing a refactor's clothes."""
+    from arena import markets as markets_mod
+    from arena.strategies import enrich, OPENING_RANGE_BARS, OPENING_RANGE_MINUTES
+    from validation import arena_guard
+
+    df = enrich(arena_guard.intraday_bars(sessions=3, seed=7),
+                market=markets_mod.get("nse"))
+    assert df["bar_minutes"].iloc[0] == 5.0
+    # The opening range becomes known on the same bar as before.
+    assert int(df.loc[df["or_high"].notna(), "bar_no"].min()) == OPENING_RANGE_BARS - 1
+    # And the half-hour close on the bar that closes at 09:45.
+    assert int(df.loc[df["close_0945"].notna(), "bar_no"].min()) == 5
+    assert OPENING_RANGE_MINUTES == 5 * OPENING_RANGE_BARS
+
+
+def test_bar_minutes_ignores_the_gap_between_sessions():
+    """Overnight is 18 hours. Counting it as a bar would make every warm-up
+    a single bar and every opening range the first bar of the day."""
+    from arena import markets as markets_mod
+    from arena.strategies import enrich, bar_minutes
+    from validation import arena_guard
+
+    df = enrich(arena_guard.intraday_bars(sessions=4, seed=7),
+                market=markets_mod.get("nse"))
+    assert bar_minutes(df) == 5.0
+
+
+def test_a_bar_longer_than_the_opening_range_uses_one_bar_not_a_fraction():
+    """A 15-minute range cannot be measured on hourly bars. Taking the
+    first bar and saying so beats inventing the other 45 minutes."""
+    import pandas as pd
+    from arena import markets as markets_mod
+    from arena.strategies import enrich
+
+    idx = pd.date_range("2026-09-01 09:15", periods=6, freq="60min", tz="Asia/Kolkata")
+    frame = pd.DataFrame({"Open": 100.0, "High": 101.0, "Low": 99.0,
+                          "Close": 100.5, "Volume": 1000.0}, index=idx)
+    df = enrich(frame, market=markets_mod.get("nse"))
+    assert df["bar_minutes"].iloc[0] == 60.0
+    # Known from the very first bar, because that first bar IS the range.
+    assert bool(df["or_high"].notna().iloc[0])
+    # And the half-hour close is that same bar, rather than nothing at all.
+    assert bool(df["close_0945"].notna().iloc[0])
+
+
+def test_the_train_locked_split_cuts_every_symbol_at_the_same_date():
+    import pandas as pd
+    from funnel import cli as funnel_cli
+
+    def frame(sessions):
+        return pd.DataFrame({"session": sessions, "Close": range(len(sessions))})
+
+    days = ["2026-01-%02d" % i for i in range(1, 11)]
+    enriched = {"A.NS": frame(days), "B.NS": frame(days[2:5])}
+    train_bars, train, locked = funnel_cli.split_train_locked(enriched, 0.7)
+    assert train == days[:7]
+    assert locked == days[7:]
+    # B's short history does not move A's cut, and B keeps only its own.
+    assert sorted(train_bars["B.NS"]["session"].unique()) == days[2:5]
+    assert days[7] not in set(train_bars["A.NS"]["session"])
+
+
+def test_the_locked_sessions_never_reach_training():
+    """The whole point of §1.6: gates 1-6 must not see the held-back bars."""
+    import pandas as pd
+    from funnel import cli as funnel_cli
+
+    enriched = {"A.NS": pd.DataFrame({"session": ["2026-01-%02d" % i for i in range(1, 11)],
+                                      "Close": range(10)})}
+    train_bars, train, locked = funnel_cli.split_train_locked(enriched, 0.7)
+    seen = set(train_bars["A.NS"]["session"])
+    assert not seen & set(locked)
+    assert len(train) + len(locked) == 10

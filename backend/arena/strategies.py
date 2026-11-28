@@ -27,8 +27,35 @@ import math
 import numpy as np
 import pandas as pd
 
-OPENING_RANGE_BARS = 3          # 3 x 5m = the first 15 minutes
+# The opening range, the warm-ups and the "30 minutes in" close are all
+# periods of TIME. They used to be counted in bars, which silently meant
+# 5-minute bars: on hourly bars `bar_no < 3` is three hours of warm-up and
+# the 25-29 minute window for the half-hour close matches no bar at all,
+# so two strategies would never fire and nobody would be told. Stated in
+# minutes they mean the same thing at any bar size, and at 5m they resolve
+# to exactly the bar counts they replaced.
+OPENING_RANGE_MINUTES = 15
+HALF_HOUR_MINUTES = 30
+OPENING_RANGE_BARS = 3          # 3 x 5m, kept for anything still counting bars
 LAST_ENTRY_MINUTE = 14 * 60 + 45  # no new entries after 14:45 IST
+
+
+def bar_minutes(df) -> float:
+    """How long one bar is, measured from the bars themselves.
+
+    Taken from the gaps WITHIN a session, so the overnight gap between
+    15:30 and the next 09:15 cannot be mistaken for a bar length. The
+    median shrugs off a missing bar or a half-day.
+    """
+    if df is None or len(df) < 2:
+        return 5.0
+    gaps = df.index.to_series().diff().dt.total_seconds().div(60.0)
+    if "session" in df:
+        gaps = gaps.where(df["session"].eq(df["session"].shift(1)))
+    gaps = gaps[gaps > 0]
+    if gaps.empty:
+        return 5.0
+    return float(gaps.median())
 
 
 # ---------------------------------------------------------------------------
@@ -186,10 +213,17 @@ def enrich(bars: pd.DataFrame, market=None, window: dict | None = None,
         df["vwap"] = (pv / cv.replace(0, np.nan)).fillna(close)
     # Opening range only becomes known once its last bar has closed - before
     # that the columns are NaN so no strategy can peek at it.
-    in_or = df["bar_no"] < OPENING_RANGE_BARS
+    # The opening range is the first OPENING_RANGE_MINUTES of the session,
+    # which on 5m bars is bars 0-2 exactly as before. On a bar longer than
+    # the range itself it is the first bar, and the range is then that
+    # bar's length rather than 15 minutes: a bar size cannot be finer than
+    # its bars, and pretending otherwise is how a backtest invents data.
+    minutes = bar_minutes(df)
+    df["bar_minutes"] = minutes
+    in_or = df["sess_minute"] < max(OPENING_RANGE_MINUTES, minutes)
     or_high = high.where(in_or).groupby(df["session"]).transform("max")
     or_low = low.where(in_or).groupby(df["session"]).transform("min")
-    known = df["bar_no"] >= OPENING_RANGE_BARS - 1
+    known = df["sess_minute"] >= max(OPENING_RANGE_MINUTES, minutes) - minutes
     df["or_high"] = or_high.where(known)
     df["or_low"] = or_low.where(known)
 
@@ -211,9 +245,13 @@ def enrich(bars: pd.DataFrame, market=None, window: dict | None = None,
     # The close 30 minutes into the session, known from then on. Measured
     # from the session's own start: "09:45" means nothing to a market that
     # opens at 19:00 IST, or to a window the user moved.
-    bar30 = df["sess_minute"].between(25, 29, inclusive="both")
+    # The last bar that closes at or before the half-hour mark, so on 5m
+    # bars this is the 09:40-09:45 bar exactly as before. On a bar longer
+    # than half an hour it is the first bar of the session.
+    mark = max(HALF_HOUR_MINUTES - minutes, 0.0)
+    bar30 = (df["sess_minute"] >= mark) & (df["sess_minute"] < mark + minutes)
     c30 = close.where(bar30).groupby(df["session"]).transform("max")
-    df["close_0945"] = c30.where(df["sess_minute"] >= 25)
+    df["close_0945"] = c30.where(df["sess_minute"] >= mark)
     st_line, st_dir = _supertrend(high, low, close, df["atr14"], 3.0)
     df["st_line"], df["st_dir"] = st_line, st_dir
     return df
@@ -257,6 +295,16 @@ def _ok(*vals) -> bool:
 # ---------------------------------------------------------------------------
 # Strategies
 # ---------------------------------------------------------------------------
+
+def _early(row, minutes: float) -> bool:
+    """True while the session is younger than `minutes`.
+
+    The warm-ups were written as bar counts, which meant 5-minute bars
+    without ever saying so. In minutes they survive a change of bar size:
+    "six bars" becomes "half an hour", which is what it always meant.
+    """
+    return float(row["sess_minute"]) < minutes
+
 
 class Strategy:
     # Rule parameters, and the three values the funnel's neighbour gate
@@ -335,7 +383,7 @@ class OpeningRangeBreakout(Strategy):
     def entry(self, row, prev):
         if not _ok(row["or_high"], row["or_low"], prev["Close"]):
             return None
-        if row["bar_no"] < OPENING_RANGE_BARS or row["Close"] <= row["or_high"] or prev["Close"] > row["or_high"]:
+        if _early(row, max(OPENING_RANGE_MINUTES, row["bar_minutes"])) or row["Close"] <= row["or_high"] or prev["Close"] > row["or_high"]:
             return None
         price = row["Close"]
         stop = max(row["or_low"], price * (1 - self.p("stop_cap_pct")))
@@ -364,7 +412,7 @@ class VwapReclaim(Strategy):
 
     def entry(self, row, prev):
         no_vol = bool(row.get("no_volume", False))
-        if row["bar_no"] < 3 or not _ok(row["vwap"], prev["vwap"], row["atr14"]):
+        if _early(row, 15) or not _ok(row["vwap"], prev["vwap"], row["atr14"]):
             return None
         if not no_vol and not _ok(row["vol_avg20"]):
             return None
@@ -395,7 +443,7 @@ class EmaCrossover(Strategy):
     description = "Trend-following: buys when the 9-EMA crosses above the 21-EMA, exits on the cross back."
 
     def entry(self, row, prev):
-        if row["bar_no"] < 2 or not _ok(row["ema9"], row["ema21"], prev["ema9"], prev["ema21"]):
+        if _early(row, 10) or not _ok(row["ema9"], row["ema21"], prev["ema9"], prev["ema21"]):
             return None
         if prev["ema9"] <= prev["ema21"] and row["ema9"] > row["ema21"]:
             stop, target = self.atr_levels(row["Close"], row["atr14"],
@@ -420,7 +468,7 @@ class RsiReversion(Strategy):
                    "exits once RSI recovers past 55.")
 
     def entry(self, row, prev):
-        if row["bar_no"] < 3 or not _ok(row["rsi14"], prev["rsi14"]):
+        if _early(row, 15) or not _ok(row["rsi14"], prev["rsi14"]):
             return None
         floor = self.p("rsi_floor")
         if prev["rsi14"] < floor <= row["rsi14"]:
@@ -449,7 +497,7 @@ class BollingerBreakout(Strategy):
 
     def entry(self, row, prev):
         no_vol = bool(row.get("no_volume", False))
-        if row["bar_no"] < 3 or not _ok(row["bb_up"]):
+        if _early(row, 15) or not _ok(row["bb_up"]):
             return None
         if not no_vol and not _ok(row["vol_avg20"]):
             return None
@@ -545,7 +593,8 @@ class OrbBothWays(Strategy):
     max_trades_per_symbol_per_day = 1
 
     def entry(self, row, prev):
-        if row["bar_no"] < OPENING_RANGE_BARS or not _ok(row["or_high"], row["or_low"], prev["Close"]):
+        if _early(row, max(OPENING_RANGE_MINUTES, row["bar_minutes"])) \
+                or not _ok(row["or_high"], row["or_low"], prev["Close"]):
             return None
         price = row["Close"]
         cap, r = self.p("stop_cap_pct"), self.p("target_r")
@@ -569,7 +618,7 @@ class SuperTrendFlip(Strategy):
                    "short when it flips down. The line is the stop; exits on the opposite flip.")
 
     def entry(self, row, prev):
-        if row["bar_no"] < 2 or not _ok(row["st_line"], row["atr14"]) or prev["st_dir"] == row["st_dir"]:
+        if _early(row, 10) or not _ok(row["st_line"], row["atr14"]) or prev["st_dir"] == row["st_dir"]:
             return None
         price = row["Close"]
         if row["st_dir"] == 1 and row["st_line"] < price:
@@ -602,7 +651,8 @@ class VwapBandReversion(Strategy):
                    "(RSI under 35), shorts the mirror case. Target is VWAP itself.")
 
     def entry(self, row, prev):
-        if row["bar_no"] < 6 or not _ok(row["vwap"], row["vwap_sd"], row["rsi14"], row["atr14"]) or row["vwap_sd"] <= 0:
+        if _early(row, 30) or not _ok(row["vwap"], row["vwap_sd"], row["rsi14"], row["atr14"]) \
+                or row["vwap_sd"] <= 0:
             return None
         price, vwap, sd = row["Close"], row["vwap"], row["vwap_sd"]
         mult = self.p("sd_mult")
@@ -629,7 +679,8 @@ class TrendPullback(Strategy):
                    "last swing, target 2x risk.")
 
     def entry(self, row, prev):
-        if row["bar_no"] < 6 or not _ok(row["ema21"], row["ema50"], row["vwap"], row["swing_low5"], row["swing_high5"]):
+        if _early(row, 30) \
+                or not _ok(row["ema21"], row["ema50"], row["vwap"], row["swing_low5"], row["swing_high5"]):
             return None
         price = row["Close"]
         up = price > row["vwap"] and row["ema21"] > row["ema50"]
