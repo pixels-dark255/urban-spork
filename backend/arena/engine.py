@@ -862,7 +862,13 @@ def _close(state, book, sym, price, reason, at, ccfg=None):
         "net_inr": markets_mod.to_inr(net, state.get("fx")),
     }
     book["trades"].append(trade)
-    book["trades"] = book["trades"][-MAX_TRADES_KEPT:]
+    # The cap bounds LIVE state, which is a Postgres row that would
+    # otherwise grow forever. A replay's state is thrown away at the end of
+    # the call, and truncating it silently measures only the last 300
+    # trades: on 268 hourly sessions four ideas hit exactly 300 and their
+    # reported net was the net of a tail.
+    if not state.get("keep_all_trades"):
+        book["trades"] = book["trades"][-MAX_TRADES_KEPT:]
     st = book["stats"]
     st["trades"] += 1
     # Rounded to 4dp, not 2: a forex book trades in dollars where a whole
@@ -1204,6 +1210,8 @@ def replay(config: dict, enriched: dict[str, pd.DataFrame], days: int = 30,
     """
     state = new_state(config)
     state["config"]["enabled"] = True
+    # A backtest measures every trade it took, not the last 300 of them.
+    state["keep_all_trades"] = True
     if fx is not None:
         state["fx"] = fx
     sessions = sorted({s for df in enriched.values() if df is not None and not df.empty

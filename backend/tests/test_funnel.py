@@ -426,3 +426,20 @@ def test_the_locked_sessions_never_reach_training():
     seen = set(train_bars["A.NS"]["session"])
     assert not seen & set(locked)
     assert len(train) + len(locked) == 10
+
+
+def test_a_rule_that_never_fired_is_not_reported_as_one_that_lost():
+    """"net +0.00 over 0 trades" reads as a strategy that broke even.
+    It never fired, which on a new bar size is the finding itself."""
+    from funnel import gates
+
+    silent = gates.gate_training_profit({"ok": True, "net": 0.0, "trades": 0})
+    assert silent["pass"] is False
+    assert silent["no_trades"] is True
+    assert "never fired" in silent["why"]
+    assert "+0.00" not in silent["why"]
+
+    lost = gates.gate_training_profit({"ok": True, "net": -12.5, "trades": 3})
+    assert lost["pass"] is False
+    assert not lost.get("no_trades")
+    assert "-12.50 after costs over 3 trades" in lost["why"]

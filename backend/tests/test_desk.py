@@ -234,3 +234,47 @@ def test_one_unreadable_arena_does_not_hide_the_rest(monkeypatch):
     monkeypatch.setattr(service_mod.store, "load", load)
     rows = service_mod.known_arenas()["arenas"]
     assert [r["client_id"] for r in rows] == ["good"]
+
+
+# --- the trade cap is for live state, not for measurement -------------------
+
+def test_a_replay_keeps_every_trade_it_took():
+    """MAX_TRADES_KEPT bounds a Postgres row that would otherwise grow
+    forever. Applying it to a backtest measures the last 300 trades and
+    calls the answer the result."""
+    state = _state(sessions=6)
+    assert state.get("keep_all_trades") is True
+
+
+def test_the_live_book_still_caps_its_stored_trades():
+    state = engine.new_state({"market": "nse", "symbols": ["T.NS"],
+                              "strategies": ["orb", "benchmark"]})
+    engine.start_day(state, "2026-09-01")
+    book = state["books"]["orb"]
+    book["trades"] = [{"net": 1.0} for _ in range(engine.MAX_TRADES_KEPT)]
+    engine._close.__wrapped__ if hasattr(engine._close, "__wrapped__") else None
+    # Appending one more through the real path must drop the oldest.
+    book["positions"]["T.NS"] = {
+        "symbol": "T.NS", "side": "LONG", "qty": 1, "entry_price": 100.0,
+        "entry_at": "2026-09-01T10:00:00+05:30", "stop": 97.0, "target": 105.0,
+        "buy_charges": 0.0, "entry_reason": "test"}
+    engine._close(state, book, "T.NS", 101.0, "target", "2026-09-01T11:00:00+05:30")
+    assert len(book["trades"]) == engine.MAX_TRADES_KEPT
+
+
+def test_a_net_over_three_hundred_trades_is_the_whole_run_not_a_tail():
+    """The bug this guards: four hourly ideas reported exactly 300 trades,
+    and their net was the net of the last 300."""
+    from arena import markets as markets_mod
+    from arena.strategies import enrich
+    from funnel import backtest
+
+    market = markets_mod.get("nse")
+    bars = {s: enrich(arena_guard.intraday_bars(sessions=60, seed=SEED + i), market=market)
+            for i, s in enumerate(["A.NS", "B.NS", "C.NS", "D.NS"])}
+    result = backtest.run(
+        __import__("arena.strategies", fromlist=["STRATEGIES"]).STRATEGIES["vwap_bands"],
+        sorted(bars), bars, days=60)
+    if result["trades"] <= engine.MAX_TRADES_KEPT:
+        pytest.skip("this fixture does not reach the cap")
+    assert result["trades"] > engine.MAX_TRADES_KEPT

@@ -200,6 +200,8 @@ def enrich(bars: pd.DataFrame, market=None, window: dict | None = None,
 
     g = df.groupby("session", sort=False)
     df["bar_no"] = g.cumcount()
+    minutes = bar_minutes(df)
+    df["bar_minutes"] = minutes
     if no_volume:
         # TWAP: the running mean of the typical price so far this session.
         # It answers the same question VWAP does - "is price above or below
@@ -218,8 +220,6 @@ def enrich(bars: pd.DataFrame, market=None, window: dict | None = None,
     # the range itself it is the first bar, and the range is then that
     # bar's length rather than 15 minutes: a bar size cannot be finer than
     # its bars, and pretending otherwise is how a backtest invents data.
-    minutes = bar_minutes(df)
-    df["bar_minutes"] = minutes
     in_or = df["sess_minute"] < max(OPENING_RANGE_MINUTES, minutes)
     or_high = high.where(in_or).groupby(df["session"]).transform("max")
     or_low = low.where(in_or).groupby(df["session"]).transform("min")
@@ -231,7 +231,15 @@ def enrich(bars: pd.DataFrame, market=None, window: dict | None = None,
     df["ema50"] = close.ewm(span=50, adjust=False).mean()
     # Spread of price around VWAP so far this session (expanding std).
     dev = close - df["vwap"]
-    df["vwap_sd"] = dev.groupby(df["session"]).transform(lambda x: x.expanding(min_periods=6).std())
+    # Half an hour of spread before the band means anything, which at 5m is
+    # the six bars this used to say. On hourly bars half an hour is less
+    # than one bar, so the floor is three: a standard deviation of two
+    # points is not a measurement. An hourly session has seven bars, so
+    # even three is thin, and results/bar_sizes.md says so rather than
+    # letting the number pass as the same quantity it is at 5m.
+    sd_min = max(3, int(round(HALF_HOUR_MINUTES / minutes)))
+    df["vwap_sd"] = dev.groupby(df["session"]).transform(
+        lambda x: x.expanding(min_periods=sd_min).std())
     # Swing levels of the PREVIOUS 5 bars (excludes the current bar).
     df["swing_low5"] = low.rolling(5, min_periods=3).min().shift(1)
     df["swing_high5"] = high.rolling(5, min_periods=3).max().shift(1)

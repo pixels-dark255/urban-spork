@@ -82,6 +82,12 @@ def gate_training_profit(result: dict) -> dict:
     if not result.get("ok"):
         return {"pass": False, "why": result.get("reason", "no result")}
     net = result["net"]
+    if not result.get("trades"):
+        # "net +0.00 over 0 trades" reads as a strategy that lost nothing.
+        # It is a strategy that never fired, which is a different finding
+        # and usually means the rule does not survive this bar size at all.
+        return {"pass": False, "no_trades": True,
+                "why": "no trades at all: the rule never fired on these bars"}
     return {"pass": net > 0,
             "why": "net %+.2f after costs over %d trades" % (net, result["trades"])}
 
