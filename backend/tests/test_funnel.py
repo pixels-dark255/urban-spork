@@ -436,10 +436,34 @@ def test_a_rule_that_never_fired_is_not_reported_as_one_that_lost():
     silent = gates.gate_training_profit({"ok": True, "net": 0.0, "trades": 0})
     assert silent["pass"] is False
     assert silent["no_trades"] is True
-    assert "never fired" in silent["why"]
+    assert "never signalled" in silent["why"]
     assert "+0.00" not in silent["why"]
+
+    # A rule the engine refused on every signal is the opposite finding,
+    # and reading it as "never signalled" is how vwap_bands came back as
+    # silent while the variant wrapping it traded thirty times.
+    refused = gates.gate_training_profit(
+        {"ok": True, "net": 0.0, "trades": 0, "skipped": {"costs_exceed_target": 412}})
+    assert "412 signals" in refused["why"]
+    assert "never signalled" not in refused["why"]
+    assert refused["skipped"]["costs_exceed_target"] == 412
 
     lost = gates.gate_training_profit({"ok": True, "net": -12.5, "trades": 3})
     assert lost["pass"] is False
     assert not lost.get("no_trades")
     assert "-12.50 after costs over 3 trades" in lost["why"]
+
+
+def test_a_backtest_reports_why_signals_did_not_become_trades():
+    from arena import markets as markets_mod
+    from arena.strategies import enrich, STRATEGIES
+    from funnel import backtest
+    from validation import arena_guard
+
+    market = markets_mod.get("nse")
+    bars = {"A.NS": enrich(arena_guard.intraday_bars(sessions=10, seed=11), market=market)}
+    result = backtest.run(STRATEGIES["vwap_bands"], ["A.NS"], bars, days=10)
+    assert "skipped" in result
+    assert isinstance(result["skipped"], dict)
+    # Only non-zero reasons, so the block is a finding rather than a form.
+    assert all(v for v in result["skipped"].values())

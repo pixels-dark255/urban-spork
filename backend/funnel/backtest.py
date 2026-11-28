@@ -95,6 +95,13 @@ def run(strategy, symbols: list[str], enriched: dict, days: int,
         state = engine.replay(config, {s: enriched[s] for s in symbols}, days=days)
         book = state["books"].get(variant_id) or {"trades": [], "stats": {}}
         trades = list(book["trades"])
+        # Why a signal did not become a trade. Without these a strategy the
+        # engine refused on every bar and one that never signalled at all
+        # look identical, and they are opposite findings.
+        skipped = {}
+        for day in book.get("day_history", []):
+            for reason, count in (day.get("skipped") or {}).items():
+                skipped[reason] = skipped.get(reason, 0) + count
         metrics = engine.window_metrics(trades)
         start_capital = float(state["config"].get("daily_capital") or 0.0) or None
 
@@ -116,6 +123,7 @@ def run(strategy, symbols: list[str], enriched: dict, days: int,
         # `before_charges` is NOT gross: slippage is paid in the fill price,
         # not in charges, so it is still inside this number. The 0x row of
         # the sweep is the one with no slippage in it at all.
+        "skipped": {k: v for k, v in sorted(skipped.items()) if v},
         "charges": round(sum(float(t.get("charges") or 0.0) for t in trades), 2),
         "before_charges": round(net + sum(float(t.get("charges") or 0.0)
                                           for t in trades), 2),

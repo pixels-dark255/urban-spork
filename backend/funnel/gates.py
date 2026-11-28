@@ -83,11 +83,23 @@ def gate_training_profit(result: dict) -> dict:
         return {"pass": False, "why": result.get("reason", "no result")}
     net = result["net"]
     if not result.get("trades"):
-        # "net +0.00 over 0 trades" reads as a strategy that lost nothing.
-        # It is a strategy that never fired, which is a different finding
-        # and usually means the rule does not survive this bar size at all.
-        return {"pass": False, "no_trades": True,
-                "why": "no trades at all: the rule never fired on these bars"}
+        # "net +0.00 over 0 trades" reads as a strategy that lost nothing,
+        # so say which of the two it actually was. A rule the engine
+        # refused on every signal and a rule that never signalled are
+        # opposite findings: the first says the moves were too small to pay
+        # for themselves, the second that the rule does not survive this
+        # bar size.
+        skipped = result.get("skipped") or {}
+        refused = skipped.get("costs_exceed_target", 0)
+        if refused:
+            why = ("no trades: %d signals, every one refused because the "
+                   "target could not beat the round trip" % refused)
+        elif skipped:
+            why = ("no trades: %s" % ", ".join("%d %s" % (v, k)
+                                               for k, v in sorted(skipped.items())))
+        else:
+            why = "no trades at all: the rule never signalled on these bars"
+        return {"pass": False, "no_trades": True, "skipped": skipped, "why": why}
     return {"pass": net > 0,
             "why": "net %+.2f after costs over %d trades" % (net, result["trades"])}
 
