@@ -15,3 +15,4 @@ phase,date_run,sha,notes
 2,2026-11-26,5826fb2c66cb,"rules.yaml gains the 12 patient variants: 25 strategies, 7 testable, 18 not (ATR or structure stops carried over from their bases)"
 3,2026-11-26,2da2f85d462b,"look-ahead guard re-run with the patient family: 25 of 25 strategies causal over 30 truncation dates each, control still caught, planted +0.832% and noise -0.206% unchanged"
 4,2026-11-26,c09d0ecb4972,"funnel with the patient family on real NSE 5m bars (40 sessions): 25 ideas in, 0 survivors. Loss cut 28% by trading 24% less, but loss per trade only -20.59 to -19.64, so no edge was found"
+4-hourly,2026-11-28,a167d2e71779,"funnel on NSE 1h bars, 268 training sessions with 116 held back (70/30 per AGENTS.md 2): 25 ideas in, 0 survivors. Loss per trade WORSE than 5m, -24.26 against -19.77, so bigger bars did not buy bigger moves"
